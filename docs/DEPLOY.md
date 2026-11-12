@@ -34,7 +34,7 @@
 | 或 Node.js | **≥ 22.18**（推荐 24.x） | 服务端直接用 Node 原生执行 TypeScript，**不需要 npm install、不需要构建** |
 | 内存 | ≥ 256 MB 可用 | 实测常驻约 60–80 MB |
 | 磁盘 | ≥ 1 GB（数据量很小，主要留给备份） | SQLite 库通常几 MB 到几十 MB |
-| 端口 | 一个可对外访问的 HTTP 端口（默认 8080） | 对外请走 HTTPS（第 6 节） |
+| 端口 | 一个可对外访问的 HTTP 端口（默认 6889） | 对外请走 HTTPS（第 6 节） |
 | 域名（可选） | 建议给授权服务一个独立子域名，如 `license.example.com` | 客户端硬编码地址，换域名意味着老客户端要升级 |
 
 **网络要求**：客户端需要能访问到本服务（激活、心跳）。服务端不需要访问外网。
@@ -108,8 +108,8 @@ docker compose logs -f --tail=50
 
 ```
  license-server v1.0.0 已启动
- 监听:        http://0.0.0.0:8080
- 管理后台:    http://localhost:8080/
+ 监听:        http://0.0.0.0:6889
+ 管理后台:    http://localhost:6889/
  数据库:      /data/license.db
  签名密钥:    kid=k1 (Ed25519)
  离线宽限:    7 天 / 心跳周期 24 小时
@@ -127,17 +127,17 @@ MCowBQYDK2VwAyEA...
 
 ```bash
 # 1) 健康检查
-curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:6889/healthz
 # {"ok":true,"data":{"ok":true,"status":"healthy","time":"..."}}
 
 # 2) 容器健康状态（应显示 healthy，约 30 秒后出现）
 docker inspect --format '{{.State.Health.Status}}' license-server
 
 # 3) 管理后台能打开（浏览器）
-#    http://<服务器IP>:8080/  →  用 ADMIN_EMAIL / ADMIN_PASSWORD 登录
+#    http://<服务器IP>:6889/  →  用 ADMIN_EMAIL / ADMIN_PASSWORD 登录
 
 # 4) 管理员 API 能登录
-curl -s -X POST http://127.0.0.1:8080/admin/api/auth/login \
+curl -s -X POST http://127.0.0.1:6889/admin/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"admin@yourcompany.com","password":"你的密码"}'
 # {"ok":true,"data":{"admin":{...},"token":"...","expires_at":"..."}}
@@ -167,7 +167,7 @@ docker build -t license-server:1.0.0 .
 
 docker run -d --name license-server \
   --restart unless-stopped \
-  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:6889:6889 \
   -v /opt/license-server/data:/data \
   -e ADMIN_EMAIL=admin@yourcompany.com \
   -e ADMIN_PASSWORD='换成强密码' \
@@ -177,8 +177,8 @@ docker run -d --name license-server \
 ```
 
 - `-v` 必须挂：不挂的话容器重建后**授权数据全丢**。
-- `-p 127.0.0.1:8080:8080` 只监听本机；如果前面没有反向代理，改成 `-p 8080:8080`。
-- 容器内端口固定 8080（`PORT` 环境变量在容器内被 Dockerfile 固定），要换对外端口改宿主侧映射即可。
+- `-p 127.0.0.1:6889:6889` 只监听本机；如果前面没有反向代理，改成 `-p 6889:6889`。
+- 容器内端口固定 6889（`PORT` 环境变量在容器内被 Dockerfile 固定），要换对外端口改宿主侧映射即可。
 
 ### 4.1 离线分发镜像
 
@@ -271,7 +271,7 @@ chmod 750 /var/lib/license-server
 
 ```bash
 sudo tee /etc/license-server.env >/dev/null <<'EOF'
-PORT=8080
+PORT=6889
 HOST=127.0.0.1
 DATA_DIR=/var/lib/license-server
 ADMIN_EMAIL=admin@yourcompany.com
@@ -325,7 +325,7 @@ sudo systemctl status license-server --no-pager
 ### 5.4 验证
 
 ```bash
-curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:6889/healthz
 journalctl -u license-server -n 50 --no-pager
 ```
 
@@ -359,7 +359,7 @@ server {
     error_log  /var/log/nginx/license.error.log;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:6889;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;
@@ -380,7 +380,7 @@ sudo nginx -t && sudo systemctl reload nginx
 ```caddyfile
 license.example.com {
     encode gzip
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:6889
 }
 ```
 
@@ -393,19 +393,19 @@ Caddy 会自动申请并续期证书，也会带上 `X-Forwarded-For`。
 ```nginx
 # 页面
 location /license/ {
-    proxy_pass http://127.0.0.1:8080/;    # 注意结尾的 / ，会剥掉 /license 前缀
+    proxy_pass http://127.0.0.1:6889/;    # 注意结尾的 / ，会剥掉 /license 前缀
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Real-IP $remote_addr;
 }
 # 管理端 API
 location /admin/api/ {
-    proxy_pass http://127.0.0.1:8080/admin/api/;
+    proxy_pass http://127.0.0.1:6889/admin/api/;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Real-IP $remote_addr;
 }
 # 客户端 API
 location /api/ {
-    proxy_pass http://127.0.0.1:8080/api/;
+    proxy_pass http://127.0.0.1:6889/api/;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Real-IP $remote_addr;
 }
@@ -419,7 +419,7 @@ location /api/ {
 
 ### 7.1 登录
 
-浏览器打开 `https://license.example.com/`（或 `http://<IP>:8080/`），账号密码为 `.env` 里的 `ADMIN_EMAIL` / `ADMIN_PASSWORD`。
+浏览器打开 `https://license.example.com/`（或 `http://<IP>:6889/`），账号密码为 `.env` 里的 `ADMIN_EMAIL` / `ADMIN_PASSWORD`。
 
 **如果你没设 `ADMIN_PASSWORD`**：系统会随机生成一个，写入数据目录下的 `initial-admin.txt`，并在启动日志提示路径。
 
@@ -480,7 +480,7 @@ sudo rm /var/lib/license-server/initial-admin.txt
 | `DB_PATH` | 一般不用设 | 想自定义库文件名时用，优先级高于 `DATA_DIR` |
 | `TRUST_PROXY` | 有反代就 `true` | 影响真实 IP 获取（限流与审计） |
 | `BIND_ADDR` | `127.0.0.1`（有反代时） | 仅 `docker-compose.yml` 使用，控制宿主监听地址 |
-| `PORT` | 默认 8080 | 宿主侧映射端口（容器内固定 8080） |
+| `PORT` | 默认 6889 | 宿主侧映射端口（容器内固定 6889） |
 | `OFFLINE_GRACE_DAYS` | 建议 `3`~`14` | 离线宽限：越小越严格，客户端必须更勤联心跳 |
 | `HEARTBEAT_INTERVAL_HOURS` | 默认 `24` | 下发给客户端的建议心跳周期 |
 | `RATE_LIMIT_PER_MIN` | 默认 `600` | 单 IP 每分钟上限；客户端量大时按需调高 |
@@ -555,7 +555,7 @@ ls -l
 
 # 5) 起服并验证
 docker compose start
-curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:6889/healthz
 ```
 
 恢复后用后台登录，核对「概览」里的授权数、客户数与备份时刻一致。
@@ -596,7 +596,7 @@ docker compose up -d --build
 
 # 4) 验证
 docker compose ps                       # healthy
-curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:6889/healthz
 docker compose logs --tail=30
 ```
 
@@ -678,7 +678,7 @@ curl -s https://instance-b.example.com/api/v1/public-key | grep -A2 'BEGIN PUBLI
 ### 12.1 健康检查
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/healthz   # 期望 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:6889/healthz   # 期望 200
 ```
 
 Docker 已内置 `HEALTHCHECK`（30 秒一次），容器状态显示 `healthy`。
@@ -713,7 +713,7 @@ journalctl -u license-server -f            # 裸机
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `env file .../.env not found` | `.env` 不存在 | `cp .env.example .env` |
-| `Bind for 0.0.0.0:8080 failed: port is already allocated` | 端口被占用 | 改 `.env` 的 `PORT`，或 `ss -lntp \| grep 8080` 找到占用进程 |
+| `Bind for 0.0.0.0:6889 failed: port is already allocated` | 端口被占用 | 改 `.env` 的 `PORT`，或 `ss -lntp \| grep 6889` 找到占用进程 |
 | 容器反复重启，日志有 `EACCES` / `EROFS` | `./data` 不可写 | `sudo chown -R 1000:1000 data` |
 | 裸机报 `SyntaxError` 或类型相关错误 | Node 版本过低（< 22.18） | `node -v` 确认，升级 Node |
 | `签名密钥自检失败` | `SIGNING_PRIVATE_KEY_B64` 与现有 `keys.json` 不匹配 | 清空该变量，或从原部署导出正确的私钥 |
@@ -786,8 +786,8 @@ git clone <repo> /opt/license-server && cd /opt/license-server
 cp .env.example .env && vi .env                      # 改 ADMIN_PASSWORD
 mkdir -p data && sudo chown -R 1000:1000 data
 docker compose up -d --build
-curl -s http://127.0.0.1:8080/healthz                # 200 即成功
-# 浏览器打开 http://<IP>:8080/ 登录，建产品/模块，生成 CDK
+curl -s http://127.0.0.1:6889/healthz                # 200 即成功
+# 浏览器打开 http://<IP>:6889/ 登录，建产品/模块，生成 CDK
 ```
 
 完整的客户端接入流程见 [client-integration.md](client-integration.md)，接口细节见 [API.md](API.md)。

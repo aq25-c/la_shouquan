@@ -27,7 +27,7 @@ function envBool(name: string, fallback: boolean): boolean {
 const dataDir = resolve(envStr("DATA_DIR", "./data"));
 
 export const config = {
-  port: envInt("PORT", 8080, 1, 65535),
+  port: envInt("PORT", 6889, 1, 65535),
   host: envStr("HOST", "0.0.0.0"),
   nodeEnv: envStr("NODE_ENV", "production"),
   isProd: envStr("NODE_ENV", "production") !== "development",

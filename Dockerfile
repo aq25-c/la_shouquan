@@ -9,7 +9,7 @@ COPY src ./src
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=8080 \
+    PORT=6889 \
     DATA_DIR=/data \
     TZ=Asia/Shanghai
 
@@ -19,10 +19,10 @@ RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 6889
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||6889)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # 优雅退出由 server.ts 处理 SIGTERM
 CMD ["node", "src/server.ts"]

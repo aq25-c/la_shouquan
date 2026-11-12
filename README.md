@@ -97,10 +97,10 @@ docker compose up -d --build
 
 # 3. 确认健康
 docker compose ps                       # STATUS 应为 healthy
-curl http://localhost:8080/healthz
+curl http://localhost:6889/healthz
 ```
 
-打开 `http://<服务器IP>:8080/` 就是管理后台，用 `.env` 里的 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 登录。
+打开 `http://<服务器IP>:6889/` 就是管理后台，用 `.env` 里的 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 登录。
 
 > 仓库**不附带预构建镜像**：首次 `up --build` 会在这台机器上构建（需要能访问 Docker Hub 拉取 `node:24-alpine`）。
 > 内网/离线环境怎么把镜像搬过去（`docker save` / `docker load`、离线基础镜像、私有仓库），见 [docs/DEPLOY.md 第 4.1 节](docs/DEPLOY.md)。
@@ -113,7 +113,7 @@ curl http://localhost:8080/healthz
 ```bash
 docker build -t license-server:1.0.0 .
 docker run -d --name license-server \
-  -p 8080:8080 \
+  -p 6889:6889 \
   -v "$PWD/data:/data" \
   -e ADMIN_EMAIL=admin@example.com \
   -e ADMIN_PASSWORD='换成你的强密码' \
@@ -125,7 +125,7 @@ docker run -d --name license-server \
 
 ```bash
 # 不需要 npm install —— 没有任何第三方依赖
-PORT=8080 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密码' \
+PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密码' \
   node src/server.ts
 ```
 
@@ -139,7 +139,7 @@ PORT=8080 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PORT` | `8080` | 监听端口 |
+| `PORT` | `6889` | 监听端口 |
 | `HOST` | `0.0.0.0` | 监听地址 |
 | `DATA_DIR` | `./data` | 数据目录（SQLite 库、签名密钥、初始密码文件） |
 | `DB_PATH` | `$DATA_DIR/license.db` | 单独指定数据库路径 |
@@ -177,7 +177,7 @@ PORT=8080 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 ### 1. 激活（用 CDK 换授权）
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/licenses/activate \
+curl -X POST http://localhost:6889/api/v1/licenses/activate \
   -H 'Content-Type: application/json' \
   -d '{
         "cdk": "Q3GP-2WUW-7RFC-XPY2",
@@ -216,7 +216,7 @@ curl -X POST http://localhost:8080/api/v1/licenses/activate \
 ### 3. 定时心跳（联网续期）
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/licenses/heartbeat \
+curl -X POST http://localhost:6889/api/v1/licenses/heartbeat \
   -H 'Content-Type: application/json' \
   -d '{"license_key":"LK-…","device_id":"PC-OFFICE-01"}'
 ```

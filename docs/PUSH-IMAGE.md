@@ -219,12 +219,12 @@ services:
     container_name: license-server
     restart: unless-stopped
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${PORT:-8080}:8080"
+      - "${BIND_ADDR:-0.0.0.0}:${PORT:-6889}:6889"
     env_file:
       - .env
     environment:
       DATA_DIR: /data
-      PORT: 8080
+      PORT: 6889
     volumes:
       - ./data:/data
     # healthcheck / security_opt / logging 保持不变
@@ -241,7 +241,7 @@ docker compose up -d
 
 # 验证
 docker compose ps                                   # STATUS: healthy
-curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:6889/healthz
 docker compose logs --tail=30
 ```
 
@@ -252,7 +252,7 @@ docker compose logs --tail=30
 ```bash
 docker compose images                                     # 看 tag 与 image id
 docker image inspect $REGISTRY/$REPO:1.0.0 --format '{{index .RepoDigests 0}}'
-curl -s http://127.0.0.1:8080/api/v1/server-info          # 版本号
+curl -s http://127.0.0.1:6889/api/v1/server-info          # 版本号
 ```
 
 ---

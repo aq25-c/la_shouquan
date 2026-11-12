@@ -13,16 +13,16 @@ services:
       dockerfile: Dockerfile
     # 与 GitHub Actions 推送的镜像保持一致：本地 `docker compose build` 会打出同名 tag，
     # 服务器上删掉上面 build: 段后 `docker compose pull` 直接拉这个地址即可。
-    image: ghcr.io/aq25-c/la_shouquan:1.0.0
+    image: ghcr.io/aq25-c/la_shouquan:1.0.1
     container_name: license-server
     restart: unless-stopped
     ports:
-      - "${BIND_ADDR:-0.0.0.0}:${PORT:-8080}:8080"
+      - "${BIND_ADDR:-0.0.0.0}:${PORT:-6889}:6889"
     env_file:
       - .env
     environment:
       DATA_DIR: /data
-      PORT: 8080
+      PORT: 6889
     volumes:
       - ./data:/data
     healthcheck:
@@ -31,7 +31,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:6889/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 30s
       timeout: 5s

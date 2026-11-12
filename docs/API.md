@@ -6,7 +6,7 @@
 
 ## 通用约定
 
-- **Base URL**：`http://<host>:8080`
+- **Base URL**：`http://<host>:6889`
 - **请求体**：`Content-Type: application/json`，大小上限 `MAX_BODY_BYTES`（默认 256 KB）
 - **时间**：全部为 ISO-8601 UTC 字符串，如 `2027-11-12T08:00:00.000Z`
 - **成功响应**：
@@ -380,7 +380,7 @@
 ## 五、curl 快速验证
 
 ```bash
-BASE=http://localhost:8080
+BASE=http://localhost:6889
 
 # 管理员登录并取 token
 TOKEN=$(curl -s -X POST $BASE/admin/api/auth/login \
