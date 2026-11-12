@@ -227,9 +227,28 @@ test("激活 CDK：签发可离线验签的许可证文件", async () => {
     assert.ok(Math.abs(verified.payload.exp - (Math.floor(Date.now() / 1000) + 7 * 86_400)) < 120);
   }
 
-  // 篡改内容后验签必须失败
-  const tampered = `${licenseFile.slice(0, -2)}AA`;
-  assert.equal(verifyLicenseFile(tampered, publicKeyPem).valid, false);
+  // 篡改 payload 后验签必须失败
+  // 注意：不要用「替换末尾 N 个 base64url 字符」来构造篡改样本 —— Ed25519 的 64 字节签名
+  // 编码成 86 个字符，最后一个字符的低 4 位是无效位，解码时会被丢弃，因此那样改有可能
+  // 解码出与原签名完全相同的字节，导致这条断言偶发通过（约 1/4096）。改 payload 首字符最稳。
+  const dotIndex = licenseFile.indexOf(".");
+  const body = licenseFile.slice(0, dotIndex);
+  const signature = licenseFile.slice(dotIndex + 1);
+
+  const tamperedBody = (body[0] === "e" ? "f" : "e") + body.slice(1);
+  assert.equal(
+    verifyLicenseFile(tamperedBody + "." + signature, publicKeyPem).valid,
+    false,
+    "篡改 payload 后必须验签失败",
+  );
+
+  // 篡改签名的第一个字符（6 bit 全部有效）也必须失败
+  const tamperedSig = (signature[0] === "A" ? "B" : "A") + signature.slice(1);
+  assert.equal(
+    verifyLicenseFile(body + "." + tamperedSig, publicKeyPem).valid,
+    false,
+    "篡改签名后必须验签失败",
+  );
 });
 
 test("同一个 CDK 不能二次激活", async () => {
