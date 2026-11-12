@@ -1,0 +1,325 @@
+# 授权许可系统（License Server）
+
+一套自托管的软件授权系统：**客户注册 · CDK 激活 · 授权到期控制 · 离线许可证签名 · Web 管理后台 · Docker 一键部署**。
+
+被授权的客户端可以是你写的任何程序（C/C++、C#、Go、Python、Electron…），只需要能发 HTTP 请求、能做一次 Ed25519 验签。
+
+- **运行时零依赖**：只用 Node 内置模块（`node:sqlite` / `node:crypto` / `node:http`），不需要 `npm install`，不需要外部数据库。
+- **单容器部署**：Docker Compose 一条命令起服务，数据全在 `./data` 目录，备份就是拷目录。
+
+---
+
+## 目录
+
+- [核心概念](#核心概念)
+- [功能清单](#功能清单)
+- [快速部署](#快速部署)
+- [**部署手册（生产环境：HTTPS / systemd / 备份 / 升级 / 排障）**](docs/DEPLOY.md)
+- [**镜像发布（构建 / 推送线上仓库 / 部署 / 回滚 / CI）**](docs/PUSH-IMAGE.md)
+- [环境变量](#环境变量)
+- [后台使用流程](#后台使用流程)
+- [客户端接入（三步）](#客户端接入三步)
+- [授权如何生效与失效](#授权如何生效与失效)
+- [运维：备份、迁移、升级](#运维备份迁移升级)
+- [本地开发与测试](#本地开发与测试)
+- [常见问题](#常见问题)
+- [目录结构](#目录结构)
+
+---
+
+## 核心概念
+
+| 概念 | 说明 |
+| --- | --- |
+| **产品（Product）** | 你要授权的软件，例如 `app-pro`。客户端用产品编码识别。 |
+| **模块（Module）** | 产品内的功能单位，例如 `core`、`report`。**CDK 绑定的就是模块组合**，客户端据此判断某功能是否被授权。 |
+| **CDK** | 卡密（兑换码），形如 `Q3GP-2WUW-7RFC-XPY2`。后台批量生成，一次性核销。 |
+| **客户（Customer）** | 激活时自动创建或注册的账号，可登录查看/自助解绑。也支持匿名激活。 |
+| **授权（License）** | CDK 核销后产生的授权记录，决定**到期时间**、**席位（可绑定设备数）**、**模块范围**。 |
+| **设备（Device）** | 一台机器（客户端上报的稳定指纹）。每个授权最多绑定 `seats` 台。 |
+| **许可证文件** | 服务端用 Ed25519 签名的字符串，客户端**离线**即可验签 + 校验到期 + 校验设备绑定。 |
+
+授权校验采用「混合模式」：
+
+```
+首次激活（联网）────────────▶ 得到 license_key + 许可证文件（签名，含离线有效期）
+                                        │
+客户端日常使用 ── 本地验签（离线，无需联网）◀┘
+                                        │
+每 24h 心跳（联网）─────────▶ 服务端重新签发文件，滚动续期；
+                              断网超过 OFFLINE_GRACE_DAYS 天 → 本地验签失败 → 降级
+```
+
+离线有效期 = `min(授权真实到期时间, 当前时间 + OFFLINE_GRACE_DAYS 天)`，所以**断网不会永久白用，吊销/到期也能在宽限期后生效**。
+
+---
+
+## 功能清单
+
+**授权与到期控制**
+- 授权有效期按天数签发，到期状态由服务端动态判定（无需定时任务）
+- 后台可随时：直接改到期时间、按天延长（可负数缩短）、暂停、恢复、吊销
+- 吊销/到期后，客户端下一次心跳即被拒绝（宽限期内离线仍可用，属预期行为）
+
+**CDK 管理**
+- 批量生成（一次最多 5000 个），码表去掉易混字符 `I O 0 1`，格式 `XXXX-XXXX-XXXX-XXXX`
+- 每个 CDK 绑定：产品 + 模块组合 + 授权天数 + 席位数 + 可选兑换截止时间
+- 一次性核销（并发安全），可按批次筛选、复制、导出 CSV（带 BOM，Excel 直接打开）
+- 未使用的 CDK 可作废
+
+**账号**
+- 客户注册/登录（scrypt 口令哈希），登录后可查看授权、自助解绑设备、重置许可证密钥
+- 也支持不带账号的匿名激活
+- 管理员登录 + 多管理员 + 改密（改密后旧会话立即失效）
+
+**设备席位**
+- 每个授权限制可绑定设备数，席位满时返回 `SEAT_LIMIT`
+- 后台/客户均可解绑设备实现换机
+
+**安全**
+- 许可证 Ed25519 签名（私钥只存服务端，公钥内置客户端）
+- 管理接口 Bearer 会话鉴权、登录限流、全局限流、审计日志（谁在什么时候改了什么）
+- 安全响应头、SQL 全参数化、CSV 公式注入防护
+
+---
+
+## 快速部署
+
+### 方式一：Docker Compose（推荐）
+
+```bash
+# 1. 准备配置
+cp .env.example .env
+#    编辑 .env：至少改掉 ADMIN_PASSWORD
+
+# 2. 起服务（首次会构建镜像）
+docker compose up -d --build
+
+# 3. 确认健康
+docker compose ps                       # STATUS 应为 healthy
+curl http://localhost:8080/healthz
+```
+
+打开 `http://<服务器IP>:8080/` 就是管理后台，用 `.env` 里的 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 登录。
+
+> 仓库**不附带预构建镜像**：首次 `up --build` 会在这台机器上构建（需要能访问 Docker Hub 拉取 `node:24-alpine`）。
+> 内网/离线环境怎么把镜像搬过去（`docker save` / `docker load`、离线基础镜像、私有仓库），见 [docs/DEPLOY.md 第 4.1 节](docs/DEPLOY.md)。
+
+> Linux 上如果容器写 `./data` 报权限错误（容器以 uid 1000 运行）：
+> `mkdir -p data && sudo chown -R 1000:1000 data`
+
+### 方式二：纯 docker run
+
+```bash
+docker build -t license-server:1.0.0 .
+docker run -d --name license-server \
+  -p 8080:8080 \
+  -v "$PWD/data:/data" \
+  -e ADMIN_EMAIL=admin@example.com \
+  -e ADMIN_PASSWORD='换成你的强密码' \
+  --restart unless-stopped \
+  license-server:1.0.0
+```
+
+### 方式三：不用 Docker（有 Node ≥ 22.18 即可）
+
+```bash
+# 不需要 npm install —— 没有任何第三方依赖
+PORT=8080 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密码' \
+  node src/server.ts
+```
+
+启动日志会打印**客户端验签公钥**（也随时可在后台「设置与公钥」查看），把它内置到客户端即可。
+
+> 生产环境部署（HTTPS 反向代理、systemd、备份恢复、升级回滚、故障排查、上线检查清单）请看 **[docs/DEPLOY.md](docs/DEPLOY.md)**。
+
+---
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PORT` | `8080` | 监听端口 |
+| `HOST` | `0.0.0.0` | 监听地址 |
+| `DATA_DIR` | `./data` | 数据目录（SQLite 库、签名密钥、初始密码文件） |
+| `DB_PATH` | `$DATA_DIR/license.db` | 单独指定数据库路径 |
+| `ADMIN_EMAIL` | `admin@example.com` | 初始管理员邮箱（仅首次启动创建） |
+| `ADMIN_PASSWORD` | 空 | 初始管理员密码；**留空则随机生成**并写入 `$DATA_DIR/initial-admin.txt` |
+| `ADMIN_NAME` | `系统管理员` | 初始管理员名称 |
+| `OFFLINE_GRACE_DAYS` | `7` | **离线宽限天数**：许可证文件离线可用上限 |
+| `HEARTBEAT_INTERVAL_HOURS` | `24` | 建议客户端心跳周期（接口会返回该值） |
+| `HEARTBEAT_STALE_HOURS` | `72` | 超过多久没心跳算异常（仅统计，不影响离线验签） |
+| `ADMIN_TOKEN_TTL_HOURS` | `12` | 后台会话有效期 |
+| `CUSTOMER_TOKEN_TTL_HOURS` | `720` | 客户会话有效期 |
+| `RATE_LIMIT_PER_MIN` | `600` | 单 IP 每分钟请求上限，`0` 关闭 |
+| `TRUST_PROXY` | `false` | 在 Nginx/Traefik 后面设 `true`（从 X-Forwarded-For 取真实 IP） |
+| `MAX_BODY_BYTES` | `262144` | 请求体上限 |
+| `SIGNING_PRIVATE_KEY_B64` | 空 | 已有签名私钥（PKCS8 PEM 的 base64），多实例/迁移时用 |
+| `TZ` | 容器内 `Asia/Shanghai` | 时区 |
+
+---
+
+## 后台使用流程
+
+1. **产品与模块**：新建产品（编码用小写，如 `app-pro`），再往里加模块（`core`、`report`…）。
+2. **CDK**：选产品 → 勾选模块 → 填天数/席位/数量 → 生成。生成结果可一键复制或下载 CSV，交给渠道/客户。
+3. **客户**拿到 CDK 后在客户端里激活（也可由你在后台「手动开通」直接给某个邮箱开授权，不走 CDK）。
+4. **授权**页管理生命周期：查看设备、延长、改到期时间、暂停、吊销、重置设备、重置密钥、重新签发文件。
+5. **审计日志**：所有关键操作都留痕（谁、什么时候、对哪个对象、IP、变更内容）。
+
+---
+
+## 客户端接入（三步）
+
+接口前缀 `/api/v1`，请求/响应均为 JSON。成功响应 `{"ok":true,"data":{…}}`，失败 `{"ok":false,"error":{"code":"…","message":"…"}}`。
+完整参考见 [docs/API.md](docs/API.md)，接入细节与验签示例见 [docs/client-integration.md](docs/client-integration.md)。
+
+### 1. 激活（用 CDK 换授权）
+
+```bash
+curl -X POST http://localhost:8080/api/v1/licenses/activate \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "cdk": "Q3GP-2WUW-7RFC-XPY2",
+        "device_id": "PC-OFFICE-01",
+        "device_name": "办公室主机",
+        "platform": "Windows 11",
+        "email": "buyer@example.com",
+        "password": "BuyerPass123"
+      }'
+```
+
+关键返回字段：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "license_key": "LK-…",           // 心跳凭证，只返回这一次，务必本地保存
+    "license_file": "eyJ2Ijox….MEUCIQ…", // 签名许可证，离线校验用
+    "offline_expires_at": "2026-11-19T08:00:00.000Z",
+    "expires_at": "2027-11-12T08:00:00.000Z",
+    "days_left": 365,
+    "module_codes": ["core", "report"],
+    "heartbeat_interval_hours": 24
+  }
+}
+```
+
+`email`/`password` 可省略（匿名激活）；带邮箱时若账号不存在会自动创建。若已登录（`Authorization: Bearer <客户token>`）则直接绑到该账号。
+
+### 2. 启动时本地验签（完全离线）
+
+用内置公钥验签 `license_file`，然后检查：`exp` 未过期、`prd` 是自己的产品、`dev` 与本机设备指纹一致、`mod` 包含要用到的功能模块。
+详见 [docs/client-integration.md](docs/client-integration.md)，含 C/OpenSSL、Node、Python 三种验签代码。
+
+### 3. 定时心跳（联网续期）
+
+```bash
+curl -X POST http://localhost:8080/api/v1/licenses/heartbeat \
+  -H 'Content-Type: application/json' \
+  -d '{"license_key":"LK-…","device_id":"PC-OFFICE-01"}'
+```
+
+返回新的 `license_file`（滚动宽限期）与最新 `expires_at`。
+- `200`：正常，覆盖本地许可证文件
+- `403` + `LICENSE_EXPIRED` / `LICENSE_REVOKED` / `LICENSE_SUSPENDED` / `CUSTOMER_DISABLED`：**授权不可用**，客户端应提示并降级/退出
+- `404` + `DEVICE_NOT_BOUND`：设备被解绑，需要重新激活
+- `404` + `INVALID_LICENSE_KEY`：密钥失效（被重置），需要重新激活
+
+其它常用接口：`POST /api/v1/licenses/enroll`（同授权加绑新设备）、`POST /api/v1/licenses/release`（解绑）、`POST /api/v1/cdks/inspect`（激活前预检 CDK，不核销）、`GET /api/v1/public-key`（取公钥）。
+
+---
+
+## 授权如何生效与失效
+
+| 场景 | 服务端行为 | 客户端表现 |
+| --- | --- | --- |
+| 正常 | 心跳返回新许可证文件 | 本地验签通过 |
+| 到期 | 心跳 `403 LICENSE_EXPIRED` | 宽限期内仍可离线用，宽限期后验签失败 |
+| 后台续费 | 心跳返回新 `expires_at` | 下次心跳后自动恢复 |
+| 暂停 | 心跳 `403 LICENSE_SUSPENDED` | 同上（宽限期后失效） |
+| 吊销 | 心跳 `403 LICENSE_REVOKED` | 同上，且不可恢复 |
+| 客户停用 | 心跳 `403 CUSTOMER_DISABLED` | 同上 |
+| 设备被解绑 | 心跳 `404 DEVICE_NOT_BOUND` | 需要 CDK 重新激活 |
+| 密钥被重置 | 心跳 `404 INVALID_LICENSE_KEY` | 需要用新密钥重新激活 |
+| 断网 | ——（心跳失败可忽略） | 宽限期内继续可用，超期后验签失败 |
+
+> 想更严格：把 `OFFLINE_GRACE_DAYS` 调小（如 `1~3`），要求客户端每天联网；想更宽松就调大（如 `30`）。
+> 想禁止离线：设 `0`，客户端必须每次心跳拿到新文件才能用。
+
+---
+
+## 运维：备份、迁移、升级
+
+- **备份**：整个 `./data` 目录（含 `license.db`、`license.db-wal`、`keys.json`）。热备份建议 `sqlite3 data/license.db ".backup 'backup.db'"` 或直接 `docker compose stop` 后拷贝。
+- **迁移/多实例**：把 `./data` 拷到新机；或把 `keys.json` 里的私钥通过 `SIGNING_PRIVATE_KEY_B64` 注入（多实例必须共用同一把私钥，否则签发的许可证互通不了）。
+- **升级**：`git pull`（或替换 `src/`）后 `docker compose up -d --build`。数据库自动迁移，`data/` 不受影响。
+- **换签名密钥**：会导致**所有已签发许可证失效**（客户端内置的公钥对不上），除非同步更新客户端。
+
+---
+
+## 本地开发与测试
+
+```bash
+node src/server.ts        # 直接跑，Node 24 原生执行 TypeScript
+npm run dev               # 带 --watch 自动重启
+npm test                  # 端到端测试（真实 HTTP + 真实 SQLite，21 个用例）
+```
+
+测试覆盖：注册 → CDK 生成/导出/预检 → 激活 → 离线验签与篡改检测 → 席位加绑与上限 → 心跳 → 续费 → 到期拒绝 → 吊销拒绝 → 恢复 → 客户自助 → 密钥重置 → 手动开通 → 统计与审计 → 参数校验。
+
+> 想跑类型检查（可选，非运行必需）：`npm i -D typescript @types/node && npm run typecheck`。
+
+---
+
+## 常见问题
+
+**Q：客户端换电脑怎么办？**
+后台「授权 → 管理 → 解绑」对应设备（或客户自己登录后解绑），新机器用原 CDK 不行（CDK 已核销），应让客户用 `enroll` 接口 + `license_key` 加绑新设备，或后台"重新签发"后让客户端重新激活。
+
+**Q：客户丢了 `license_key`？**
+后台「重置许可证密钥」生成新密钥（旧密钥立即失效），或让客户登录后在客户端自助重置。
+
+**Q：能不能一个 CDK 给多台设备用？**
+可以，生成 CDK 时把「席位数」设成 N。客户端用 `POST /api/v1/licenses/enroll` 为每台设备占一个席位。
+
+**Q：想按年/永久授权？**
+天数字段上限 3650（10 年）；"永久"可设置为 3650 天并在到期前续费。
+
+**Q：需要改端口/加 HTTPS？**
+改 `.env` 的 `PORT`（宿主映射）即可。HTTPS 建议在前面放 Nginx/Caddy 反代，并把 `TRUST_PROXY=true`。
+
+**Q：数据库太大/并发高？**
+SQLite 单机足够支撑中小规模。高并发或多实例场景建议换成 PostgreSQL（数据访问集中在 `src/store/*.ts`，替换成本可控）。
+
+---
+
+## 目录结构
+
+```
+.
+├── Dockerfile                 # node:24-alpine，非 root，零依赖
+├── docker-compose.yml         # 一键部署（端口/卷/健康检查/日志轮转）
+├── .env.example               # 全部环境变量说明
+├── package.json               # 无 dependencies（只有 scripts）
+├── tsconfig.json              # 仅供编辑器/可选类型检查
+├── src/
+│   ├── server.ts              # HTTP 入口：分发、安全头、CORS、限流、错误处理
+│   ├── config.ts              # 环境变量
+│   ├── db.ts                  # SQLite 打开/迁移/事务/settings
+│   ├── crypto.ts              # Ed25519 签名验签、scrypt 口令、CDK 码
+│   ├── keys.ts                # 签名密钥单例
+│   ├── auth.ts                # 会话鉴权
+│   ├── issuer.ts              # 许可证文件签发
+│   ├── http.ts                # 路由/响应/校验/限流
+│   ├── bootstrap.ts           # 启动引导（建库、建密钥、建初始管理员）
+│   ├── types.ts               # 数据行类型
+│   ├── store/                 # 数据访问（accounts / catalog / licensing / audit）
+│   ├── routes/                # client.ts（客户端）/ admin.ts（后台）/ static.ts
+│   └── public/                # 管理后台单页（index.html / app.js / styles.css）
+├── tests/api.test.ts          # 端到端测试
+└── docs/
+    ├── API.md                 # 接口参考
+    └── client-integration.md  # 客户端接入与验签示例
+```

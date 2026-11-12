@@ -1,0 +1,12 @@
+node_modules/
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+keys.json
+*.log
+.DS_Store
+
+# 会话/工具运行时目录（不属于源码，不要推送到远端）
+.reasonix/

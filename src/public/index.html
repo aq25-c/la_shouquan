@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>授权管理后台</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%91%3C/text%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <!-- ============ 登录 ============ -->
+    <div id="login-view" class="login-wrap" hidden>
+      <form id="login-form" class="login-card" autocomplete="on">
+        <div class="login-brand">
+          <span class="logo">🔑</span>
+          <div>
+            <h1>授权管理后台</h1>
+            <p class="muted small">注册 · 授权 · 到期控制 · CDK 管理</p>
+          </div>
+        </div>
+        <label class="field">
+          <span>管理员邮箱</span>
+          <input id="login-email" name="email" type="email" autocomplete="username" required placeholder="admin@example.com" />
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••" />
+        </label>
+        <button class="btn btn-primary btn-block" type="submit">登录</button>
+        <p id="login-error" class="error-text" hidden></p>
+        <p class="muted small login-foot">首次部署的初始密码在服务器 <code>data/initial-admin.txt</code></p>
+      </form>
+    </div>
+
+    <!-- ============ 主体 ============ -->
+    <div id="app-view" class="layout" hidden>
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <span class="logo">🔑</span>
+          <span>授权系统</span>
+        </div>
+        <nav id="nav" class="nav">
+          <button class="nav-item" data-view="overview"><span>📊</span>概览</button>
+          <button class="nav-item" data-view="products"><span>📦</span>产品与模块</button>
+          <button class="nav-item" data-view="cdks"><span>🎟️</span>CDK</button>
+          <button class="nav-item" data-view="licenses"><span>🛡️</span>授权</button>
+          <button class="nav-item" data-view="customers"><span>👥</span>客户</button>
+          <button class="nav-item" data-view="audit"><span>📝</span>审计日志</button>
+        </nav>
+        <div class="sidebar-foot">
+          <button class="nav-item" data-view="settings"><span>⚙️</span>设置与公钥</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h2 id="page-title">概览</h2>
+            <p id="page-subtitle" class="muted small"></p>
+          </div>
+          <div class="topbar-right">
+            <span id="admin-label" class="pill"></span>
+            <button id="logout-btn" class="btn btn-ghost btn-sm">退出</button>
+          </div>
+        </header>
+        <section id="view-root" class="view-root"></section>
+      </main>
+    </div>
+
+    <div id="modal-root"></div>
+    <div id="toast-root" class="toast-root"></div>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

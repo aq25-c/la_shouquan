@@ -1,0 +1,44 @@
+# 一键部署：docker compose up -d --build
+#
+# 首次启动前：
+#   1) cp .env.example .env 并修改 ADMIN_PASSWORD
+#   2) mkdir -p data（Linux 下如需非 root 写权限：chown -R 1000:1000 data）
+#
+# 数据（SQLite 库 + 签名密钥）全部落在 ./data，备份/迁移只需拷这个目录。
+
+services:
+  license-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: license-server:1.0.0
+    container_name: license-server
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDR:-0.0.0.0}:${PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /data
+      PORT: 8080
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

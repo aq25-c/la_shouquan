@@ -1,0 +1,99 @@
+# 构建并推送镜像到阿里云 ACR（杭州个人版），国内服务器从 ACR 拉取。
+#
+# 触发方式：
+#   1) 打 tag:  git tag v1.0.0 && git push origin v1.0.0
+#   2) 手动:    Actions 页面 → publish-image → Run workflow
+#
+# 需要配置（Settings → Secrets and variables → Actions）：
+#   Secret   ACR_USERNAME = 阿里云账号全名
+#   Secret   ACR_PASSWORD = ACR 控制台的「固定密码」（不是阿里云登录密码）
+#
+# 可选 Variables（不配置就用下面的默认值）：
+#   ACR_REGISTRY     默认 registry.cn-hangzhou.aliyuncs.com
+#   ACR_REPO         默认 myns/license-server      ← 改成你的命名空间/仓库名
+#   BUILD_PLATFORMS  默认 linux/amd64              ← ARM 服务器改成 linux/amd64,linux/arm64
+#
+# 注意：ACR 不会在 push 时自动建仓库，请先在控制台创建 myns/license-server 对应的仓库。
+
+name: publish-image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ${{ vars.ACR_REGISTRY || 'registry.cn-hangzhou.aliyuncs.com' }}
+  IMAGE: ${{ vars.ACR_REPO || 'myns/license-server' }}
+  PLATFORMS: ${{ vars.BUILD_PLATFORMS || 'linux/amd64' }}
+
+jobs:
+  # 先跑端到端测试，不通过就不出镜像
+  test:
+    name: 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: 端到端测试（零依赖，无需 npm install）
+        run: npm test
+
+  publish:
+    name: 构建并推送
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本标签
+        id: meta
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-$(date -u +%Y%m%d%H%M)-${GITHUB_SHA:0:7}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "sha=sha-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "将推送 ${REGISTRY}/${IMAGE}:${VERSION}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录阿里云 ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.meta.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 输出部署命令
+        run: |
+          echo "已推送："
+          echo "  ${REGISTRY}/${IMAGE}:${{ steps.meta.outputs.version }}"
+          echo "  ${REGISTRY}/${IMAGE}:${{ steps.meta.outputs.sha }}"
+          echo ""
+          echo "服务器上执行（同地域 ECS 可把域名换成 registry-vpc.cn-hangzhou.aliyuncs.com 走内网）："
+          echo "  docker login --username=<阿里云账号> ${REGISTRY}"
+          echo "  docker pull ${REGISTRY}/${IMAGE}:${{ steps.meta.outputs.version }}"
+          echo "  docker compose pull && docker compose up -d"

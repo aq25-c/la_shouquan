@@ -1,0 +1,19 @@
+{
+  "name": "license-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "授权许可系统：客户注册、CDK 生成与激活、授权到期控制、离线许可证签名、Web 管理后台",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "dev": "node --watch src/server.ts",
+    "test": "node --test \"tests/**/*.test.ts\"",
+    "backup": "node src/tools/backup.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
