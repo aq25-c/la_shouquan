@@ -40,6 +40,9 @@ let customerToken = "";
 /* 渠道 / 分销 */
 let channelId = "";
 let channelCdkCodes: string[] = [];
+/* 客户/试用 */
+let adminCreatedCustomerId = "";
+let trialLicenseId = "";
 
 async function api(
   method: string,
@@ -699,4 +702,209 @@ test("渠道：审计日志记录了渠道操作", async () => {
   for (const expected of ["channel.create", "channel.update", "channel.delete", "cdk.generate", "license.create"]) {
     assert.ok(actions.includes(expected), `审计日志应包含 ${expected}`);
   }
+});
+
+/* ==================== 客户新增 / 到期调整 / 设备重绑 / 试用 ==================== */
+
+test("客户：后台新增客户", async () => {
+  const created = await api(
+    "POST",
+    "/admin/api/customers",
+    {
+      email: "admin-created@test.local",
+      password: "AdminCreated123",
+      name: "后台建的客户",
+      company: "某某公司",
+      phone: "13700001234",
+    },
+    adminToken,
+  );
+  assert.equal(created.status, 201);
+  assert.equal(created.json.data.customer.email, "admin-created@test.local");
+  assert.equal(created.json.data.customer.company, "某某公司");
+  assert.equal(created.json.data.customer.password_hash, undefined, "响应不应泄露密码哈希");
+  adminCreatedCustomerId = created.json.data.customer.id;
+
+  const dup = await api("POST", "/admin/api/customers", { email: "admin-created@test.local", name: "重复" }, adminToken);
+  assert.equal(dup.status, 409);
+  assert.equal(dup.json.error.code, "EMAIL_TAKEN");
+
+  const weak = await api("POST", "/admin/api/customers", { email: "weak-pwd@test.local", password: "123" }, adminToken);
+  assert.equal(weak.status, 400);
+  assert.equal(weak.json.error.code, "WEAK_PASSWORD");
+
+  const anon = await api("POST", "/admin/api/customers", { name: "匿名线下客户" }, adminToken);
+  assert.equal(anon.status, 201);
+  assert.equal(anon.json.data.customer.email, null, "允许创建无邮箱的匿名客户");
+
+  const list = await api("GET", "/admin/api/customers?q=admin-created", undefined, adminToken);
+  assert.ok(list.json.data.items.some((c: Json) => c.email === "admin-created@test.local"));
+});
+
+test("客户：按客户批量调整到期时间", async () => {
+  const a = await api(
+    "POST",
+    "/admin/api/licenses",
+    { product_id: productId, customer_email: "admin-created@test.local", days: 30, seats: 1, module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  const b = await api(
+    "POST",
+    "/admin/api/licenses",
+    { product_id: productId, customer_email: "admin-created@test.local", days: 30, seats: 1, module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  assert.equal(a.status, 201);
+  assert.equal(b.status, 201);
+  const expA = a.json.data.license.expires_at;
+
+  // 全部 +30 天
+  const all = await api(
+    "POST",
+    `/admin/api/customers/${adminCreatedCustomerId}/adjust-expiry`,
+    { days: 30 },
+    adminToken,
+  );
+  assert.equal(all.status, 200);
+  assert.equal(all.json.data.updated, 2);
+  const newA = all.json.data.licenses.find((l: Json) => l.id === a.json.data.license.id);
+  assert.equal(Date.parse(newA.expires_at) - Date.parse(expA), 30 * 86_400_000);
+
+  // 只把其中一个设到指定日期
+  const target = "2030-06-01T00:00:00.000Z";
+  const one = await api(
+    "POST",
+    `/admin/api/customers/${adminCreatedCustomerId}/adjust-expiry`,
+    { expires_at: target, license_ids: [b.json.data.license.id] },
+    adminToken,
+  );
+  assert.equal(one.json.data.updated, 1);
+  assert.equal(one.json.data.licenses[0].expires_at, target);
+
+  // 两个参数都没给 → 400
+  const bad = await api("POST", `/admin/api/customers/${adminCreatedCustomerId}/adjust-expiry`, {}, adminToken);
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.error.code, "MISSING_FIELD");
+});
+
+test("设备：后台重绑不重置到期时间，且有事件历史", async () => {
+  const lic = await api(
+    "POST",
+    "/admin/api/licenses",
+    { product_id: productId, customer_email: "admin-created@test.local", days: 100, seats: 2, module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  const id = lic.json.data.license.id;
+  const exp = lic.json.data.license.expires_at;
+  const start = lic.json.data.license.starts_at;
+
+  const bind1 = await api("POST", `/admin/api/licenses/${id}/devices`, { device_id: "RB-DEV-1", device_name: "第一台" }, adminToken);
+  assert.equal(bind1.status, 200);
+  assert.equal(bind1.json.data.expires_at, exp, "绑设备不能改到期时间");
+  assert.equal(bind1.json.data.starts_at, start, "起始时间也不能变");
+  assert.ok(bind1.json.data.license_file.length > 100);
+
+  const bind2 = await api("POST", `/admin/api/licenses/${id}/devices`, { device_id: "RB-DEV-2", device_name: "第二台" }, adminToken);
+  assert.equal(bind2.status, 200);
+  assert.equal(bind2.json.data.active_devices, 2);
+
+  // 席位已满（seats=2，已有两台在用）
+  const full = await api("POST", `/admin/api/licenses/${id}/devices`, { device_id: "RB-DEV-3" }, adminToken);
+  assert.equal(full.status, 409);
+  assert.equal(full.json.error.code, "SEAT_LIMIT");
+  assert.equal(full.json.error.details.seats, 2);
+
+  // 解绑一台释放席位
+  const rel = await api("POST", `/admin/api/licenses/${id}/devices/RB-DEV-1/release`, undefined, adminToken);
+  assert.equal(rel.status, 200);
+  assert.equal(rel.json.data.released, true);
+
+  // 换机重绑：到期时间必须与首次激活一致（不重置）
+  const bind3 = await api("POST", `/admin/api/licenses/${id}/devices`, { device_id: "RB-DEV-3", device_name: "换的新机器" }, adminToken);
+  assert.equal(bind3.status, 200);
+  assert.equal(bind3.json.data.expires_at, exp, "重绑后到期时间必须与首次激活一致");
+  assert.equal(bind3.json.data.starts_at, start);
+
+  // 事件历史：设备记录 + 审计
+  const events = await api("GET", `/admin/api/licenses/${id}/events`, undefined, adminToken);
+  assert.equal(events.status, 200);
+  assert.ok(events.json.data.devices.length >= 3);
+  const released = events.json.data.devices.find((d: Json) => d.device_id === "RB-DEV-1");
+  assert.equal(released.status, "released");
+  assert.ok(released.released_at, "解绑设备应有 released_at");
+  const actions = events.json.data.audits.map((x: Json) => x.action);
+  assert.ok(actions.includes("license.bind_device"), "事件历史应包含绑定记录");
+  assert.ok(actions.includes("license.release_device"), "事件历史应包含解绑记录");
+});
+
+test("试用：配置读写、自助申请、次数限制与延长", async () => {
+  const cfg = await api(
+    "PATCH",
+    "/admin/api/settings/trial",
+    { enabled: true, days: 10, seats: 1, max_per_customer: 1, product_id: productId, offline_grace_days: 3 },
+    adminToken,
+  );
+  assert.equal(cfg.status, 200);
+  assert.equal(cfg.json.data.config.days, 10);
+  assert.equal(cfg.json.data.config.product_id, productId);
+  assert.equal(cfg.json.data.config.offline_grace_days, 3);
+
+  const info = await api("GET", "/api/v1/trial/info");
+  assert.equal(info.status, 200);
+  assert.equal(info.json.data.enabled, true);
+  assert.equal(info.json.data.days, 10);
+
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "trial-e2e@test.local",
+    password: "TrialE2e123",
+    name: "试用测试",
+  });
+  const tToken = reg.json.data.session.token;
+
+  const status = await api("GET", "/api/v1/trial/status", undefined, tToken);
+  assert.equal(status.json.data.enabled, true);
+  const item = status.json.data.items.find((x: Json) => x.product.code === "app-pro");
+  assert.equal(item.remaining, 1);
+
+  const started = await api("POST", "/api/v1/trial/start", { device_id: "TRIAL-DEV-1", device_name: "试用机" }, tToken);
+  assert.equal(started.status, 201);
+  assert.equal(started.json.data.license.kind, "trial");
+  assert.equal(started.json.data.license.source, "trial");
+  assert.equal(started.json.data.license.offline_grace_days, 3, "试用应使用配置的离线宽限");
+  assert.ok(started.json.data.days_left >= 9 && started.json.data.days_left <= 10);
+  trialLicenseId = started.json.data.license.id;
+
+  // 同一产品不可再次试用
+  const again = await api("POST", "/api/v1/trial/start", { device_id: "TRIAL-DEV-2" }, tToken);
+  assert.equal(again.status, 403);
+  assert.equal(again.json.error.code, "TRIAL_ALREADY_USED");
+
+  // 后台延长试用
+  const before = started.json.data.license.expires_at;
+  const ext = await api("POST", `/admin/api/licenses/${trialLicenseId}/extend`, { days: 10 }, adminToken);
+  assert.equal(Date.parse(ext.json.data.license.expires_at) - Date.parse(before), 10 * 86_400_000);
+
+  // 按类型筛选
+  const trials = await api("GET", "/admin/api/licenses?kind=trial", undefined, adminToken);
+  assert.ok(trials.json.data.items.every((l: Json) => l.kind === "trial"));
+
+  // 关闭试用后不能再申请
+  await api("PATCH", "/admin/api/settings/trial", { enabled: false }, adminToken);
+  const reg2 = await api("POST", "/api/v1/auth/register", { email: "trial-off@test.local", password: "TrialOff123" });
+  const off = await api("POST", "/api/v1/trial/start", { device_id: "TRIAL-DEV-3" }, reg2.json.data.session.token);
+  assert.equal(off.status, 403);
+  assert.equal(off.json.error.code, "TRIAL_DISABLED");
+
+  // 恢复试用开关
+  const restored = await api("PATCH", "/admin/api/settings/trial", { enabled: true }, adminToken);
+  assert.equal(restored.json.data.config.enabled, true);
+});
+
+test("CDK：列表带出激活后的到期时间", async () => {
+  const list = await api("GET", "/admin/api/cdks?status=used", undefined, adminToken);
+  assert.equal(list.status, 200);
+  assert.ok(list.json.data.items.length > 0);
+  const withExpiry = list.json.data.items.filter((c: Json) => c.license_expires_at);
+  assert.ok(withExpiry.length > 0, "已使用的 CDK 应带出授权到期时间");
+  assert.ok(["paid", "trial"].includes(withExpiry[0].license_kind));
 });

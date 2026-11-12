@@ -198,6 +198,18 @@ CREATE INDEX IF NOT EXISTS idx_cdk_batches_channel ON cdk_batches(channel_id, cr
 CREATE INDEX IF NOT EXISTS idx_licenses_channel ON licenses(channel_id, created_at DESC);
 `;
 
+/**
+ * v3：试用授权
+ *   - licenses.kind：paid（正式）/ trial（试用）
+ *   - licenses.source：来源（cdk / manual / trial），便于按开通方式统计
+ *   试用配置本身存在 settings 表（trial.*），不需要新表。
+ */
+const SCHEMA_V3 = `
+ALTER TABLE licenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'paid';
+ALTER TABLE licenses ADD COLUMN source TEXT NOT NULL DEFAULT 'cdk';
+CREATE INDEX IF NOT EXISTS idx_licenses_kind ON licenses(kind, created_at DESC);
+`;
+
 export function openDb(path: string): DatabaseSync {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
@@ -230,6 +242,7 @@ function migrate(db: DatabaseSync): void {
 
   if (version < 1) runMigration(db, SCHEMA_V1, 1);
   if (version < 2) runMigration(db, SCHEMA_V2, 2);
+  if (version < 3) runMigration(db, SCHEMA_V3, 3);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

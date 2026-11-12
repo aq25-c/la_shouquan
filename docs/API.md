@@ -226,6 +226,30 @@
 ### POST /api/v1/licenses/:id/reenroll 🔒
 重新拉取当前设备的签名许可证。参数 `device_id`（✅）。
 
+### GET /api/v1/trial/info
+公开的试用配置（客户端据此决定是否引导用户自助试用）：`enabled`、`days`、`seats`、`max_per_customer`、`product`、`module_codes`。
+
+### GET /api/v1/trial/status 🔒
+需客户登录。返回 `{enabled, days, seats, max_per_customer, items[]}`，`items` 为每个在售产品一项：`{product:{code,name}, used, remaining}`。
+
+### POST /api/v1/trial/start 🔒
+客户自助开通试用（需客户 token）。
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `device_id` | ✅ | 设备指纹 |
+| `device_name` / `platform` | | 设备信息 |
+| `product_code` | | 指定试用产品；后台试用配置限定了产品时以配置为准 |
+
+返回结构与激活一致：`license`、`license_key`、`license_file`、`offline_expires_at`、`starts_at`、`expires_at`、`days_left`、`module_codes`。授权 `kind` = `trial`、`source` = `trial`。
+
+| HTTP | code | 含义 |
+| --- | --- | --- |
+| 403 | `TRIAL_DISABLED` | 后台已关闭自助试用 |
+| 403 | `TRIAL_ALREADY_USED` | 该产品试用次数已用完 |
+| 403 | `TRIAL_PRODUCT_LIMIT` | 试用仅限指定产品 |
+| 404 | `PRODUCT_NOT_FOUND` | 没有可试用的产品 |
+
 ---
 
 ## 三、管理接口
@@ -347,7 +371,9 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| POST | `/admin/api/customers` | 后台新增客户：`{email?, password?, name?, company?, phone?, note?}`；`email` 留空即创建「匿名客户」（仅后台代管）；`password` ≥8 位，留空则该客户不能登录；邮箱重复 `409 EMAIL_TAKEN` |
 | GET | `/admin/api/customers` | 筛选：`q`（邮箱/姓名/公司/电话）、`status`、分页；含授权计数与最近到期 |
+| POST | `/admin/api/customers/:id/adjust-expiry` | **按客户批量调整到期**：`{days? 或 expires_at?, license_ids?}`；`days` 正数延长 / 负数缩短；`expires_at` 直接设定；`license_ids` 省略则作用于该客户全部未吊销授权。返回 `{updated, licenses[]}` |
 | GET | `/admin/api/customers/:id` | `{customer, licenses[]}`，每个授权附 `devices` |
 | PATCH | `/admin/api/customers/:id` | `{name?, company?, phone?, note?, status?}`；`status`: `active`/`disabled`（停用后心跳立即拒绝） |
 | POST | `/admin/api/customers/:id/reset-password` | 生成临时密码（**只返回一次**），并使其所有会话失效 |
@@ -356,7 +382,7 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/admin/api/licenses` | 筛选：`q`（单号/客户）、`status`(`active`/`expired`/`pending`/`suspended`/`revoked`)、`product_id`、`customer_id`、`expiring_within_days`、分页 |
+| GET | `/admin/api/licenses` | 筛选：`q`（单号/客户）、`status`(`active`/`expired`/`pending`/`suspended`/`revoked`)、`kind`(`paid`/`trial`)、`product_id`、`customer_id`、`channel_id`（`__none__` 表示直销）、`expiring_within_days`、分页 |
 | GET | `/admin/api/licenses/:id` | `{license, devices[], module_codes[], customer}` |
 | PATCH | `/admin/api/licenses/:id` | `{status?, expires_at?, starts_at?, seats?, module_ids?, offline_grace_days?, note?}` |
 | POST | `/admin/api/licenses/:id/extend` | `{days, from_now?}`；`days` 可为负；`from_now=true` 从当前时间起算（已过期授权续费建议开启） |
@@ -365,9 +391,24 @@
 | POST | `/admin/api/licenses/:id/rotate-key` | 重置许可证密钥，返回新 `license_key`（只显示一次） |
 | POST | `/admin/api/licenses/:id/reissue` | `{device_id?}`，为指定/首台在用设备重新签发许可证文件 |
 | POST | `/admin/api/licenses/:id/devices/:deviceId/release` | 解绑单个设备，返回 `{released}` |
-| POST | `/admin/api/licenses` | 手动开通（不走 CDK）：`{product_id, customer_id 或 customer_email, days, seats?, module_ids?, note?}` → 返回 `license` + `license_key` |
+| POST | `/admin/api/licenses/:id/devices` | 后台绑定新设备（换机/重装）：`{device_id, device_name?, platform?}`；**到期时间沿用首次激活、不重置**；吊销/已到期时拒绝，席位满 `409 SEAT_LIMIT`。返回设备信息 + 新签发的 `license_file` + `starts_at`/`expires_at` |
+| GET | `/admin/api/licenses/:id/events` | 该授权的设备绑定/解绑历史：`{devices[], audits[]}`（`devices` 含 `released_at`；`audits` 为该授权的审计记录） |
+| POST | `/admin/api/licenses` | 手动开通（不走 CDK）：`{product_id, customer_id 或 customer_email, days, seats?, module_ids?, note?, channel_id?, unit_price?}` → 返回 `license` + `license_key` |
 
 **授权对象里 `eff_status` 是计算状态**（按当前时间与状态实时判定）：`active` / `expired` / `pending` / `suspended` / `revoked`。
+
+**v3 字段**：`kind`（`paid` 正式 / `trial` 试用）与 `source`（`cdk` / `manual` / `trial`）。
+
+**改到期时间如何同步给已激活的客户**：客户端每次心跳都会拿到最新的 `expires_at` 与重新签名的 `license_file`，所以后台改完到期时间后，客户端最迟在下一个心跳周期（`HEARTBEAT_INTERVAL_HOURS`，默认 24 小时）生效。想立刻生效，可让客户端重启触发一次心跳，或用 `POST /api/v1/licenses/heartbeat`。
+
+### 试用配置
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/admin/api/settings/trial` | `{config, summary}`；`config`: `enabled` / `days` / `seats` / `product_id` / `module_ids` / `max_per_customer` / `offline_grace_days`；`summary`: `total` / `active` / `converted` |
+| PATCH | `/admin/api/settings/trial` | 局部更新上述字段；`product_id: null` = 取消产品限定，`offline_grace_days: null` = 回落到全局默认 |
+
+试用授权与正式授权共用同一套到期控制：延长试用直接用 `POST /admin/api/licenses/:id/extend`，吊销用 `/revoke`，在授权列表可用 `?kind=trial` 单独筛出。
 
 ### 审计与密钥
 
@@ -380,9 +421,11 @@
 审计动作（`action`）常见值：
 `admin.login`、`admin.login_failed`、`admin.logout`、`admin.password_change`、`admin.create`、
 `customer.register`、`customer.login`、`customer.login_failed`、`customer.update`、`customer.reset_password`、
+`customer.create`、`customer.adjust_expiry`、
 `product.create`、`product.update`、`product.delete`、`module.create`、`module.update`、`module.delete`、
 `cdk.generate`、`cdk.revoke`、
 `license.activate`、`license.create`、`license.update`、`license.extend`、`license.revoke`、
+`license.bind_device`、`license.trial_start`、`trial.config_update`、
 `license.reset_devices`、`license.release_device`、`license.rotate_key`、`license.reissue`。
 
 ---
@@ -398,6 +441,7 @@
 | 401 | `INVALID_CREDENTIALS` / `PASSWORD_REQUIRED` | 账号密码错误 / 需要密码 |
 | 403 | `FORBIDDEN` | 无权访问该资源 |
 | 403 | `LICENSE_EXPIRED` / `LICENSE_REVOKED` / `LICENSE_SUSPENDED` / `LICENSE_NOT_STARTED` / `CUSTOMER_DISABLED` / `LICENSE_LOCKED` | 授权不可用 |
+| 403 | `TRIAL_DISABLED` / `TRIAL_ALREADY_USED` / `TRIAL_PRODUCT_LIMIT` | 试用不可用（未开放 / 次数用完 / 产品不符） |
 | 404 | `NOT_FOUND` | 接口或资源不存在 |
 | 404 | `CDK_NOT_FOUND` / `INVALID_LICENSE_KEY` / `DEVICE_NOT_BOUND` / `CHANNEL_NOT_FOUND` | 卡密/密钥/设备/渠道找不到 |
 | 409 | `CDK_ALREADY_USED` / `CDK_REVOKED` / `CDK_EXPIRED` / `CDK_NOT_UNUSED` | 卡密状态冲突 |

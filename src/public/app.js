@@ -886,7 +886,7 @@ async function renderCdks(root) {
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>CDK</th><th>产品</th><th>渠道</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>生成时间</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>CDK</th><th>产品</th><th>渠道</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>到期时间</th><th>生成时间</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
@@ -900,12 +900,13 @@ async function renderCdks(root) {
                           <td>${c.seats}</td>
                           <td>${statusBadge(CDK_STATUS, c.status)}</td>
                           <td>${esc(c.customer_email ?? "—")}</td>
+                          <td class="nowrap">${c.license_expires_at ? `${fmtDay(c.license_expires_at)}<div class="muted small">${relDays(c.license_expires_at)}</div>` : '<span class="muted small">未激活</span>'}</td>
                           <td class="nowrap">${fmtTime(c.created_at)}</td>
                           <td class="right">${c.status === "unused" ? `<button class="btn btn-sm" data-revoke="${esc(c.id)}" type="button">作废</button>` : ""}</td>
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(9, "没有符合条件的 CDK")
+                  : emptyRow(10, "没有符合条件的 CDK")
               }
             </tbody>
           </table>
@@ -1139,7 +1140,7 @@ async function openLicenseDetail(id) {
   const body = `
     <div class="kv">
       <dt>授权单号</dt><dd class="mono">${esc(l.license_no)}</dd>
-      <dt>状态</dt><dd>${statusBadge(LICENSE_STATUS, l.eff_status)}</dd>
+      <dt>状态</dt><dd>${statusBadge(LICENSE_STATUS, l.eff_status)} ${l.kind === "trial" ? '<span class="badge badge-info">试用</span>' : ""} <span class="muted small">来源 ${esc(l.source ?? "cdk")}</span></dd>
       <dt>客户</dt><dd>${esc(data.customer?.email ?? data.customer?.name ?? "—")}</dd>
       <dt>产品</dt><dd>${esc(l.product_name)} <span class="muted mono">${esc(l.product_code)}</span></dd>
       <dt>模块</dt><dd>${data.module_codes.map((c) => `<code>${esc(c)}</code>`).join(" ") || "（无）"}</dd>
@@ -1153,11 +1154,11 @@ async function openLicenseDetail(id) {
     </div>
 
     <div class="card">
-      <div class="card-head"><h3>已绑定设备</h3><span class="muted small">共 ${devices.length} 条记录</span></div>
+      <div class="card-head"><h3>设备与解绑历史</h3><span class="muted small">共 ${devices.length} 条记录</span></div>
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>设备标识</th><th>名称</th><th>平台</th><th>状态</th><th>最近心跳</th><th></th></tr></thead>
+            <thead><tr><th>设备标识</th><th>名称</th><th>平台</th><th>状态</th><th>首次绑定</th><th>最近心跳</th><th>解绑时间</th><th></th></tr></thead>
             <tbody>
               ${
                 devices.length
@@ -1167,13 +1168,19 @@ async function openLicenseDetail(id) {
                           <td class="mono">${esc(d.device_id)}</td>
                           <td>${esc(d.device_name ?? "—")}</td>
                           <td>${esc(d.platform ?? "—")}</td>
-                          <td>${d.status === "active" ? '<span class="badge badge-ok">在用</span>' : `<span class="badge">已解绑</span>`}</td>
+                          <td>${d.status === "active" ? '<span class="badge badge-ok">在用</span>' : '<span class="badge">已解绑</span>'}</td>
+                          <td class="nowrap">${fmtTime(d.first_seen_at)}</td>
                           <td class="nowrap">${fmtTime(d.last_seen_at)}</td>
-                          <td class="right">${d.status === "active" ? `<button class="btn btn-sm" data-free="${esc(d.device_id)}" type="button">解绑</button>` : ""}</td>
+                          <td class="nowrap">${d.released_at ? fmtTime(d.released_at) : "—"}</td>
+                          <td class="right">
+                            <div class="btn-row" style="justify-content:flex-end">
+                              ${d.status === "active" ? `<button class="btn btn-sm" data-free="${esc(d.device_id)}" type="button">解绑</button>` : `<button class="btn btn-sm" data-rebind="${esc(d.device_id)}" type="button">重新绑定</button>`}
+                            </div>
+                          </td>
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(6, "客户端还没激活过")
+                  : emptyRow(8, "客户端还没激活过")
               }
             </tbody>
           </table>
@@ -1200,6 +1207,7 @@ async function openLicenseDetail(id) {
         </div>
         <div class="form-actions">
           <button class="btn btn-sm" data-suspend type="button">${l.status === "suspended" ? "恢复授权" : "暂停授权"}</button>
+          <button class="btn btn-sm" data-bind-device type="button">绑定新设备</button>
           <button class="btn btn-sm" data-reset-devices type="button">重置全部设备</button>
           <button class="btn btn-sm" data-rotate type="button">重置许可证密钥</button>
           <button class="btn btn-sm" data-reissue type="button">重新签发许可证文件</button>
@@ -1329,6 +1337,56 @@ async function openLicenseDetail(id) {
         await act(() => apiPost(`/admin/api/licenses/${id}/revoke`, { reason: "后台手动吊销" }), "已吊销");
       };
 
+      $("[data-bind-device]", modal).onclick = () => {
+        openModal({
+          title: "绑定新设备",
+          body: `
+            <div class="note">绑定后到期时间沿用本授权（从首次激活起算），<strong>不会被重置</strong>；若席位已满请先解绑其它设备。</div>
+            <div class="form-grid">
+              <label class="field"><span>设备标识</span><input name="device_id" placeholder="PC-OFFICE-01" /></label>
+              <label class="field"><span>设备名称</span><input name="device_name" placeholder="办公室主机" /></label>
+              <label class="field"><span>平台</span><input name="platform" placeholder="Windows 11" /></label>
+            </div>`,
+          footer: `<button class="btn" data-c type="button">取消</button><button class="btn btn-primary" data-ok type="button">绑定</button>`,
+          onMount(m, closeInner) {
+            $("[data-c]", m).onclick = closeInner;
+            $("[data-ok]", m).onclick = async () => {
+              const deviceId = $('[name="device_id"]', m).value.trim();
+              if (!deviceId) {
+                toast("请填写设备标识", "error");
+                return;
+              }
+              try {
+                const res = await apiPost(`/admin/api/licenses/${id}/devices`, {
+                  device_id: deviceId,
+                  device_name: $('[name="device_name"]', m).value.trim(),
+                  platform: $('[name="platform"]', m).value.trim(),
+                });
+                closeInner();
+                toast(`已绑定，到期时间不变：${fmtDay(res.expires_at)}`, "ok");
+                await refresh();
+              } catch (err) {
+                toast(err.message, "error");
+              }
+            };
+          },
+        });
+      };
+
+      $$("[data-rebind]", modal).forEach((btn) => {
+        btn.onclick = async () => {
+          const deviceId = btn.dataset.rebind;
+          if (!(await confirmDialog(`把设备 ${deviceId} 重新绑定到本授权？到期时间不变。`, { okText: "重新绑定" }))) return;
+          try {
+            const res = await apiPost(`/admin/api/licenses/${id}/devices`, { device_id: deviceId });
+            toast(`已重新绑定，到期时间仍为 ${fmtDay(res.expires_at)}`, "ok");
+            await refresh();
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        };
+      });
+
       $$("[data-free]", modal).forEach((btn) => {
         btn.onclick = async () => {
           if (!(await confirmDialog(`解绑设备 ${btn.dataset.free}？`, { okText: "解绑" }))) return;
@@ -1426,6 +1484,7 @@ async function renderCustomers(root) {
             <option value="disabled" ${filters.status === "disabled" ? "selected" : ""}>已停用</option>
           </select>
           <input data-f-q placeholder="搜索邮箱 / 姓名 / 公司 / 电话" value="${esc(filters.q)}" />
+          <button class="btn btn-primary btn-sm" data-new-customer type="button">+ 新增客户</button>
         </div>
       </div>
       <div class="card-body tight">
@@ -1447,7 +1506,12 @@ async function renderCustomers(root) {
                           <td class="nowrap">${fmtDay(c.last_expires_at)}</td>
                           <td>${c.status === "active" ? '<span class="badge badge-ok">正常</span>' : '<span class="badge badge-warn">已停用</span>'}</td>
                           <td class="nowrap">${fmtDay(c.created_at)}</td>
-                          <td class="right"><button class="btn btn-sm" data-customer="${esc(c.id)}" type="button">详情</button></td>
+                          <td class="right">
+                            <div class="btn-row" style="justify-content:flex-end">
+                              <button class="btn btn-sm" data-adj="${esc(c.id)}" type="button">调整到期</button>
+                              <button class="btn btn-sm" data-customer="${esc(c.id)}" type="button">详情</button>
+                            </div>
+                          </td>
                         </tr>`,
                       )
                       .join("")
@@ -1471,11 +1535,120 @@ async function renderCustomers(root) {
       navigate("customers", true);
     }
   };
+  $("[data-new-customer]", root).onclick = () => customerForm();
+  $$("[data-adj]", root).forEach((btn) => {
+    btn.onclick = () => customerExpiryForm(btn.dataset.adj);
+  });
   $$("[data-customer]", root).forEach((btn) => {
     btn.onclick = () => openCustomerDetail(btn.dataset.customer);
   });
 
   $(".card", root).appendChild(pageNav(pageKey, list.total, 20, () => navigate("customers", true)));
+}
+
+function customerForm() {
+  openModal({
+    title: "新增客户",
+    body: `
+      <div class="form-grid">
+        <label class="field"><span>邮箱（用于登录，留空 = 仅后台代管）</span><input name="email" type="email" placeholder="buyer@example.com" /></label>
+        <label class="field"><span>登录密码（≥8 位，留空 = 不能登录）</span><input name="password" type="password" autocomplete="new-password" /></label>
+        <label class="field"><span>姓名</span><input name="name" placeholder="张三" /></label>
+        <label class="field"><span>公司</span><input name="company" /></label>
+        <label class="field"><span>电话</span><input name="phone" /></label>
+        <label class="field full"><span>备注</span><textarea name="note"></textarea></label>
+      </div>
+      <div class="note">留空邮箱可创建「匿名客户」，适用于线下客户由你代为开通授权；之后可用「重置密码」或补录邮箱。</div>`,
+    footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">创建</button>`,
+    onMount(modal, close) {
+      $("[data-cancel]", modal).onclick = close;
+      $("[data-save]", modal).onclick = async () => {
+        const payload = {
+          email: $('[name="email"]', modal).value.trim(),
+          password: $('[name="password"]', modal).value,
+          name: $('[name="name"]', modal).value.trim(),
+          company: $('[name="company"]', modal).value.trim(),
+          phone: $('[name="phone"]', modal).value.trim(),
+          note: $('[name="note"]', modal).value.trim(),
+        };
+        if (!payload.email && !payload.name) {
+          toast("请至少填写邮箱或姓名", "error");
+          return;
+        }
+        try {
+          const res = await apiPost("/admin/api/customers", payload);
+          close();
+          toast("客户已创建", "ok");
+          navigate("customers", true);
+          openCustomerDetail(res.customer.id);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    },
+  });
+}
+
+async function customerExpiryForm(customerId) {
+  const data = await apiGet(`/admin/api/customers/${customerId}`);
+  const c = data.customer;
+  const licenses = data.licenses || [];
+  if (!licenses.length) {
+    toast("该客户还没有授权，请先在「授权」页手动开通", "error");
+    return;
+  }
+
+  openModal({
+    title: `调整到期：${c.email ?? c.name ?? "客户"}`,
+    body: `
+      <div class="note">该客户有 ${licenses.length} 个授权。调整后客户端下次心跳即可拿到新到期时间（心跳周期 ${state.config?.heartbeat_interval_hours ?? 24} 小时）。</div>
+      <div class="form-grid">
+        <label class="field"><span>按天调整（正数延长 / 负数缩短）</span><input name="days" type="number" value="30" /></label>
+        <label class="field"><span>或直接设定到期时间</span><input name="expires_at" type="datetime-local" /></label>
+      </div>
+      <div class="field"><span>作用范围</span>
+        <div class="checkbox-list" data-lic>
+          ${licenses
+            .map(
+              (l) => `<label><input type="checkbox" value="${esc(l.id)}" checked />
+                <span>${esc(l.license_no)} · ${esc(l.product_code)} · 到期 ${fmtDay(l.expires_at)}${l.kind === "trial" ? " · 试用" : ""}</span></label>`,
+            )
+            .join("")}
+        </div>
+      </div>
+      <div class="note warn">「按天调整」和「直接设定时间」二选一；填了日期时以日期为准。</div>`,
+    footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">应用</button>`,
+    onMount(modal, close) {
+      $("[data-cancel]", modal).onclick = close;
+      $("[data-save]", modal).onclick = async () => {
+        const ids = $$("[data-lic] input:checked", modal).map((i) => i.value);
+        if (!ids.length) {
+          toast("请至少选择一个授权", "error");
+          return;
+        }
+        const dt = $('[name="expires_at"]', modal).value;
+        const payload = { license_ids: ids };
+        if (dt) {
+          payload.expires_at = new Date(dt).toISOString();
+        } else {
+          const days = Number($('[name="days"]', modal).value);
+          if (!Number.isFinite(days) || days === 0) {
+            toast("请填写调整天数，或选择到期时间", "error");
+            return;
+          }
+          payload.days = days;
+        }
+        try {
+          const res = await apiPost(`/admin/api/customers/${customerId}/adjust-expiry`, payload);
+          close();
+          toast(`已调整 ${res.updated} 个授权`, "ok");
+          navigate("customers", true);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    },
+  });
 }
 
 async function openCustomerDetail(id) {
@@ -1607,6 +1780,11 @@ const AUDIT_LABEL = {
   "license.rotate_key": "重置许可证密钥",
   "license.reissue": "重新签发许可证",
   "license.release_device": "解绑设备",
+  "license.bind_device": "绑定 / 重绑设备",
+  "license.trial_start": "开通试用",
+  "customer.create": "新增客户",
+  "customer.adjust_expiry": "调整客户到期",
+  "trial.config_update": "修改试用配置",
 };
 
 async function renderAudit(root) {
@@ -1664,11 +1842,16 @@ async function renderAudit(root) {
 /* ============================ 设置 ============================ */
 
 async function renderSettings(root) {
-  const key = state.signingKey ?? (await apiGet("/admin/api/signing-key"));
+  const [key, me, admins, trial, productsRes] = await Promise.all([
+    state.signingKey ? Promise.resolve(state.signingKey) : apiGet("/admin/api/signing-key"),
+    apiGet("/admin/api/auth/me"),
+    apiGet("/admin/api/admins"),
+    apiGet("/admin/api/settings/trial"),
+    apiGet("/admin/api/products"),
+  ]);
   state.signingKey = key;
-  const me = await apiGet("/admin/api/auth/me");
   state.config = me.config;
-  const admins = await apiGet("/admin/api/admins");
+  const products = productsRes.items;
 
   root.innerHTML = `
     <div class="card">
@@ -1692,6 +1875,33 @@ async function renderSettings(root) {
           <dt>心跳周期</dt><dd>${state.config.heartbeat_interval_hours} 小时（建议值，客户端按此频率续期）</dd>
           <dt>离线宽限</dt><dd>${state.config.offline_grace_days} 天（许可证文件离线可用上限）</dd>
           <dt>心跳异常阈值</dt><dd>${state.config.heartbeat_stale_hours} 小时未心跳视为异常</dd>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>试用配置</h3>
+        <span class="muted small">试用授权 ${trial.summary.total} 个 · 有效 ${trial.summary.active} 个 · 试用后转正式 ${trial.summary.converted} 个客户</span></div>
+      <div class="card-body">
+        <div class="form-grid">
+          <label class="field"><span>允许客户自助试用</span>
+            <select name="trial_enabled">
+              <option value="1" ${trial.config.enabled ? "selected" : ""}>开启</option>
+              <option value="0" ${!trial.config.enabled ? "selected" : ""}>关闭</option>
+            </select></label>
+          <label class="field"><span>试用天数</span><input name="trial_days" type="number" min="1" max="365" value="${trial.config.days}" /></label>
+          <label class="field"><span>试用席位数</span><input name="trial_seats" type="number" min="1" max="100" value="${trial.config.seats}" /></label>
+          <label class="field"><span>每客户可试用次数</span><input name="trial_max" type="number" min="1" max="20" value="${trial.config.max_per_customer}" /></label>
+          <label class="field"><span>限定产品（留空 = 任意在售产品）</span>
+            <select name="trial_product">
+              <option value="">不限定</option>
+              ${products.map((p) => `<option value="${esc(p.id)}" ${trial.config.product_id === p.id ? "selected" : ""}>${esc(p.name)}（${esc(p.code)}）</option>`).join("")}
+            </select></label>
+          <label class="field"><span>离线宽限（天，留空 = 用全局）</span><input name="trial_grace" type="number" min="0" max="365" value="${trial.config.offline_grace_days ?? ""}" /></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" data-save-trial type="button">保存试用配置</button>
+          <span class="muted small">客户在客户端登录后即可自助开通试用；试用授权同样能在「授权」页延长 / 吊销</span>
         </div>
       </div>
     </div>
@@ -1732,6 +1942,25 @@ async function renderSettings(root) {
     </div>`;
 
   $("[data-copy-key]", root).onclick = () => copyText(key.public_key_pem);
+
+  $("[data-save-trial]", root).onclick = async () => {
+    const graceRaw = $('[name="trial_grace"]', root).value.trim();
+    const payload = {
+      enabled: $('[name="trial_enabled"]', root).value === "1",
+      days: Number($('[name="trial_days"]', root).value),
+      seats: Number($('[name="trial_seats"]', root).value),
+      max_per_customer: Number($('[name="trial_max"]', root).value),
+      product_id: $('[name="trial_product"]', root).value || null,
+      offline_grace_days: graceRaw === "" ? null : Number(graceRaw),
+    };
+    try {
+      await apiPatch("/admin/api/settings/trial", payload);
+      toast("试用配置已保存", "ok");
+      navigate("settings", true);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  };
 
   $("[data-add-admin]", root).onclick = () => {
     openModal({

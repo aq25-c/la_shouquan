@@ -38,7 +38,8 @@ import {
   findCustomerById,
   touchCustomerLogin,
 } from "../store/accounts.ts";
-import { findProductById, moduleCodesFor } from "../store/catalog.ts";
+import { findProductByCode, findProductById, listModules, listProducts, moduleCodesFor } from "../store/catalog.ts";
+import { canStartTrial, getTrialConfig, trialCountFor } from "../store/trials.ts";
 import {
   activeDeviceCount,
   effectiveStatus,
@@ -167,6 +168,125 @@ export function registerClientRoutes(): void {
         ...licenseView(row),
         devices: listDevices(row.id).filter((d) => d.status === "active"),
       })),
+    });
+  });
+
+  /* ---------------------------- 试用 ---------------------------- */
+
+  /** 试用配置（公开）：客户端可据此决定是否引导用户自助试用 */
+  get("/api/v1/trial/info", () => {
+    const trialConfig = getTrialConfig();
+    const product = trialConfig.product_id ? findProductById(trialConfig.product_id) : null;
+    return ok({
+      enabled: trialConfig.enabled,
+      days: trialConfig.days,
+      seats: trialConfig.seats,
+      max_per_customer: trialConfig.max_per_customer,
+      product: product ? { code: product.code, name: product.name } : null,
+      module_codes: trialConfig.module_ids.length ? moduleCodesFor(trialConfig.module_ids) : [],
+    });
+  });
+
+  /** 我的试用情况（需客户登录） */
+  get("/api/v1/trial/status", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const trialConfig = getTrialConfig();
+    const items = listProducts()
+      .filter((p) => p.status === "active")
+      .map((p) => {
+        const used = trialCountFor(customer.id, p.id);
+        return {
+          product: { code: p.code, name: p.name },
+          used,
+          remaining: Math.max(0, trialConfig.max_per_customer - used),
+        };
+      });
+    return ok({
+      enabled: trialConfig.enabled,
+      days: trialConfig.days,
+      seats: trialConfig.seats,
+      max_per_customer: trialConfig.max_per_customer,
+      items,
+    });
+  });
+
+  /** 自助开通试用：按试用配置生成 trial 授权并绑定当前设备 */
+  post("/api/v1/trial/start", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const deviceId = needStr(ctx, "device_id", 190);
+    const deviceName = bodyStr(ctx, "device_name", { max: 190 });
+    const platform = bodyStr(ctx, "platform", { max: 64 });
+    const productCode = bodyStr(ctx, "product_code", { max: 64 });
+
+    const trialConfig = getTrialConfig();
+
+    let product = trialConfig.product_id ? findProductById(trialConfig.product_id) : null;
+    if (!product && productCode) product = findProductByCode(productCode);
+    if (!product) {
+      const candidate = listProducts().find((p) => p.status === "active");
+      product = candidate ? findProductById(candidate.id) : null;
+    }
+    if (!product) throw notFound("没有可试用的产品", "PRODUCT_NOT_FOUND");
+    if (product.status !== "active") throw conflict("该产品当前不开放试用", "PRODUCT_DISABLED");
+
+    const guard = canStartTrial(customer.id, product.id);
+    if (!guard.ok) throw locked(guard.message, guard.code);
+
+    // 试用模块：配置里指定则用它，否则给该产品全部模块
+    const moduleIds = trialConfig.module_ids.length
+      ? trialConfig.module_ids
+      : listModules(product.id).map((m) => m.id);
+
+    const licenseKey = generateLicenseKey();
+    const license = withTx(() =>
+      createLicense({
+        customerId: customer.id,
+        productId: product.id,
+        cdkId: null,
+        moduleIds,
+        seats: trialConfig.seats,
+        days: trialConfig.days,
+        offlineGraceDays: trialConfig.offline_grace_days ?? undefined,
+        keyHash: sha256hex(licenseKey),
+        note: `试用 ${trialConfig.days} 天`,
+        kind: "trial",
+        source: "trial",
+      }),
+    );
+
+    upsertDevice({ licenseId: license.id, deviceId, deviceName, platform, ip: ctx.ip });
+
+    const issued = buildLicenseFile({
+      license,
+      productCode: product.code,
+      deviceId,
+      keys: signingKeys(),
+    });
+
+    audit({
+      actorType: "customer",
+      actorId: customer.id,
+      actorLabel: customer.email,
+      action: "license.trial_start",
+      targetType: "license",
+      targetId: license.id,
+      ip: ctx.ip,
+      detail: { product: product.code, days: trialConfig.days, device_id: deviceId },
+    });
+
+    return created({
+      license: licenseView(license),
+      license_key: licenseKey,
+      license_file: issued.license_file,
+      license_payload: issued.payload,
+      offline_expires_at: issued.offline_expires_at,
+      starts_at: license.starts_at,
+      expires_at: license.expires_at,
+      days_left: daysLeft(license.expires_at),
+      product: { code: product.code, name: product.name },
+      module_codes: issued.payload.mod,
+      heartbeat_interval_hours: config.heartbeatIntervalHours,
+      server_time: new Date().toISOString(),
     });
   });
 

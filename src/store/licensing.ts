@@ -12,6 +12,9 @@ export type CdkListItem = CdkRow & {
   product_name: string;
   customer_email: string | null;
   license_no: string | null;
+  /** 激活后产生的授权到期时间与类型（未激活为 null） */
+  license_expires_at: string | null;
+  license_kind: string | null;
   /** 以下字段来自所属 CDK 批次（v2 渠道 / 单价） */
   channel_id: string | null;
   unit_price: number;
@@ -22,6 +25,7 @@ export type CdkListItem = CdkRow & {
 function cdkSelect(): string {
   return `SELECT k.*, p.code AS product_code, p.name AS product_name,
                  c.email AS customer_email, l.license_no AS license_no,
+                 l.expires_at AS license_expires_at, l.kind AS license_kind,
                  b.channel_id AS channel_id, b.unit_price AS unit_price,
                  ch.code AS channel_code, ch.name AS channel_name
           FROM cdks k
@@ -270,6 +274,8 @@ export function listLicenses(opts: {
   customerId?: string | null;
   /** v2：按渠道筛选；传 "__none__" 表示只看无渠道（直销）的授权 */
   channelId?: string | null;
+  /** v3：按授权类型筛选（paid / trial） */
+  kind?: string | null;
   expiringWithinDays?: number | null;
   page: number;
   pageSize: number;
@@ -300,6 +306,10 @@ export function listLicenses(opts: {
     outer.push("channel_id = ?");
     params.push(opts.channelId);
   }
+  if (opts.kind) {
+    outer.push("kind = ?");
+    params.push(opts.kind);
+  }
   if (opts.expiringWithinDays !== null && opts.expiringWithinDays !== undefined) {
     outer.push("expires_at > ? AND expires_at <= ?");
     params.push(now, new Date(Date.now() + opts.expiringWithinDays * DAY).toISOString());
@@ -329,6 +339,10 @@ export function createLicense(input: {
   channelId?: string | null;
   /** v2：结算单价，单位「分」 */
   unitPrice?: number;
+  /** v3：授权类型，默认正式 */
+  kind?: "paid" | "trial";
+  /** v3：开通来源（cdk / manual / trial），默认 cdk */
+  source?: string;
 }): LicenseRow {
   const id = newId("lic");
   const at = nowIso();
@@ -338,8 +352,8 @@ export function createLicense(input: {
     .prepare(
       `INSERT INTO licenses
          (id, license_no, customer_id, product_id, cdk_id, module_ids, seats, status, starts_at, expires_at,
-          offline_grace_days, key_hash, note, created_at, updated_at, channel_id, unit_price)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          offline_grace_days, key_hash, note, created_at, updated_at, channel_id, unit_price, kind, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -358,6 +372,8 @@ export function createLicense(input: {
       at,
       nz(input.channelId),
       Math.max(0, Math.trunc(input.unitPrice ?? 0)),
+      input.kind ?? "paid",
+      input.source ?? "cdk",
     );
   return db().prepare("SELECT * FROM licenses WHERE id = ?").get(id) as unknown as LicenseRow;
 }
@@ -398,6 +414,35 @@ export function extendLicense(id: string, days: number, fromNow = false): Licens
   const current = toMs(row.expires_at);
   const base = fromNow || current <= Date.now() ? Date.now() : current;
   return updateLicense(id, { expires_at: new Date(base + days * DAY).toISOString() });
+}
+
+/**
+ * 按客户批量调整到期时间（后台「客户列表 → 调整到期」用）。
+ * - days：在原到期时间上加减（已过期则从当前时间起算）
+ * - expiresAt：直接设为指定时间
+ * - licenseIds：只调整指定授权（省略 = 该客户全部未吊销授权）
+ */
+export function adjustCustomerExpiry(
+  customerId: string,
+  opts: { days?: number; expiresAt?: string; licenseIds?: string[] },
+): { updated: number; items: LicenseRow[] } {
+  const rows = db()
+    .prepare("SELECT * FROM licenses WHERE customer_id = ? AND status != 'revoked'")
+    .all(customerId) as unknown as LicenseRow[];
+
+  const wanted = opts.licenseIds && opts.licenseIds.length ? new Set(opts.licenseIds) : null;
+  const targets = wanted ? rows.filter((r) => wanted.has(r.id)) : rows;
+
+  const items: LicenseRow[] = [];
+  for (const row of targets) {
+    const updated = opts.expiresAt
+      ? updateLicense(row.id, { expires_at: opts.expiresAt })
+      : typeof opts.days === "number"
+        ? extendLicense(row.id, opts.days)
+        : null;
+    if (updated) items.push(updated);
+  }
+  return { updated: items.length, items };
 }
 
 export function revokeLicense(id: string, reason: string | null): LicenseRow | null {

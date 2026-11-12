@@ -39,7 +39,7 @@ import { currentSession } from "../auth.ts";
 import { buildLicenseFile, licenseView } from "../issuer.ts";
 import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
-import { audit, listAudit } from "../store/audit.ts";
+import { audit, listAudit, listAuditByTarget } from "../store/audit.ts";
 import {
   channelReferences,
   channelSummary,
@@ -52,6 +52,7 @@ import {
 } from "../store/channels.ts";
 import {
   createAdmin,
+  createCustomer,
   findAdminByEmail,
   findCustomerByEmail,
   findCustomerById,
@@ -80,11 +81,15 @@ import {
   updateProduct,
 } from "../store/catalog.ts";
 import {
+  activeDeviceCount,
+  adjustCustomerExpiry,
   createCdkBatch,
   createLicense,
+  effectiveStatus,
   extendLicense,
   expiringLicenses,
   findCdkById,
+  findDevice,
   findLicenseById,
   listBatches,
   listCdks,
@@ -101,6 +106,8 @@ import {
   updateLicense,
   upsertDevice,
 } from "../store/licensing.ts";
+import { getTrialConfig, setTrialConfig, trialSummary } from "../store/trials.ts";
+import type { TrialConfig } from "../store/trials.ts";
 import type { LicenseRow } from "../types.ts";
 import { DAY, isEmail, normalizeEmail, parseJson, toMs } from "../util.ts";
 
@@ -669,6 +676,42 @@ export function registerAdminRoutes(): void {
 
   /* ---------------------------- 客户 ---------------------------- */
 
+  /** 后台手动新增客户（不依赖客户端注册） */
+  post(`${P}/customers`, async (ctx) => {
+    const admin = requireAdmin(ctx);
+    const emailInput = bodyStr(ctx, "email", 190);
+    const password = bodyStr(ctx, "password", 200);
+    const name = bodyStr(ctx, "name", { max: 120 });
+    const company = bodyStr(ctx, "company", { max: 190 });
+    const phone = bodyStr(ctx, "phone", { max: 40 });
+    const note = bodyStr(ctx, "note", { max: 1000 });
+
+    const email = emailInput ? normalizeEmail(emailInput) : null;
+    if (email && !isEmail(email)) throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
+    if (email && findCustomerByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
+    if (password && password.length < 8) throw badRequest("密码至少 8 位", "WEAK_PASSWORD");
+
+    const customer = createCustomer({
+      email,
+      passwordHash: password ? await hashPassword(password) : null,
+      name,
+      company,
+      phone,
+      note,
+    });
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "customer.create",
+      targetType: "customer",
+      targetId: customer.id,
+      ip: ctx.ip,
+      detail: { email, has_password: Boolean(password) },
+    });
+    return created({ customer: { ...customer, password_hash: undefined } });
+  });
+
   get(`${P}/customers`, (ctx) => {
     requireAdmin(ctx);
     const { page, pageSize } = paging(ctx);
@@ -745,6 +788,48 @@ export function registerAdminRoutes(): void {
     return ok({ password, note: "临时密码只显示一次，请转交客户后让其修改" });
   });
 
+  /** 按客户批量调整到期时间（可只调整指定授权） */
+  post(`${P}/customers/:id/adjust-expiry`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const customer = findCustomerById(id);
+    if (!customer) throw notFound("客户不存在", "CUSTOMER_NOT_FOUND");
+
+    const days = bodyInt(ctx, "days", { min: -3650, max: 3650 });
+    const expiresAt = isoOrNull(ctx, "expires_at");
+    const licenseIds = bodyStrArray(ctx, "license_ids");
+    if (days === null && !expiresAt) {
+      throw badRequest("请提供 days（按天调整）或 expires_at（指定到期时间）", "MISSING_FIELD");
+    }
+
+    const result = withTx(() =>
+      adjustCustomerExpiry(id, {
+        days: days ?? undefined,
+        expiresAt: expiresAt ?? undefined,
+        licenseIds: licenseIds ?? undefined,
+      }),
+    );
+
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "customer.adjust_expiry",
+      targetType: "customer",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { days, expires_at: expiresAt, license_ids: licenseIds, updated: result.updated },
+    });
+
+    return ok({
+      updated: result.updated,
+      licenses: result.items.map((row) => ({
+        ...licenseView(row),
+        module_ids: moduleIdsOf(row),
+      })),
+    });
+  });
+
   /* ---------------------------- 授权 ---------------------------- */
 
   get(`${P}/licenses`, (ctx) => {
@@ -757,6 +842,7 @@ export function registerAdminRoutes(): void {
       productId: q(ctx, "product_id"),
       customerId: q(ctx, "customer_id"),
       channelId: q(ctx, "channel_id"),
+      kind: q(ctx, "kind"),
       expiringWithinDays: expiring === null ? null : Number.parseInt(expiring, 10),
       page,
       pageSize,
@@ -1035,6 +1121,142 @@ export function registerAdminRoutes(): void {
       license_key: licenseKey,
       days_left: Math.max(0, Math.floor((toMs(license.expires_at) - Date.now() + 60_000) / DAY)),
     });
+  });
+
+  /** 后台把新设备绑定到已有授权（换机/重装）：到期时间沿用首次激活，不重置 */
+  post(`${P}/licenses/:id/devices`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const license = findLicenseById(id);
+    if (!license) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+
+    const deviceId = needStr(ctx, "device_id", 190);
+    const deviceName = bodyStr(ctx, "device_name", { max: 190 });
+    const platform = bodyStr(ctx, "platform", { max: 64 });
+
+    const eff = effectiveStatus(license);
+    if (eff === "revoked") throw locked("授权已被吊销，无法绑定设备", "LICENSE_REVOKED");
+    if (eff === "expired") throw locked("授权已到期，续费后才能绑定设备", "LICENSE_EXPIRED");
+
+    const existing = findDevice(id, deviceId);
+    if (!existing || existing.status !== "active") {
+      const active = activeDeviceCount(id);
+      if (active >= license.seats) {
+        throw conflict("席位已满，请先解绑其它设备或扩容", "SEAT_LIMIT", {
+          seats: license.seats,
+          active_devices: active,
+        });
+      }
+    }
+
+    const device = upsertDevice({ licenseId: id, deviceId, deviceName, platform, ip: ctx.ip });
+    // 关键：只绑定设备，绝不改动 starts_at / expires_at —— 到期时间从首次激活起算
+    const fresh = findLicenseById(id) as LicenseRow;
+    const issued = buildLicenseFile({
+      license: fresh,
+      productCode: license.product_code,
+      deviceId,
+      keys: signingKeys(),
+    });
+
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "license.bind_device",
+      targetType: "license",
+      targetId: id,
+      ip: ctx.ip,
+      detail: {
+        device_id: deviceId,
+        rebind: Boolean(existing),
+        expires_at: fresh.expires_at,
+        not_reset: true,
+      },
+    });
+
+    return ok({
+      device,
+      license_file: issued.license_file,
+      offline_expires_at: issued.offline_expires_at,
+      starts_at: fresh.starts_at,
+      expires_at: fresh.expires_at,
+      seats: fresh.seats,
+      active_devices: activeDeviceCount(id),
+    });
+  });
+
+  /** 授权的设备绑定/解绑历史 + 相关审计记录 */
+  get(`${P}/licenses/:id/events`, (ctx) => {
+    requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    if (!findLicenseById(id)) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    return ok({
+      devices: listDevices(id),
+      audits: listAuditByTarget(id, 100),
+    });
+  });
+
+  /* ---------------------------- 试用配置 ---------------------------- */
+
+  get(`${P}/settings/trial`, (ctx) => {
+    requireAdmin(ctx);
+    return ok({ config: getTrialConfig(), summary: trialSummary() });
+  });
+
+  patch(`${P}/settings/trial`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const patchData: Partial<TrialConfig> = {};
+
+    if (ctx.body.enabled !== undefined) patchData.enabled = ctx.body.enabled === true;
+
+    const days = bodyInt(ctx, "days", { min: 1, max: 365 });
+    if (days !== null) patchData.days = days;
+
+    const seats = bodyInt(ctx, "seats", { min: 1, max: 100 });
+    if (seats !== null) patchData.seats = seats;
+
+    const maxPer = bodyInt(ctx, "max_per_customer", { min: 1, max: 20 });
+    if (maxPer !== null) patchData.max_per_customer = maxPer;
+
+    // offline_grace_days 传 null = 取消覆盖（回落到全局默认）
+    if (ctx.body.offline_grace_days === null) {
+      patchData.offline_grace_days = null;
+    } else {
+      const graceDays = bodyInt(ctx, "offline_grace_days", { min: 0, max: 365 });
+      if (graceDays !== null) patchData.offline_grace_days = graceDays;
+    }
+
+    // product_id 传 null / 空字符串 = 取消产品限定（允许试用任意在售产品）
+    if (ctx.body.product_id !== undefined) {
+      const raw = bodyStr(ctx, "product_id", 64);
+      if (raw) {
+        const product = findProductById(raw);
+        if (!product) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
+        patchData.product_id = product.id;
+      } else {
+        patchData.product_id = null;
+      }
+    }
+
+    const moduleIds = bodyStrArray(ctx, "module_ids");
+    if (moduleIds) {
+      if (patchData.product_id) validateModuleIds(patchData.product_id, moduleIds);
+      patchData.module_ids = moduleIds;
+    }
+
+    const updated = setTrialConfig(patchData);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "trial.config_update",
+      targetType: "settings",
+      targetId: "trial",
+      ip: ctx.ip,
+      detail: patchData,
+    });
+    return ok({ config: updated });
   });
 
   /* ---------------------------- 审计与密钥 ---------------------------- */

@@ -45,8 +45,7 @@ export function listAudit(opts: {
   action?: string | null;
   actorType?: string | null;
   q?: string | null;
-}): { items: AuditRow[]; total: number } {
-  const where: string[] = [];
+}): { items: AuditRow[]; total: number } {  const where: string[] = [];
   const params: (string | number)[] = [];
   if (opts.action) {
     where.push("action = ?");
@@ -69,4 +68,11 @@ export function listAudit(opts: {
     .prepare(`SELECT COUNT(*) AS n FROM audit_logs ${clause}`)
     .get(...params) as { n: number } | undefined;
   return { items, total: Number(totalRow?.n ?? 0) };
+}
+
+/** 某个对象（授权/客户等）的审计记录，用于展示「绑定 / 解绑历史」 */
+export function listAuditByTarget(targetId: string, limit = 100): AuditRow[] {
+  return db()
+    .prepare("SELECT * FROM audit_logs WHERE target_id = ? ORDER BY at DESC, rowid DESC LIMIT ?")
+    .all(targetId, limit) as unknown as AuditRow[];
 }

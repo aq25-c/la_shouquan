@@ -1,0 +1,119 @@
+/** 试用（trial）：全局试用配置 + 每客户试用次数限制。配置存放在 settings 表。 */
+import { getSetting, setSetting, scalar } from "../db.ts";
+import { parseJson, toJson } from "../util.ts";
+
+export type TrialConfig = {
+  /** 是否允许客户自助申请试用 */
+  enabled: boolean;
+  /** 试用授权天数 */
+  days: number;
+  /** 试用席位数（可绑定设备数） */
+  seats: number;
+  /** 限定只能试用该产品；null = 不限制（申请时需传 product_id） */
+  product_id: string | null;
+  /** 试用包含的模块；空数组 = 该产品全部模块 */
+  module_ids: string[];
+  /** 同一客户最多可试用几次（按产品分别计） */
+  max_per_customer: number;
+  /** 试用离线宽限天数；null = 用全局默认 */
+  offline_grace_days: number | null;
+};
+
+const KEYS = {
+  enabled: "trial.enabled",
+  days: "trial.days",
+  seats: "trial.seats",
+  productId: "trial.product_id",
+  moduleIds: "trial.module_ids",
+  maxPerCustomer: "trial.max_per_customer",
+  graceDays: "trial.offline_grace_days",
+} as const;
+
+const DEFAULTS: TrialConfig = {
+  enabled: true,
+  days: 14,
+  seats: 1,
+  product_id: null,
+  module_ids: [],
+  max_per_customer: 1,
+  offline_grace_days: null,
+};
+
+function intSetting(key: string, fallback: number): number {
+  const raw = getSetting(key);
+  if (raw === null) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function getTrialConfig(): TrialConfig {
+  const enabledRaw = getSetting(KEYS.enabled);
+  const productRaw = getSetting(KEYS.productId);
+  const graceRaw = getSetting(KEYS.graceDays);
+  return {
+    enabled: enabledRaw === null ? DEFAULTS.enabled : enabledRaw === "1",
+    days: intSetting(KEYS.days, DEFAULTS.days),
+    seats: intSetting(KEYS.seats, DEFAULTS.seats),
+    product_id: productRaw && productRaw !== "" ? productRaw : null,
+    module_ids: parseJson<string[]>(getSetting(KEYS.moduleIds), []),
+    max_per_customer: intSetting(KEYS.maxPerCustomer, DEFAULTS.max_per_customer),
+    offline_grace_days: graceRaw && graceRaw !== "" ? Number.parseInt(graceRaw, 10) : null,
+  };
+}
+
+export function setTrialConfig(patch: Partial<TrialConfig>): TrialConfig {
+  if (patch.enabled !== undefined) setSetting(KEYS.enabled, patch.enabled ? "1" : "0");
+  if (patch.days !== undefined) setSetting(KEYS.days, String(patch.days));
+  if (patch.seats !== undefined) setSetting(KEYS.seats, String(patch.seats));
+  if (patch.product_id !== undefined) setSetting(KEYS.productId, patch.product_id ?? "");
+  if (patch.module_ids !== undefined) setSetting(KEYS.moduleIds, toJson(patch.module_ids));
+  if (patch.max_per_customer !== undefined) {
+    setSetting(KEYS.maxPerCustomer, String(patch.max_per_customer));
+  }
+  if (patch.offline_grace_days !== undefined) {
+    setSetting(KEYS.graceDays, patch.offline_grace_days === null ? "" : String(patch.offline_grace_days));
+  }
+  return getTrialConfig();
+}
+
+/** 某客户在某产品上已经开通过的试用次数 */
+export function trialCountFor(customerId: string, productId: string): number {
+  return scalar(
+    "SELECT COUNT(*) AS n FROM licenses WHERE customer_id = ? AND product_id = ? AND kind = 'trial'",
+    customerId,
+    productId,
+  );
+}
+
+export type TrialGuard = { ok: true } | { ok: false; code: string; message: string };
+
+/** 校验客户是否可以发起试用 */
+export function canStartTrial(customerId: string, productId: string): TrialGuard {
+  const config = getTrialConfig();
+  if (!config.enabled) {
+    return { ok: false, code: "TRIAL_DISABLED", message: "当前未开放自助试用，请联系服务商" };
+  }
+  if (config.product_id && config.product_id !== productId) {
+    return { ok: false, code: "TRIAL_PRODUCT_LIMIT", message: "试用仅限指定产品" };
+  }
+  const used = trialCountFor(customerId, productId);
+  if (used >= config.max_per_customer) {
+    return {
+      ok: false,
+      code: "TRIAL_ALREADY_USED",
+      message: `该产品试用次数已用完（上限 ${config.max_per_customer} 次）`,
+    };
+  }
+  return { ok: true };
+}
+
+/** 试用概览（后台用） */
+export function trialSummary(): { total: number; active: number; converted: number } {
+  return {
+    total: scalar("SELECT COUNT(*) AS n FROM licenses WHERE kind = 'trial'"),
+    active: scalar(
+      "SELECT COUNT(*) AS n FROM licenses WHERE kind = 'trial' AND status = 'active' AND expires_at > datetime('now')",
+    ),
+    converted: scalar("SELECT COUNT(*) AS n FROM customers c WHERE EXISTS (SELECT 1 FROM licenses l WHERE l.customer_id = c.id AND l.kind = 'paid') AND EXISTS (SELECT 1 FROM licenses l WHERE l.customer_id = c.id AND l.kind = 'trial')"),
+  };
+}

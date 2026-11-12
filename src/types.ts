@@ -130,6 +130,10 @@ export type LicenseRow = {
   channel_id: string | null;
   /** v2：结算单价（单位：分），激活时从 CDK 批次继承 */
   unit_price: number;
+  /** v3：授权类型（paid = 正式 / trial = 试用） */
+  kind: "paid" | "trial";
+  /** v3：开通来源（cdk / manual / trial） */
+  source: string;
 };
 
 export type DeviceRow = {
