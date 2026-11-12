@@ -275,37 +275,34 @@ docker compose up -d
 
 ---
 
-## 7. CI/CD 自动构建推送
+## 7. CI/CD 自动构建推送（GHCR）
 
-仓库已内置工作流 **[.github/workflows/publish-image.yml](../.github/workflows/publish-image.yml)**：
+仓库已内置工作流 **[.github/workflows/publish-image.yml](../.github/workflows/publish-image.yml)**，推送到 **GitHub Container Registry（`ghcr.io`）**：
 
 ```
 推 v* tag（或 Actions 页面手动触发）
-   └─ job: test      → npm test（21 项端到端测试，不过就不出镜像）
-   └─ job: publish   → buildx 构建 → 推送阿里云 ACR 杭州个人版
+   └─ job: test      → npm test（端到端测试，不过就不出镜像）
+   └─ job: publish   → buildx 构建 → 推送 ghcr.io
                         tag: 1.0.0 + sha-abc1234
 ```
 
-### 7.1 只需要配 2 个 Secret
+### 7.1 不需要配置任何 Secret
 
-仓库 Settings → Secrets and variables → Actions → **Secrets**：
+工作流用的是 Actions 内置的 `GITHUB_TOKEN`，并在 job 里显式声明了权限：
 
-| 名称 | 值 |
-| --- | --- |
-| `ACR_USERNAME` | 阿里云账号全名（如 `xxx@example.com`） |
-| `ACR_PASSWORD` | ACR 控制台的**固定密码**（不是阿里云登录密码，这是 401 最常见原因） |
+```yaml
+permissions:
+  contents: read
+  packages: write
+```
 
-默认推送地址：`registry.cn-hangzhou.aliyuncs.com/myns/license-server:<版本>`。
+所以**开箱即用**——代码推上去就能跑，不用注册额外账号、不用配 Secret。
 
-不想改文件就用 **Variables** 覆盖默认值（可选）：
+唯一的可选配置是 Variable（Settings → Variables → Actions）：
 
 | Variable | 默认值 | 用途 |
 | --- | --- | --- |
-| `ACR_REGISTRY` | `registry.cn-hangzhou.aliyuncs.com` | 换地域 / 企业版实例域名 |
-| `ACR_REPO` | `myns/license-server` | 你的命名空间/仓库名 |
-| `BUILD_PLATFORMS` | `linux/amd64` | 服务器是 ARM 时改 `linux/amd64,linux/arm64` |
-
-> ⚠️ 推送前**必须先在 ACR 控制台创建好仓库** `myns/license-server`（ACR 不会在 push 时自动建仓库，否则报 `denied: requested access to the resource is denied`）。
+| `BUILD_PLATFORMS` | `linux/amd64` | 服务器是 ARM 时改成 `linux/amd64,linux/arm64` |
 
 ### 7.2 触发与产物
 
@@ -314,47 +311,71 @@ docker compose up -d
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-产物两个 tag：
+产物（把 `aq25-c/la_shouquan` 换成你的仓库）：
 
-- `.../license-server:1.0.0` —— 来自 tag 名（去掉 `v` 前缀），**服务器部署用这个**
-- `.../license-server:sha-abc1234` —— 对应提交，便于把线上镜像追溯回某次提交
+- `ghcr.io/aq25-c/la_shouquan:1.0.0` —— 来自 tag 名（去掉 `v` 前缀），**服务器部署用这个**
+- `ghcr.io/aq25-c/la_shouquan:sha-abc1234` —— 对应提交，便于追溯
 
-手动触发（workflow_dispatch）时没有 tag，版本号会自动生成为 `0.0.0-<日期时间>-<sha>`。
+手动触发（workflow_dispatch）时没有 tag，版本号自动生成为 `0.0.0-<日期时间>-<sha>`。
 
-### 7.3 服务器拉取
+### 7.3 镜像可见性（决定服务器要不要登录）
+
+首次推送后镜像出现在仓库的 **Packages** 里，可见性**默认跟随仓库**：
+
+| 仓库 | 镜像 | 服务器拉取 |
+| --- | --- | --- |
+| public | public | `docker pull` 直接拉，**无需登录** |
+| private | private | 先 `docker login ghcr.io` |
+
+私有包的登录方式（PAT 需勾 `read:packages`）：
 
 ```bash
-# 云内网提速：ECS 与 ACR 同地域时把域名换成 VPC 地址（不计公网流量）
-docker login --username=<阿里云账号> registry.cn-hangzhou.aliyuncs.com
-docker pull registry.cn-hangzhou.aliyuncs.com/myns/license-server:1.0.0
-docker compose pull && docker compose up -d
+echo <你的GitHub-PAT> | docker login ghcr.io -u <GitHub用户名> --password-stdin
+docker pull ghcr.io/aq25-c/la_shouquan:1.0.0
 ```
 
-### 7.4 如果不用 ACR（GHCR 备选）
+改可见性：仓库 → **Packages** → 选中镜像 → 右侧 **Package settings** → Change visibility。
 
-只想把镜像放 GitHub 上时，把工作流里的登录取证与 tags 换成：
+### 7.4 服务器拉取与部署
+
+```bash
+docker pull ghcr.io/aq25-c/la_shouquan:1.0.0
+
+# 把 docker-compose.yml 的 image: 改成这个地址，删掉 build: 段
+docker compose pull && docker compose up -d
+docker compose ps        # 期望 healthy
+```
+
+> **国内自建机房/物理机**拉 `ghcr.io` 可能偏慢或偶发超时（GHCR 没有官方国内加速）。两个办法：
+>
+> 1. 给 Docker daemon 配代理（`/etc/docker/daemon.json` 的 `proxies`，或 systemd 里设 `HTTP_PROXY`），走你的海外出口
+> 2. 干脆不用镜像仓库：服务器上 `git clone` 后 `docker compose up -d --build`，或用 `docker save`/`docker load` 离线搬运（见 [DEPLOY.md](DEPLOY.md) 第 4.1 节）
+
+### 7.5 想改回云厂商仓库（ACR / TCR / SWR）
+
+仓库地址集中在 `env:` 里，改两行 + 换登录凭据即可：
+
+```yaml
+env:
+  REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  IMAGE: <命名空间>/license-server
+```
 
 ```yaml
       - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.version }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 ```
 
-并把 publish job 的 `permissions` 改为包含 `packages: write`。国内服务器拉 GHCR 通常比 ACR 慢，所以默认方案用 ACR。
+这类仓库**不支持** `GITHUB_TOKEN`，必须另配账号密码。各家登录方式见[第 3 节](#3-各家镜像仓库的登录方式)。
 
-### 7.5 几点提醒
+### 7.6 几点提醒
 
-- 测试阶段跑在出镜像**之前**；本项目零第三方依赖，CI 里**不需要** `npm install`，所以 job 很快。
-- 私有仓库的 Actions 分钟数有限额，多架构构建（QEMU 模拟 arm64）消耗明显更多，非必需就用默认的单架构。
-- runner 在境外，推杭州 ACR 属跨境流量，偶发慢或超时是正常现象；频繁失败可改用阿里云云效在境内构建。
+- 测试阶段跑在出镜像**之前**；本项目零第三方依赖，CI 里**不需要** `npm install`，job 很快。
+- 私有仓库的 Actions 分钟数有限额；多架构构建（QEMU 模拟 arm64）消耗明显更多，非必需就用默认单架构。
+- `ghcr.io` 的镜像名必须**全小写**，`github.repository` 天然满足。
 
 ---
 
