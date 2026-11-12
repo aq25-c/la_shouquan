@@ -11,9 +11,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # 与 GitHub Actions 推送的镜像保持一致：本地 `docker compose build` 会打出同名 tag，
-    # 服务器上删掉上面 build: 段后 `docker compose pull` 直接拉这个地址即可。
-    image: ghcr.io/aq25-c/la_shouquan:1.0.1
+    # 默认跟随 latest：每次 Actions 构建都会更新它，服务器 `docker compose pull` 就能拿到最新。
+    # 想锁定某个版本（生产推荐），在服务器 .env 里加一行 IMAGE_TAG=1.0.2 即可，无需改本文件。
+    image: ghcr.io/aq25-c/la_shouquan:${IMAGE_TAG:-latest}
     container_name: license-server
     restart: unless-stopped
     ports:

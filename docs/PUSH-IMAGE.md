@@ -313,8 +313,9 @@ git tag v1.0.0 && git push origin v1.0.0
 
 产物（把 `aq25-c/la_shouquan` 换成你的仓库）：
 
-- `ghcr.io/aq25-c/la_shouquan:1.0.0` —— 来自 tag 名（去掉 `v` 前缀），**服务器部署用这个**
+- `ghcr.io/aq25-c/la_shouquan:1.0.0` —— 来自 tag 名（去掉 `v` 前缀），需要锁版本时用
 - `ghcr.io/aq25-c/la_shouquan:sha-abc1234` —— 对应提交，便于追溯
+- `ghcr.io/aq25-c/la_shouquan:latest` —— **每次构建都会更新**，`docker-compose.yml` 默认跟随它
 
 手动触发（workflow_dispatch）时没有 tag，版本号自动生成为 `0.0.0-<日期时间>-<sha>`。
 
@@ -331,20 +332,35 @@ git tag v1.0.0 && git push origin v1.0.0
 
 ```bash
 echo <你的GitHub-PAT> | docker login ghcr.io -u <GitHub用户名> --password-stdin
-docker pull ghcr.io/aq25-c/la_shouquan:1.0.0
+docker pull ghcr.io/aq25-c/la_shouquan:latest
 ```
 
 改可见性：仓库 → **Packages** → 选中镜像 → 右侧 **Package settings** → Change visibility。
 
 ### 7.4 服务器拉取与部署
 
-```bash
-docker pull ghcr.io/aq25-c/la_shouquan:1.0.0
+`docker-compose.yml` 里的镜像地址是**变量化**的：
 
-# 把 docker-compose.yml 的 image: 改成这个地址，删掉 build: 段
-docker compose pull && docker compose up -d
-docker compose ps        # 期望 healthy
+```yaml
+image: ghcr.io/aq25-c/la_shouquan:${IMAGE_TAG:-latest}
 ```
+
+所以部署就是：
+
+```bash
+docker compose pull        # 默认拉 latest（最新构建）
+docker compose up -d
+docker compose ps          # 期望 healthy
+```
+
+想锁定固定版本（生产推荐），在服务器的 `.env` 里加一行，不用改 compose：
+
+```bash
+IMAGE_TAG=1.0.2
+```
+
+> ⚠️ `latest` 会随每次构建移动，但 `docker compose pull` 只在远端 digest 变化时才更新本地镜像。
+> 如果怀疑没拉到新版：`docker compose pull --policy always`，或先 `docker rmi ghcr.io/aq25-c/la_shouquan:latest` 再 pull。
 
 > **国内自建机房/物理机**拉 `ghcr.io` 可能偏慢或偶发超时（GHCR 没有官方国内加速）。两个办法：
 >

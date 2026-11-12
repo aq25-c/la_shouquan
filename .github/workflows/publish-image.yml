@@ -75,9 +75,12 @@ jobs:
           context: .
           platforms: ${{ env.PLATFORMS }}
           push: true
+          # latest 始终指向最近一次构建，服务器 `docker compose pull` 即可拿到最新；
+          # 需要固定版本时在服务器 .env 里设 IMAGE_TAG=<版本号>（见 docker-compose.yml）
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.meta.outputs.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
