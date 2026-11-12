@@ -11,7 +11,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: license-server:1.0.0
+    # 与 GitHub Actions 推送的镜像保持一致：本地 `docker compose build` 会打出同名 tag，
+    # 服务器上删掉上面 build: 段后 `docker compose pull` 直接拉这个地址即可。
+    image: ghcr.io/aq25-c/la_shouquan:1.0.0
     container_name: license-server
     restart: unless-stopped
     ports:
