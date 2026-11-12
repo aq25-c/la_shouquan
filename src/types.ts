@@ -67,6 +67,24 @@ export type CdkBatchRow = {
   note: string | null;
   created_by: string | null;
   created_at: string;
+  /** v2：归属渠道（可空，表示直销/自营） */
+  channel_id: string | null;
+  /** v2：结算单价（单位：分） */
+  unit_price: number;
+};
+
+/** 渠道 / 分销商 */
+export type ChannelRow = {
+  id: string;
+  code: string;
+  name: string;
+  contact: string | null;
+  phone: string | null;
+  email: string | null;
+  note: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type CdkRow = {
@@ -108,6 +126,10 @@ export type LicenseRow = {
   last_heartbeat_at: string | null;
   revoked_at: string | null;
   revoked_reason: string | null;
+  /** v2：来源渠道（可空，表示直销） */
+  channel_id: string | null;
+  /** v2：结算单价（单位：分），激活时从 CDK 批次继承 */
+  unit_price: number;
 };
 
 export type DeviceRow = {

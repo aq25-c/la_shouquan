@@ -263,6 +263,9 @@ export function registerClientRoutes(): void {
         days: cdk.days,
         keyHash: sha256hex(licenseKey),
         note: `CDK ${cdk.code}`,
+        // v2：渠道与单价从 CDK 批次继承下来，供后台按渠道统计营收
+        channelId: cdk.channel_id,
+        unitPrice: cdk.unit_price,
       });
       if (!markCdkUsed(cdk.id, customerId, license.id)) {
         throw conflict("该 CDK 刚刚已被使用，请更换", "CDK_ALREADY_USED");

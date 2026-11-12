@@ -263,6 +263,38 @@
 }
 ```
 
+### 渠道 / 分销
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/admin/api/channels` | 渠道列表，每项带统计 `batch_count`、`cdk_total`、`cdk_used`、`cdk_unused`、`license_total`、`license_active`、`revenue_total`、`revenue_30d`、`activated_30d`、`renew_count`、`last_activated_at`、`activation_rate`；顶层另有 `summary` 汇总。筛选：`q`（编码/名称/联系人）、`status`（`active` / `disabled`） |
+| POST | `/admin/api/channels` | `{code, name, contact?, phone?, email?, note?}`；`code` 自动转小写，需匹配 `^[a-z0-9][a-z0-9_-]{0,63}$`，重复返回 `409 CODE_TAKEN` |
+| GET | `/admin/api/channels/:id` | 单渠道 + 统计；不存在 `404 CHANNEL_NOT_FOUND` |
+| PATCH | `/admin/api/channels/:id` | `{name?, contact?, phone?, email?, note?, status?}`；`status` 只能是 `active` / `disabled` |
+| DELETE | `/admin/api/channels/:id` | 已被 CDK 批次或授权引用时返回 `409 CHANNEL_IN_USE`（`details.batches` / `details.licenses`），此时应改为停用 |
+
+**金额单位统一为「分」**（整数），前端展示时除以 100。
+
+**营收口径**：`revenue_total` = 该渠道下所有授权的 `unit_price` 之和（激活即计入）；`revenue_30d` 只统计近 30 天创建的授权；`activation_rate` = `cdk_used / cdk_total`。
+
+**渠道如何落到授权上**：CDK 生成时带 `channel_id` 与 `unit_price` → 写入 `cdk_batches` → 客户端激活时继承到 `licenses.channel_id` / `licenses.unit_price`。未带渠道的批次即「直销」。
+
+**按渠道筛选**：
+
+- `GET /admin/api/licenses?channel_id=<id>`；传 `channel_id=__none__` 只看无渠道（直销）的授权
+- `GET /admin/api/cdks?channel_id=<id>`；同样支持 `__none__`
+
+**`POST /admin/api/cdks/generate` 新增参数**：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `channel_id` | string | 可选，归属渠道；不存在时 `404 CHANNEL_NOT_FOUND` |
+| `unit_price` | int | 可选，结算单价（**分**），默认 0 |
+
+**`POST /admin/api/licenses`（手动开通）也支持** `channel_id` / `unit_price`。
+
+渠道写操作都会记审计：`channel.create`、`channel.update`、`channel.delete`；`cdk.generate` 与 `license.create` 的 `detail` 里也会带上 `channel_id` / `unit_price`。
+
 ### 产品与模块
 
 | 方法 | 路径 | 说明 |
@@ -367,8 +399,9 @@
 | 403 | `FORBIDDEN` | 无权访问该资源 |
 | 403 | `LICENSE_EXPIRED` / `LICENSE_REVOKED` / `LICENSE_SUSPENDED` / `LICENSE_NOT_STARTED` / `CUSTOMER_DISABLED` / `LICENSE_LOCKED` | 授权不可用 |
 | 404 | `NOT_FOUND` | 接口或资源不存在 |
-| 404 | `CDK_NOT_FOUND` / `INVALID_LICENSE_KEY` / `DEVICE_NOT_BOUND` | 卡密/密钥/设备找不到 |
+| 404 | `CDK_NOT_FOUND` / `INVALID_LICENSE_KEY` / `DEVICE_NOT_BOUND` / `CHANNEL_NOT_FOUND` | 卡密/密钥/设备/渠道找不到 |
 | 409 | `CDK_ALREADY_USED` / `CDK_REVOKED` / `CDK_EXPIRED` / `CDK_NOT_UNUSED` | 卡密状态冲突 |
+| 409 | `CHANNEL_IN_USE` | 渠道仍被 CDK 批次或授权引用（`details.batches` / `details.licenses`） |
 | 409 | `SEAT_LIMIT` | 席位已满 |
 | 409 | `EMAIL_TAKEN` / `CODE_TAKEN` / `PRODUCT_IN_USE` / `NO_ACTIVE_DEVICE` | 唯一性或引用冲突 |
 | 413 | `PAYLOAD_TOO_LARGE` | 请求体过大 |

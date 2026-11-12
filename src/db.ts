@@ -167,6 +167,37 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_logs(at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action, at DESC);
 `;
 
+/**
+ * v2：渠道 / 分销管理
+ *   - channels：渠道主数据
+ *   - cdk_batches.channel_id / unit_price：批次归属渠道与结算单价（单位：分）
+ *   - licenses.channel_id / unit_price：激活时从批次继承，用于按渠道统计营收
+ */
+const SCHEMA_V2 = `
+CREATE TABLE IF NOT EXISTS channels (
+  id         TEXT PRIMARY KEY,
+  code       TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL,
+  contact    TEXT,
+  phone      TEXT,
+  email      TEXT,
+  note       TEXT,
+  status     TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status, created_at DESC);
+
+ALTER TABLE cdk_batches ADD COLUMN channel_id TEXT;
+ALTER TABLE cdk_batches ADD COLUMN unit_price INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE licenses ADD COLUMN channel_id TEXT;
+ALTER TABLE licenses ADD COLUMN unit_price INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_cdk_batches_channel ON cdk_batches(channel_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_licenses_channel ON licenses(channel_id, created_at DESC);
+`;
+
 export function openDb(path: string): DatabaseSync {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
@@ -196,16 +227,25 @@ export function closeDb(): void {
 function migrate(db: DatabaseSync): void {
   const row = db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
   const version = Number(row?.user_version ?? 0);
-  if (version < 1) {
-    db.exec("BEGIN");
+
+  if (version < 1) runMigration(db, SCHEMA_V1, 1);
+  if (version < 2) runMigration(db, SCHEMA_V2, 2);
+}
+
+/** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */
+function runMigration(db: DatabaseSync, sql: string, toVersion: number): void {
+  db.exec("BEGIN");
+  try {
+    db.exec(sql);
+    db.exec(`PRAGMA user_version = ${toVersion}`);
+    db.exec("COMMIT");
+  } catch (err) {
     try {
-      db.exec(SCHEMA_V1);
-      db.exec("PRAGMA user_version = 1");
-      db.exec("COMMIT");
-    } catch (err) {
       db.exec("ROLLBACK");
-      throw err;
+    } catch {
+      /* 忽略回滚失败 */
     }
+    throw err;
   }
 }
 

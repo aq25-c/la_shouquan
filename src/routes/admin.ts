@@ -41,6 +41,16 @@ import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
 import { audit, listAudit } from "../store/audit.ts";
 import {
+  channelReferences,
+  channelSummary,
+  createChannel,
+  deleteChannel,
+  findChannelByCode,
+  findChannelById,
+  listChannels,
+  updateChannel,
+} from "../store/channels.ts";
+import {
   createAdmin,
   findAdminByEmail,
   findCustomerByEmail,
@@ -235,10 +245,115 @@ export function registerAdminRoutes(): void {
     requireAdmin(ctx);
     return ok({
       stats: stats(),
+      channels: channelSummary(),
       expiring: expiringLicenses(14, 12),
       recent_licenses: listLicenses({ page: 1, pageSize: 8 }).items,
       config: publicConfig(),
     });
+  });
+
+  /* ---------------------------- 渠道 / 分销 ---------------------------- */
+
+  get(`${P}/channels`, (ctx) => {
+    requireAdmin(ctx);
+    return ok({
+      items: listChannels({ q: q(ctx, "q"), status: q(ctx, "status") }),
+      summary: channelSummary(),
+    });
+  });
+
+  post(`${P}/channels`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const code = needStr(ctx, "code", 64).toLowerCase();
+    const name = needStr(ctx, "name", 120);
+    const contact = bodyStr(ctx, "contact", { max: 120 });
+    const phone = bodyStr(ctx, "phone", { max: 40 });
+    const email = bodyStr(ctx, "email", { max: 190 });
+    const note = bodyStr(ctx, "note", { max: 1000 });
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(code)) {
+      throw badRequest("渠道编码只能是小写字母、数字、- 和 _（1~64 位）", "INVALID_CODE");
+    }
+    if (findChannelByCode(code)) throw conflict("渠道编码已存在", "CODE_TAKEN");
+    const channel = createChannel({ code, name, contact, phone, email, note });
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "channel.create",
+      targetType: "channel",
+      targetId: channel.id,
+      ip: ctx.ip,
+      detail: { code, name },
+    });
+    return created({ channel });
+  });
+
+  get(`${P}/channels/:id`, (ctx) => {
+    requireAdmin(ctx);
+    const channel = findChannelById(slash(ctx, "id"));
+    if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+    return ok({ channel });
+  });
+
+  patch(`${P}/channels/:id`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    if (!findChannelById(id)) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+
+    const patchData: Record<string, string> = {};
+    const name = bodyStr(ctx, "name", { max: 120 });
+    if (name) patchData.name = name;
+    const contact = bodyStr(ctx, "contact", { max: 120 });
+    if (contact !== null) patchData.contact = contact;
+    const phone = bodyStr(ctx, "phone", { max: 40 });
+    if (phone !== null) patchData.phone = phone;
+    const email = bodyStr(ctx, "email", { max: 190 });
+    if (email !== null) patchData.email = email;
+    const note = bodyStr(ctx, "note", { max: 1000 });
+    if (note !== null) patchData.note = note;
+    const status = bodyStr(ctx, "status", { max: 20 });
+    if (status) {
+      if (!["active", "disabled"].includes(status)) {
+        throw badRequest("status 只能是 active / disabled", "INVALID_FIELD");
+      }
+      patchData.status = status;
+    }
+
+    const channel = updateChannel(id, patchData);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "channel.update",
+      targetType: "channel",
+      targetId: id,
+      ip: ctx.ip,
+      detail: patchData,
+    });
+    return ok({ channel });
+  });
+
+  del(`${P}/channels/:id`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const channel = findChannelById(id);
+    if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+    const refs = channelReferences(id);
+    if (refs.batches > 0 || refs.licenses > 0) {
+      throw conflict("该渠道已有 CDK 批次或授权，不能删除（建议改为停用）", "CHANNEL_IN_USE", refs);
+    }
+    deleteChannel(id);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "channel.delete",
+      targetType: "channel",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { code: channel.code },
+    });
+    return ok({ deleted: true });
   });
 
   /* ---------------------------- 产品与模块 ---------------------------- */
@@ -426,6 +541,16 @@ export function registerAdminRoutes(): void {
     const note = bodyStr(ctx, "note", { max: 500 });
     const redeemBefore = isoOrNull(ctx, "redeem_before");
 
+    // v2：渠道与结算单价（单价单位：分）
+    const channelInput = bodyStr(ctx, "channel_id", 64);
+    const unitPrice = bodyInt(ctx, "unit_price", { min: 0, max: 100_000_000 }) ?? 0;
+    let channelId: string | null = null;
+    if (channelInput) {
+      const channel = findChannelById(channelInput);
+      if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+      channelId = channel.id;
+    }
+
     const result = withTx(() =>
       createCdkBatch({
         productId,
@@ -436,6 +561,8 @@ export function registerAdminRoutes(): void {
         note,
         expiresAt: redeemBefore,
         createdBy: admin.id,
+        channelId,
+        unitPrice,
       }),
     );
 
@@ -447,7 +574,15 @@ export function registerAdminRoutes(): void {
       targetType: "cdk_batch",
       targetId: result.batch.id,
       ip: ctx.ip,
-      detail: { product: product.code, count, days, seats, modules: moduleIds.length },
+      detail: {
+        product: product.code,
+        count,
+        days,
+        seats,
+        modules: moduleIds.length,
+        channel_id: channelId,
+        unit_price: unitPrice,
+      },
     });
 
     return created({
@@ -467,6 +602,7 @@ export function registerAdminRoutes(): void {
       batchId: q(ctx, "batch_id"),
       status: q(ctx, "status"),
       q: q(ctx, "q"),
+      channelId: q(ctx, "channel_id"),
       page,
       pageSize,
     });
@@ -620,6 +756,7 @@ export function registerAdminRoutes(): void {
       status: q(ctx, "status"),
       productId: q(ctx, "product_id"),
       customerId: q(ctx, "customer_id"),
+      channelId: q(ctx, "channel_id"),
       expiringWithinDays: expiring === null ? null : Number.parseInt(expiring, 10),
       page,
       pageSize,
@@ -847,6 +984,17 @@ export function registerAdminRoutes(): void {
     const days = needInt(ctx, "days", { min: 1, max: 3650 });
     const seats = bodyInt(ctx, "seats", { min: 1, max: 100 }) ?? 1;
     const note = bodyStr(ctx, "note", { max: 500 });
+
+    // v2：可选归属渠道与结算单价（单价单位：分）
+    const channelInput = bodyStr(ctx, "channel_id", 64);
+    const unitPrice = bodyInt(ctx, "unit_price", { min: 0, max: 100_000_000 }) ?? 0;
+    let channelId: string | null = null;
+    if (channelInput) {
+      const channel = findChannelById(channelInput);
+      if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+      channelId = channel.id;
+    }
+
     const licenseKey = generateLicenseKey();
 
     const license = withTx(() =>
@@ -859,6 +1007,8 @@ export function registerAdminRoutes(): void {
         days,
         keyHash: sha256hex(licenseKey),
         note: note ?? "后台手动开通",
+        channelId,
+        unitPrice,
       }),
     );
 
@@ -870,7 +1020,14 @@ export function registerAdminRoutes(): void {
       targetType: "license",
       targetId: license.id,
       ip: ctx.ip,
-      detail: { product: product.code, customer: customer.email, days, seats },
+      detail: {
+        product: product.code,
+        customer: customer.email,
+        days,
+        seats,
+        channel_id: channelId,
+        unit_price: unitPrice,
+      },
     });
 
     return created({

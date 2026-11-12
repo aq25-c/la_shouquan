@@ -37,6 +37,9 @@ let licenseId = "";
 let licenseFile = "";
 let publicKeyPem = "";
 let customerToken = "";
+/* 渠道 / 分销 */
+let channelId = "";
+let channelCdkCodes: string[] = [];
 
 async function api(
   method: string,
@@ -525,4 +528,175 @@ test("参数校验与错误结构", async () => {
   const unknownPath = await api("GET", "/api/v1/nope");
   assert.equal(unknownPath.status, 404);
   assert.equal(unknownPath.json.error.code, "NOT_FOUND");
+});
+
+/* ==================== 渠道 / 分销 ==================== */
+
+test("渠道：创建、编码校验与列表统计", async () => {
+  const created = await api(
+    "POST",
+    "/admin/api/channels",
+    { code: "TAOBAO", name: "淘宝旗舰店", contact: "张三", phone: "13800000000", note: "年框渠道" },
+    adminToken,
+  );
+  assert.equal(created.status, 201);
+  channelId = created.json.data.channel.id;
+  assert.equal(created.json.data.channel.code, "taobao", "渠道编码应自动转小写");
+  assert.equal(created.json.data.channel.status, "active");
+
+  const dup = await api("POST", "/admin/api/channels", { code: "taobao", name: "重复" }, adminToken);
+  assert.equal(dup.status, 409);
+  assert.equal(dup.json.error.code, "CODE_TAKEN");
+
+  const bad = await api("POST", "/admin/api/channels", { code: "BAD CODE!", name: "非法" }, adminToken);
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.error.code, "INVALID_CODE");
+
+  const list = await api("GET", "/admin/api/channels", undefined, adminToken);
+  assert.equal(list.status, 200);
+  assert.ok(list.json.data.items.some((c: Json) => c.id === channelId));
+  assert.ok(list.json.data.summary.channels >= 1);
+
+  const detail = await api("GET", `/admin/api/channels/${channelId}`, undefined, adminToken);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.json.data.channel.code, "taobao");
+  assert.equal(detail.json.data.channel.cdk_total, 0, "新渠道还没有 CDK");
+
+  const missing = await api("GET", "/admin/api/channels/chn_not_exist", undefined, adminToken);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.json.error.code, "CHANNEL_NOT_FOUND");
+});
+
+test("渠道：CDK 批次归属渠道并携带结算单价", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    {
+      product_id: productId,
+      module_ids: moduleIds,
+      days: 365,
+      seats: 1,
+      count: 2,
+      note: "渠道批次",
+      channel_id: channelId,
+      unit_price: 19900, // 199.00 元
+    },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  assert.equal(gen.json.data.batch.channel_id, channelId);
+  assert.equal(gen.json.data.batch.unit_price, 19900);
+  channelCdkCodes = gen.json.data.codes;
+
+  const filtered = await api("GET", `/admin/api/cdks?channel_id=${channelId}`, undefined, adminToken);
+  assert.equal(filtered.json.data.total, 2);
+  assert.equal(filtered.json.data.items[0].channel_code, "taobao");
+  assert.equal(filtered.json.data.items[0].unit_price, 19900);
+
+  const direct = await api("GET", "/admin/api/cdks?channel_id=__none__", undefined, adminToken);
+  assert.ok(direct.json.data.items.length > 0, "之前生成的 CDK 都属于直销");
+  assert.ok(direct.json.data.items.every((c: Json) => c.channel_id === null));
+
+  const badChannel = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [], days: 30, count: 1, channel_id: "chn_not_exist" },
+    adminToken,
+  );
+  assert.equal(badChannel.status, 404);
+  assert.equal(badChannel.json.error.code, "CHANNEL_NOT_FOUND");
+});
+
+test("渠道：激活时继承渠道与单价，并按渠道聚合统计", async () => {
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: channelCdkCodes[0],
+    device_id: "CHAN-DEV-1",
+    device_name: "渠道测试机",
+    email: "channel-buyer@test.local",
+    password: "ChanBuyer123",
+    name: "渠道客户",
+  });
+  assert.equal(act.status, 201);
+  assert.equal(act.json.data.license.channel_id, channelId, "授权应继承 CDK 批次的渠道");
+  assert.equal(act.json.data.license.unit_price, 19900, "授权应继承单价");
+
+  const byChannel = await api("GET", `/admin/api/licenses?channel_id=${channelId}`, undefined, adminToken);
+  assert.equal(byChannel.status, 200);
+  assert.equal(byChannel.json.data.total, 1);
+  assert.equal(byChannel.json.data.items[0].channel_code, "taobao");
+  assert.equal(byChannel.json.data.items[0].channel_name, "淘宝旗舰店");
+
+  const direct = await api("GET", "/admin/api/licenses?channel_id=__none__", undefined, adminToken);
+  assert.ok(direct.json.data.items.every((l: Json) => l.channel_id === null), "直销筛选不应包含渠道授权");
+
+  const chDetail = await api("GET", `/admin/api/channels/${channelId}`, undefined, adminToken);
+  const c = chDetail.json.data.channel;
+  assert.equal(c.cdk_total, 2);
+  assert.equal(c.cdk_used, 1);
+  assert.equal(c.cdk_unused, 1);
+  assert.equal(c.license_total, 1);
+  assert.equal(c.license_active, 1);
+  assert.equal(c.revenue_total, 19900, "营收 = 已激活授权单价之和");
+  assert.ok(Math.abs(c.activation_rate - 0.5) < 1e-9, "激活率 = 已核销 / 已生成");
+
+  const overview = await api("GET", "/admin/api/overview", undefined, adminToken);
+  assert.ok(overview.json.data.channels.attributed_licenses >= 1);
+  assert.ok(overview.json.data.channels.revenue_total >= 19900);
+});
+
+test("渠道：被引用时禁止删除，可改为停用", async () => {
+  const del = await api("DELETE", `/admin/api/channels/${channelId}`, undefined, adminToken);
+  assert.equal(del.status, 409);
+  assert.equal(del.json.error.code, "CHANNEL_IN_USE");
+  assert.ok(del.json.error.details.batches >= 1);
+  assert.ok(del.json.error.details.licenses >= 1);
+
+  const patched = await api(
+    "PATCH",
+    `/admin/api/channels/${channelId}`,
+    { status: "disabled", note: "渠道停用测试" },
+    adminToken,
+  );
+  assert.equal(patched.status, 200);
+  assert.equal(patched.json.data.channel.status, "disabled");
+  assert.equal(patched.json.data.channel.note, "渠道停用测试");
+
+  // 没被引用的渠道可以删除
+  const tmp = await api("POST", "/admin/api/channels", { code: "tmp-chan", name: "临时渠道" }, adminToken);
+  assert.equal(tmp.status, 201);
+  const delTmp = await api("DELETE", `/admin/api/channels/${tmp.json.data.channel.id}`, undefined, adminToken);
+  assert.equal(delTmp.status, 200);
+  assert.equal(delTmp.json.data.deleted, true);
+});
+
+test("渠道：手动开通授权也可归属渠道与单价", async () => {
+  const manual = await api(
+    "POST",
+    "/admin/api/licenses",
+    {
+      product_id: productId,
+      customer_email: "buyer@test.local",
+      days: 30,
+      seats: 1,
+      module_ids: [moduleIds[0]],
+      channel_id: channelId,
+      unit_price: 9900,
+    },
+    adminToken,
+  );
+  assert.equal(manual.status, 201);
+  assert.equal(manual.json.data.license.channel_id, channelId);
+  assert.equal(manual.json.data.license.unit_price, 9900);
+
+  const chDetail = await api("GET", `/admin/api/channels/${channelId}`, undefined, adminToken);
+  assert.equal(chDetail.json.data.channel.license_total, 2);
+  assert.equal(chDetail.json.data.channel.revenue_total, 19900 + 9900);
+});
+
+test("渠道：审计日志记录了渠道操作", async () => {
+  const auditList = await api("GET", "/admin/api/audit?page_size=100", undefined, adminToken);
+  const actions = auditList.json.data.items.map((i: Json) => i.action);
+  for (const expected of ["channel.create", "channel.update", "channel.delete", "cdk.generate", "license.create"]) {
+    assert.ok(actions.includes(expected), `审计日志应包含 ${expected}`);
+  }
 });

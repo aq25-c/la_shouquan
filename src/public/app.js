@@ -88,6 +88,7 @@ const state = {
   view: "overview",
   products: [],
   modules: [],
+  channels: [],
   pages: {},
 };
 
@@ -270,6 +271,7 @@ const VIEWS = {
   overview: { title: "概览", subtitle: "授权与 CDK 全局概况", render: renderOverview },
   products: { title: "产品与模块", subtitle: "产品、功能模块维护（CDK 绑定目标）", render: renderProducts },
   cdks: { title: "CDK", subtitle: "批量生成、导出与作废", render: renderCdks },
+  channels: { title: "渠道", subtitle: "分销渠道、CDK 归属与营收统计", render: renderChannels },
   licenses: { title: "授权", subtitle: "到期时间、席位、设备与吊销", render: renderLicenses },
   customers: { title: "客户", subtitle: "注册客户与账号状态", render: renderCustomers },
   audit: { title: "审计日志", subtitle: "所有关键操作留痕", render: renderAudit },
@@ -300,8 +302,12 @@ async function ensureCatalog(force = false) {
     const res = await apiGet("/admin/api/products");
     state.products = res.items;
   }
-  const mods = await apiGet("/admin/api/modules");
+  const [mods, chans] = await Promise.all([
+    apiGet("/admin/api/modules"),
+    apiGet("/admin/api/channels"),
+  ]);
   state.modules = mods.items;
+  state.channels = chans.items;
 }
 
 const productName = (id) => state.products.find((p) => p.id === id)?.name ?? id;
@@ -617,18 +623,213 @@ async function moduleManager(productId) {
   });
 }
 
+/* ============================ 渠道 / 分销 ============================ */
+
+const money = (cents) => `¥${(Number(cents ?? 0) / 100).toFixed(2)}`;
+const percent = (ratio) => `${(Number(ratio ?? 0) * 100).toFixed(1)}%`;
+
+function channelOptions(selected = "") {
+  const parts = [`<option value="">无（直销）</option>`];
+  for (const c of state.channels) {
+    if (c.status !== "active" && c.id !== selected) continue;
+    parts.push(
+      `<option value="${esc(c.id)}" ${c.id === selected ? "selected" : ""}>${esc(c.name)}（${esc(c.code)}）</option>`,
+    );
+  }
+  return parts.join("");
+}
+
+async function renderChannels(root) {
+  await ensureCatalog();
+  const filters = state.channelFilters ?? (state.channelFilters = { q: "", status: "" });
+  const query = new URLSearchParams();
+  if (filters.q) query.set("q", filters.q);
+  if (filters.status) query.set("status", filters.status);
+
+  const res = await apiGet(`/admin/api/channels?${query}`);
+  const items = res.items;
+  const s = res.summary;
+
+  root.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat accent">
+        <div class="stat-label">渠道数</div>
+        <div class="stat-value">${s.channels}</div>
+        <div class="stat-hint">启用中 ${s.channels_active} 个</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">归属渠道的授权</div>
+        <div class="stat-value">${s.attributed_licenses}</div>
+        <div class="stat-hint">直销（无渠道）${s.unattributed_licenses} 个</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">累计营收</div>
+        <div class="stat-value">${money(s.revenue_total)}</div>
+        <div class="stat-hint">近 30 天 ${money(s.revenue_30d)}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>渠道列表</h3>
+        <div class="toolbar">
+          <select data-f-status>
+            <option value="">全部状态</option>
+            <option value="active" ${filters.status === "active" ? "selected" : ""}>启用</option>
+            <option value="disabled" ${filters.status === "disabled" ? "selected" : ""}>停用</option>
+          </select>
+          <input data-f-q placeholder="搜索渠道编码 / 名称 / 联系人" value="${esc(filters.q)}" />
+          <button class="btn btn-primary btn-sm" data-new type="button">+ 新建渠道</button>
+        </div>
+      </div>
+      <div class="card-body tight">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>渠道</th><th>联系人</th><th>CDK（已核销/总量）</th><th>激活率</th>
+                <th>授权</th><th>营收</th><th>最近激活</th><th>状态</th><th class="right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                items.length
+                  ? items
+                      .map(
+                        (c) => `<tr>
+                          <td><strong>${esc(c.name)}</strong><div class="muted small mono">${esc(c.code)}</div></td>
+                          <td>${esc(c.contact ?? "—")}${c.phone ? `<div class="muted small">${esc(c.phone)}</div>` : ""}</td>
+                          <td>${c.cdk_used} / ${c.cdk_total}<div class="muted small">未用 ${c.cdk_unused}</div></td>
+                          <td>${c.cdk_total > 0 ? percent(c.activation_rate) : "—"}</td>
+                          <td>${c.license_total}（有效 ${c.license_active}）<div class="muted small">近 30 天新增 ${c.activated_30d}</div></td>
+                          <td>${money(c.revenue_total)}<div class="muted small">近 30 天 ${money(c.revenue_30d)}</div></td>
+                          <td class="nowrap">${c.last_activated_at ? fmtDay(c.last_activated_at) : "—"}</td>
+                          <td>${c.status === "active" ? '<span class="badge badge-ok">启用</span>' : '<span class="badge">停用</span>'}</td>
+                          <td class="right">
+                            <div class="btn-row" style="justify-content:flex-end">
+                              <button class="btn btn-sm" data-edit="${esc(c.id)}" type="button">编辑</button>
+                              <button class="btn btn-sm" data-toggle="${esc(c.id)}" type="button">${c.status === "active" ? "停用" : "启用"}</button>
+                              <button class="btn btn-sm" data-del="${esc(c.id)}" type="button">删除</button>
+                            </div>
+                          </td>
+                        </tr>`,
+                      )
+                      .join("")
+                  : emptyRow(9, "还没有渠道。渠道用于区分分销来源，并统计各渠道的 CDK 与营收")
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+
+  $("[data-new]", root).onclick = () => channelForm();
+  $("[data-f-status]", root).onchange = (e) => {
+    filters.status = e.target.value;
+    navigate("channels", true);
+  };
+  $("[data-f-q]", root).onkeydown = (e) => {
+    if (e.key === "Enter") {
+      filters.q = e.target.value.trim();
+      navigate("channels", true);
+    }
+  };
+  $$("[data-edit]", root).forEach((btn) => {
+    btn.onclick = () => channelForm(state.channels.find((c) => c.id === btn.dataset.edit));
+  });
+  $$("[data-toggle]", root).forEach((btn) => {
+    btn.onclick = async () => {
+      const c = state.channels.find((x) => x.id === btn.dataset.toggle);
+      try {
+        await apiPatch(`/admin/api/channels/${c.id}`, {
+          status: c.status === "active" ? "disabled" : "active",
+        });
+        toast("已更新", "ok");
+        navigate("channels", true);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+  });
+  $$("[data-del]", root).forEach((btn) => {
+    btn.onclick = async () => {
+      const c = state.channels.find((x) => x.id === btn.dataset.del);
+      if (!(await confirmDialog(`删除渠道「${c.name}」？已有 CDK 或授权的渠道不能删除，只能停用。`, { danger: true, okText: "删除" }))) return;
+      try {
+        await api("DELETE", `/admin/api/channels/${c.id}`);
+        toast("已删除", "ok");
+        navigate("channels", true);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+  });
+}
+
+function channelForm(channel) {
+  const isNew = !channel;
+  openModal({
+    title: isNew ? "新建渠道" : `编辑渠道：${channel.name}`,
+    body: `
+      <div class="form-grid">
+        <label class="field"><span>渠道编码（小写字母 / 数字 / - / _）</span>
+          <input name="code" value="${esc(channel?.code ?? "")}" ${isNew ? "" : "disabled"} placeholder="taobao" /></label>
+        <label class="field"><span>渠道名称</span><input name="name" value="${esc(channel?.name ?? "")}" placeholder="淘宝旗舰店" /></label>
+        <label class="field"><span>联系人</span><input name="contact" value="${esc(channel?.contact ?? "")}" /></label>
+        <label class="field"><span>电话</span><input name="phone" value="${esc(channel?.phone ?? "")}" /></label>
+        <label class="field"><span>邮箱</span><input name="email" value="${esc(channel?.email ?? "")}" /></label>
+        <label class="field full"><span>备注</span><textarea name="note">${esc(channel?.note ?? "")}</textarea></label>
+      </div>`,
+    footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">保存</button>`,
+    onMount(modal, close) {
+      $("[data-cancel]", modal).onclick = close;
+      $("[data-save]", modal).onclick = async () => {
+        const payload = {
+          name: $('[name="name"]', modal).value.trim(),
+          contact: $('[name="contact"]', modal).value.trim(),
+          phone: $('[name="phone"]', modal).value.trim(),
+          email: $('[name="email"]', modal).value.trim(),
+          note: $('[name="note"]', modal).value.trim(),
+        };
+        if (!payload.name) {
+          toast("请填写渠道名称", "error");
+          return;
+        }
+        try {
+          if (isNew) {
+            const code = $('[name="code"]', modal).value.trim();
+            if (!code) {
+              toast("请填写渠道编码", "error");
+              return;
+            }
+            await apiPost("/admin/api/channels", { ...payload, code });
+          } else {
+            await apiPatch(`/admin/api/channels/${channel.id}`, payload);
+          }
+          close();
+          toast("已保存", "ok");
+          navigate("channels");
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    },
+  });
+}
+
 /* ============================ CDK ============================ */
 
 async function renderCdks(root) {
   await ensureCatalog();
   const pageKey = "cdks";
   const page = state.pages[pageKey] ?? 1;
-  const filters = state.cdkFilters ?? (state.cdkFilters = { product_id: "", status: "", q: "", batch_id: "" });
+  const filters = state.cdkFilters ?? (state.cdkFilters = { product_id: "", status: "", q: "", batch_id: "", channel_id: "" });
   const query = new URLSearchParams({ page: String(page), page_size: "20" });
   if (filters.product_id) query.set("product_id", filters.product_id);
   if (filters.status) query.set("status", filters.status);
   if (filters.q) query.set("q", filters.q);
   if (filters.batch_id) query.set("batch_id", filters.batch_id);
+  if (filters.channel_id) query.set("channel_id", filters.channel_id);
 
   const [list, batches] = await Promise.all([
     apiGet(`/admin/api/cdks?${query}`),
@@ -645,6 +846,8 @@ async function renderCdks(root) {
           <label class="field"><span>席位数（可绑定设备数）</span><input name="seats" type="number" min="1" max="100" value="1" /></label>
           <label class="field"><span>生成数量</span><input name="count" type="number" min="1" max="5000" value="10" /></label>
           <label class="field"><span>兑换截止时间（可选）</span><input name="redeem_before" type="datetime-local" /></label>
+          <label class="field"><span>归属渠道（可选）</span><select name="channel_id">${channelOptions()}</select></label>
+          <label class="field"><span>结算单价（元）</span><input name="unit_price" type="number" min="0" step="0.01" value="0" /></label>
           <label class="field"><span>批次备注</span><input name="note" placeholder="例如 2025Q1 渠道批次" /></label>
           <div class="field full"><span>包含模块</span>
             <div class="checkbox-list" data-modules>${moduleCheckboxes(state.products[0]?.id ?? "")}</div>
@@ -671,6 +874,11 @@ async function renderCdks(root) {
             <option value="">全部批次</option>
             ${batches.items.map((b) => `<option value="${esc(b.id)}" ${filters.batch_id === b.id ? "selected" : ""}>${fmtDay(b.created_at)} · ${esc(b.product_code)} · ${b.count} 个</option>`).join("")}
           </select>
+          <select data-f-channel>
+            <option value="">全部渠道</option>
+            <option value="__none__" ${filters.channel_id === "__none__" ? "selected" : ""}>无渠道（直销）</option>
+            ${state.channels.map((c) => `<option value="${esc(c.id)}" ${filters.channel_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+          </select>
           <input data-f-q placeholder="搜索 CDK / 备注 / 客户邮箱" value="${esc(filters.q)}" />
           <button class="btn btn-sm" data-export type="button">导出 CSV</button>
         </div>
@@ -678,7 +886,7 @@ async function renderCdks(root) {
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>CDK</th><th>产品</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>生成时间</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>CDK</th><th>产品</th><th>渠道</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>生成时间</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
@@ -687,6 +895,7 @@ async function renderCdks(root) {
                         (c) => `<tr>
                           <td class="mono"><button class="btn btn-ghost btn-sm" data-copy="${esc(c.code)}" type="button" title="点击复制">${esc(c.code)}</button></td>
                           <td>${esc(c.product_code)}</td>
+                          <td>${c.channel_code ? `<span class="badge badge-info">${esc(c.channel_name ?? c.channel_code)}</span>` : '<span class="muted small">直销</span>'}</td>
                           <td>${c.days} 天</td>
                           <td>${c.seats}</td>
                           <td>${statusBadge(CDK_STATUS, c.status)}</td>
@@ -696,7 +905,7 @@ async function renderCdks(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(8, "没有符合条件的 CDK")
+                  : emptyRow(9, "没有符合条件的 CDK")
               }
             </tbody>
           </table>
@@ -711,6 +920,7 @@ async function renderCdks(root) {
 
   $("[data-generate]", root).onclick = async () => {
     const moduleIds = $$("[data-modules] input:checked", root).map((i) => i.value);
+    const channelSelect = $('[name="channel_id"]', root);
     const payload = {
       product_id: productSelect.value,
       module_ids: moduleIds,
@@ -718,6 +928,9 @@ async function renderCdks(root) {
       seats: Number($('[name="seats"]', root).value),
       count: Number($('[name="count"]', root).value),
       note: $('[name="note"]', root).value.trim(),
+      // 渠道可选；单价按「元」录入，提交时换算成「分」
+      channel_id: channelSelect?.value || undefined,
+      unit_price: Math.round(Number($('[name="unit_price"]', root).value || 0) * 100),
     };
     const redeemBefore = $('[name="redeem_before"]', root).value;
     if (redeemBefore) payload.redeem_before = new Date(redeemBefore).toISOString();
@@ -747,6 +960,11 @@ async function renderCdks(root) {
   };
   $("[data-f-batch]", root).onchange = (e) => {
     filters.batch_id = e.target.value;
+    state.pages[pageKey] = 1;
+    navigate("cdks", true);
+  };
+  $("[data-f-channel]", root).onchange = (e) => {
+    filters.channel_id = e.target.value;
     state.pages[pageKey] = 1;
     navigate("cdks", true);
   };
