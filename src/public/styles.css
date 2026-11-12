@@ -385,6 +385,25 @@ td.right, th.right { text-align: right; }
 }
 .note.warn { background: var(--warn-soft); border-color: #fde68a; color: #92400e; }
 
+/* ================= API 文档 ================= */
+.api-item { border-bottom: 1px solid #f1f3f6; }
+.api-item:last-child { border-bottom: 0; }
+.api-item > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.api-item > summary::-webkit-details-marker { display: none; }
+.api-item > summary:hover { background: #fafbfd; }
+.api-item[open] > summary { background: #f7faff; }
+.api-path { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+.api-title { color: var(--muted); font-size: 13px; flex: 1; min-width: 0; }
+.api-body { padding: 4px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.api-body p { font-size: 13px; }
+
 /* ================= 响应式 ================= */
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; }

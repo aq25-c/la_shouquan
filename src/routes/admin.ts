@@ -40,6 +40,7 @@ import { buildLicenseFile, licenseView } from "../issuer.ts";
 import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget } from "../store/audit.ts";
+import { buildApiDocs } from "../api-spec.ts";
 import {
   channelReferences,
   channelSummary,
@@ -1257,6 +1258,12 @@ export function registerAdminRoutes(): void {
       detail: patchData,
     });
     return ok({ config: updated });
+  });
+
+  /** API 文档：路由骨架来自真实路由表，描述来自 api-spec.ts */
+  get(`${P}/docs`, (ctx) => {
+    requireAdmin(ctx);
+    return ok(buildApiDocs());
   });
 
   /* ---------------------------- 审计与密钥 ---------------------------- */

@@ -188,12 +188,19 @@ export const post = (path: string, handler: Handler) => route("POST", path, hand
 export const patch = (path: string, handler: Handler) => route("PATCH", path, handler);
 export const del = (path: string, handler: Handler) => route("DELETE", path, handler);
 
+/**
+ * 列出所有已注册路由（供「API 文档」页面自动同步，新增接口无需手写清单）。
+ * 返回形如 `{ method: "GET", path: "/admin/api/licenses/:id" }`。
+ */
+export function listRoutes(): { method: string; path: string }[] {
+  return routes.map((r) => ({ method: r.method, path: "/" + r.segments.join("/") }));
+}
+
 function splitPath(path: string): string[] {
   return path.split("/").filter((s) => s !== "");
 }
 
-export function matchRoute(method: string, path: string): { handler: Handler; params: Record<string, string> } | null {
-  const parts = splitPath(path);
+export function matchRoute(method: string, path: string): { handler: Handler; params: Record<string, string> } | null {  const parts = splitPath(path);
   for (const r of routes) {
     if (r.method !== method && r.method !== "ANY") continue;
     const params: Record<string, string> = {};

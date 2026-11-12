@@ -790,4 +790,4 @@ curl -s http://127.0.0.1:6889/healthz                # 200 即成功
 # 浏览器打开 http://<IP>:6889/ 登录，建产品/模块，生成 CDK
 ```
 
-完整的客户端接入流程见 [client-integration.md](client-integration.md)，接口细节见 [API.md](API.md)。
+完整的客户端接入流程见 [client-integration.md](client-integration.md)，接口细节在**管理后台 → API 文档**页查看（自动生成，可搜索）。

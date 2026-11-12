@@ -194,7 +194,7 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 ## 客户端接入（三步）
 
 接口前缀 `/api/v1`，请求/响应均为 JSON。成功响应 `{"ok":true,"data":{…}}`，失败 `{"ok":false,"error":{"code":"…","message":"…"}}`。
-完整参考见 [docs/API.md](docs/API.md)，接入细节与验签示例见 [docs/client-integration.md](docs/client-integration.md)。
+完整接口清单见**管理后台 → API 文档**页（由服务端真实路由表自动生成，可搜索、可复制 curl）；接入细节与验签示例见 [docs/client-integration.md](docs/client-integration.md)。
 
 ### 1. 激活（用 CDK 换授权）
 
@@ -337,11 +337,13 @@ SQLite 单机足够支撑中小规模。高并发或多实例场景建议换成 
 │   ├── http.ts                # 路由/响应/校验/限流
 │   ├── bootstrap.ts           # 启动引导（建库、建密钥、建初始管理员）
 │   ├── types.ts               # 数据行类型
+│   ├── api-spec.ts            # API 文档描述字典（路由骨架自动补全）
 │   ├── store/                 # 数据访问（accounts / catalog / licensing / audit / channels / trials）
 │   ├── routes/                # client.ts（客户端）/ admin.ts（后台）/ static.ts
 │   └── public/                # 管理后台单页（index.html / app.js / styles.css）
 ├── tests/api.test.ts          # 端到端测试
 └── docs/
-    ├── API.md                 # 接口参考
-    └── client-integration.md  # 客户端接入与验签示例
+    ├── client-integration.md  # 客户端接入与验签示例
+    ├── DEPLOY.md              # 部署手册（HTTPS / systemd / 备份 / 排障）
+    └── PUSH-IMAGE.md          # 镜像构建、推送与线上部署
 ```

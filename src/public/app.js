@@ -275,6 +275,7 @@ const VIEWS = {
   licenses: { title: "授权", subtitle: "到期时间、席位、设备与吊销", render: renderLicenses },
   customers: { title: "客户", subtitle: "注册客户与账号状态", render: renderCustomers },
   audit: { title: "审计日志", subtitle: "所有关键操作留痕", render: renderAudit },
+  apiDocs: { title: "API 文档", subtitle: "全部接口说明 · 由真实路由表自动生成，不会与实现脱节", render: renderApiDocs },
   settings: { title: "设置与公钥", subtitle: "签名公钥、策略参数、管理员", render: renderSettings },
 };
 
@@ -1840,6 +1841,112 @@ async function renderAudit(root) {
 }
 
 /* ============================ 设置 ============================ */
+
+/* ============================ API 文档 ============================ */
+
+const METHOD_CLASS = { GET: "badge-info", POST: "badge-ok", PATCH: "badge-warn", DELETE: "badge-danger" };
+const AUTH_LABEL = { public: "公开", admin: "管理员", customer: "客户登录" };
+
+/** 描述里的 `xxx` 反引号转成 <code> */
+function inlineCode(text) {
+  return esc(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+async function renderApiDocs(root) {
+  const docs = await apiGet("/admin/api/docs");
+  const base = location.origin;
+
+  const groupsHtml = docs.groups
+    .map(
+      (g) => `
+      <div class="card">
+        <div class="card-head"><h3>${esc(g.name)}</h3><span class="muted small">${g.endpoints.length} 个接口</span></div>
+        <div class="card-body tight">
+          ${g.endpoints
+            .map(
+              (e) => `
+            <details class="api-item" data-search="${esc(
+              `${e.method} ${e.path} ${e.title} ${e.desc ?? ""}`.toLowerCase(),
+            )}">
+              <summary>
+                <span class="badge ${METHOD_CLASS[e.method] || ""}">${esc(e.method)}</span>
+                <code class="api-path">${esc(e.path)}</code>
+                <span class="api-title">${esc(e.title)}</span>
+                <span class="badge ${e.auth === "public" ? "" : e.auth === "admin" ? "badge-warn" : "badge-info"}">${esc(
+                  AUTH_LABEL[e.auth] || e.auth,
+                )}</span>
+              </summary>
+              <div class="api-body">
+                ${e.desc ? `<p>${inlineCode(e.desc)}</p>` : ""}
+                ${e.params ? `<div class="kv"><dt>参数</dt><dd>${inlineCode(e.params)}</dd></div>` : ""}
+                ${e.notes ? `<div class="note">${inlineCode(e.notes)}</div>` : ""}
+                <div class="copy-row">
+                  <input readonly value="curl -X ${esc(e.method)} '${esc(base + e.path)}'" />
+                  <button class="btn btn-sm" data-copyurl="${esc(base + e.path)}" type="button">复制 URL</button>
+                </div>
+              </div>
+            </details>`,
+            )
+            .join("")}
+        </div>
+      </div>`,
+    )
+    .join("");
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3>接口总览</h3>
+        <div class="toolbar">
+          <input data-f-q placeholder="搜索路径 / 方法 / 说明" />
+          <span class="muted small" data-count>共 ${docs.total} 个接口</span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="note">
+          <strong>Base URL</strong>：<code>${esc(base)}</code> · 客户端接口前缀 <code>/api/v1</code>，管理接口前缀 <code>/admin/api</code>（除登录外都需要管理员 token）。
+          路由清单由服务端真实路由表生成，新增接口会自动出现在这里，不会出现"文档写了但没实现"。
+        </div>
+        <div class="form-grid" style="margin-top:12px">
+          ${docs.conventions
+            .map(
+              (c) => `<div class="field"><span>${esc(c.title)}</span><div class="muted small">${inlineCode(c.text)}</div></div>`,
+            )
+            .join("")}
+        </div>
+        ${
+          docs.missing.length
+            ? `<div class="note warn" style="margin-top:12px">以下路由缺少说明（补充到 <code>src/api-spec.ts</code> 即可）：<code>${docs.missing
+                .map(esc)
+                .join("</code>、<code>")}</code></div>`
+            : ""
+        }
+      </div>
+    </div>
+    ${groupsHtml || `<div class="card"><div class="card-body muted">没有匹配的接口</div></div>`}`;
+
+  // 搜索：只切换显示，不重绘（避免输入框失焦）
+  const searchBox = $("[data-f-q]", root);
+  const counter = $("[data-count]", root);
+  searchBox.oninput = () => {
+    const q = searchBox.value.trim().toLowerCase();
+    let shown = 0;
+    $$(".api-item", root).forEach((el) => {
+      const hit = !q || el.dataset.search.includes(q);
+      el.hidden = !hit;
+      if (hit) shown += 1;
+    });
+    $$("#view-root .card", root).forEach((card) => {
+      if (!$$(".api-item", card).length) return;
+      card.hidden = $$(".api-item:not([hidden])", card).length === 0;
+    });
+    counter.textContent = q ? `命中 ${shown} / ${docs.total}` : `共 ${docs.total} 个接口`;
+  };
+
+  $$("[data-copyurl]", root).forEach((btn) => {
+    btn.onclick = () => copyText(btn.dataset.copyurl);
+  });
+}
 
 async function renderSettings(root) {
   const [key, me, admins, trial, productsRes] = await Promise.all([
