@@ -908,3 +908,26 @@ test("CDK：列表带出激活后的到期时间", async () => {
   assert.ok(withExpiry.length > 0, "已使用的 CDK 应带出授权到期时间");
   assert.ok(["paid", "trial"].includes(withExpiry[0].license_kind));
 });
+
+test("API 文档公开可访问（无需登录）", async () => {
+  // JSON：无需 token
+  const json = await api("GET", "/api/v1/docs");
+  assert.equal(json.status, 200, "文档 JSON 不应要求鉴权");
+  assert.ok(json.json.data.total >= 60, "应包含全部已注册路由");
+  assert.equal(json.json.data.missing.length, 0, "所有路由都应有说明");
+  assert.ok(json.json.data.groups.length >= 10);
+
+  // 网页版：无需登录，返回完整 HTML
+  const page = await fetch(`${base}/docs`);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type") ?? "", /text\/html/);
+  const html = await page.text();
+  assert.ok(html.toLowerCase().startsWith("<!doctype html>"));
+  assert.ok(html.includes("API 文档"));
+  assert.ok(html.includes("/api/v1/licenses/activate"), "页面应列出客户端接口");
+  assert.ok(html.includes("/admin/api/licenses"), "页面应列出管理接口（全部公开）");
+
+  // 后台端点保留，仍要求管理员 token
+  const adminDocs = await api("GET", "/admin/api/docs");
+  assert.equal(adminDocs.status, 401);
+});

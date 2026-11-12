@@ -23,6 +23,16 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "GET /healthz": { title: "健康检查", auth: "public", desc: "存活探针，供 Docker HEALTHCHECK 与监控使用，不写日志。" },
   "GET /api/v1/server-info": { title: "服务信息", auth: "public", desc: "返回服务版本、心跳周期、离线宽限天数与服务器时间。" },
   "GET /api/v1/public-key": { title: "验签公钥", auth: "public", desc: "Ed25519 公钥（PEM / Base64），内置到客户端用于离线验签。" },
+  "GET /api/v1/docs": {
+    title: "API 文档（JSON）",
+    auth: "public",
+    desc: "全部接口的结构化清单：路由骨架取自真实路由表，含分组、鉴权要求、参数与通用约定。供工具或文档站抓取。",
+  },
+  "GET /docs": {
+    title: "API 文档（网页）",
+    auth: "public",
+    desc: "本页面的可直接分享版本：无需登录即可访问，适合发给客户端开发者。",
+  },
 
   /* ---------------- 客户端 · 账号 ---------------- */
   "POST /api/v1/auth/register": { title: "客户注册", auth: "public", params: "`email`、`password`(≥8位)、`name?`", desc: "创建客户账号，返回客户信息与登录会话 token。" },
@@ -145,7 +155,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
 
 /** 按路径前缀归组，顺序即页面展示顺序 */
 const GROUP_RULES: { name: string; test: (m: string, p: string) => boolean }[] = [
-  { name: "公共接口", test: (_m, p) => p === "/healthz" || p === "/api/v1/server-info" || p === "/api/v1/public-key" },
+  { name: "公共接口", test: (_m, p) => p === "/healthz" || p === "/docs" || p === "/api/v1/docs" || p === "/api/v1/server-info" || p === "/api/v1/public-key" },
   { name: "客户端 · 账号", test: (_m, p) => p.startsWith("/api/v1/auth") },
   { name: "客户端 · 授权", test: (_m, p) => p.startsWith("/api/v1/licenses") || p.startsWith("/api/v1/cdks") },
   { name: "客户端 · 试用", test: (_m, p) => p.startsWith("/api/v1/trial") },
@@ -162,14 +172,15 @@ const GROUP_RULES: { name: string; test: (m: string, p: string) => boolean }[] =
 
 export type ApiDocEndpoint = ApiDocEntry & { method: string; path: string; documented: boolean };
 export type ApiDocGroup = { name: string; endpoints: ApiDocEndpoint[] };
-
-export function buildApiDocs(): {
+export type ApiDocs = {
   version: string;
   total: number;
   missing: string[];
   groups: ApiDocGroup[];
   conventions: { title: string; text: string }[];
-} {
+};
+
+export function buildApiDocs(): ApiDocs {
   const routes = listRoutes().filter((r) => r.method !== "ANY");
   const missing: string[] = [];
   const buckets = new Map<string, ApiDocEndpoint[]>();
@@ -203,7 +214,7 @@ export function buildApiDocs(): {
   if (others?.length) groups.push({ name: "其它", endpoints: others });
 
   return {
-    version: "1.2.0",
+    version: "1.3.0",
     total: routes.length,
     missing,
     groups,
@@ -216,4 +227,135 @@ export function buildApiDocs(): {
       { title: "错误码", text: "`401 UNAUTHORIZED`、`403 LICENSE_*` / `TRIAL_*`、`404 CDK_NOT_FOUND`/`INVALID_LICENSE_KEY`/`DEVICE_NOT_BOUND`、`409 SEAT_LIMIT`/`CODE_TAKEN`/`EMAIL_TAKEN`/`CHANNEL_IN_USE`、`429 RATE_LIMITED`。" },
     ],
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* 公开文档页（服务端渲染，无需登录）                                   */
+/* ------------------------------------------------------------------ */
+
+const AUTH_LABELS: Record<string, string> = { public: "公开", admin: "管理员", customer: "客户登录" };
+
+function escHtml(input: unknown): string {
+  return String(input ?? "").replace(/[&<>"']/g, (ch) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch] as string,
+  );
+}
+
+function inlineCode(text: string): string {
+  return escHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+/**
+ * 渲染成一份完整、可独立访问的 HTML 文档（`GET /docs`）。
+ * 不依赖后台前端，任何人不登录也能看，便于把接口文档直接发给外部开发者。
+ */
+export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
+  const groupsHtml = docs.groups
+    .map(
+      (g) => `
+    <section class="group">
+      <h2>${escHtml(g.name)}<span class="count">${g.endpoints.length}</span></h2>
+      ${g.endpoints
+        .map(
+          (e) => `
+      <details class="ep" data-search="${escHtml(`${e.method} ${e.path} ${e.title} ${e.desc ?? ""}`.toLowerCase())}">
+        <summary>
+          <span class="m m-${e.method.toLowerCase()}">${escHtml(e.method)}</span>
+          <code class="p">${escHtml(e.path)}</code>
+          <span class="t">${escHtml(e.title)}</span>
+          <span class="auth a-${escHtml(e.auth)}">${escHtml(AUTH_LABELS[e.auth] ?? e.auth)}</span>
+        </summary>
+        <div class="body">
+          ${e.desc ? `<p>${inlineCode(e.desc)}</p>` : ""}
+          ${e.params ? `<p class="kv"><b>参数</b> ${inlineCode(e.params)}</p>` : ""}
+          ${e.notes ? `<p class="note">${inlineCode(e.notes)}</p>` : ""}
+          <pre><code>curl -X ${escHtml(e.method)} '${escHtml(baseUrl + e.path)}'</code></pre>
+        </div>
+      </details>`,
+        )
+        .join("")}
+    </section>`,
+    )
+    .join("");
+
+  const conventionsHtml = docs.conventions
+    .map((c) => `<div class="conv-item"><h3>${escHtml(c.title)}</h3><p>${inlineCode(c.text)}</p></div>`)
+    .join("");
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>API 文档 · license-server</title>
+<style>
+  :root { --bg:#f5f6f8; --surface:#fff; --border:#e3e6eb; --text:#1c2330; --muted:#6b7480; --primary:#2563eb; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Roboto,Arial,sans-serif; }
+  code { font-family:var(--mono); font-size:12.5px; background:#f0f2f5; padding:1px 5px; border-radius:4px; }
+  header { background:var(--surface); border-bottom:1px solid var(--border); padding:20px 24px; position:sticky; top:0; z-index:5; }
+  header h1 { margin:0; font-size:20px; }
+  .sub { color:var(--muted); font-size:13px; margin:4px 0 12px; }
+  .row { display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:12px; flex-wrap:wrap; }
+  .row span { color:var(--muted); }
+  #q { width:100%; max-width:420px; font:inherit; padding:8px 12px; border:1px solid var(--border); border-radius:8px; }
+  #q:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px #eef4ff; }
+  main { max-width:1080px; margin:0 auto; padding:20px 24px 80px; }
+  .conventions { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; margin-bottom:22px; }
+  .conv-item { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .conv-item h3 { margin:0 0 6px; font-size:13px; color:var(--primary); }
+  .conv-item p { margin:0; font-size:12.5px; color:var(--muted); }
+  .group { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:16px; overflow:hidden; }
+  .group h2 { margin:0; padding:13px 16px; font-size:14px; border-bottom:1px solid var(--border); background:#fafbfc; display:flex; align-items:center; gap:8px; }
+  .count { font-size:12px; font-weight:400; color:var(--muted); background:#f1f3f6; padding:1px 8px; border-radius:999px; }
+  .ep { border-bottom:1px solid #f1f3f6; }
+  .ep:last-child { border-bottom:0; }
+  .ep > summary { display:flex; align-items:center; gap:10px; padding:10px 16px; cursor:pointer; list-style:none; }
+  .ep > summary::-webkit-details-marker { display:none; }
+  .ep > summary:hover { background:#fafbfd; }
+  .ep[open] > summary { background:#f7faff; }
+  .m { font:600 11px/1 var(--mono); padding:4px 7px; border-radius:5px; color:#fff; background:#6b7480; }
+  .m-get { background:#2563eb; } .m-post { background:#15803d; } .m-patch { background:#b45309; } .m-delete { background:#dc2626; }
+  .p { font-family:var(--mono); font-size:12.5px; white-space:nowrap; }
+  .t { color:var(--muted); font-size:13px; flex:1; min-width:0; }
+  .auth { font-size:11.5px; padding:2px 8px; border-radius:999px; background:#f1f3f6; color:var(--muted); }
+  .a-admin { background:#fffbeb; color:#92400e; } .a-customer { background:#eef4ff; color:#1d4ed8; } .a-public { background:#f0fdf4; color:#15803d; }
+  .body { padding:2px 16px 16px; display:flex; flex-direction:column; gap:10px; }
+  .body p { margin:0; font-size:13px; }
+  .body .kv b { color:var(--muted); font-weight:600; margin-right:6px; }
+  .body .note { background:#fffbeb; border:1px solid #fde68a; color:#92400e; border-radius:8px; padding:8px 10px; font-size:12.5px; }
+  .body pre { margin:0; background:#0f172a; color:#e2e8f0; border-radius:8px; padding:10px 12px; overflow-x:auto; }
+  .body pre code { background:none; color:inherit; padding:0; font-size:12px; }
+  footer { text-align:center; color:var(--muted); font-size:12px; padding:24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>API 文档</h1>
+  <p class="sub">v${escHtml(docs.version)} · 共 ${docs.total} 个接口 · 由服务端真实路由表自动生成，不会与实现脱节</p>
+  <div class="row"><span>Base URL</span> <code>${escHtml(baseUrl)}</code> <span>· 客户端 <code>/api/v1</code> · 管理 <code>/admin/api</code></span></div>
+  <input id="q" placeholder="搜索路径 / 方法 / 说明…" autocomplete="off" />
+</header>
+<main>
+  <div class="conventions">${conventionsHtml}</div>
+  ${groupsHtml}
+</main>
+<footer>license-server v${escHtml(docs.version)} · 本文档页无需登录，可直接分享给客户端开发者</footer>
+<script>
+  (function () {
+    var q = document.getElementById('q');
+    q.addEventListener('input', function () {
+      var s = q.value.trim().toLowerCase();
+      document.querySelectorAll('.ep').forEach(function (el) {
+        el.hidden = !!(s && el.dataset.search.indexOf(s) === -1);
+      });
+      document.querySelectorAll('.group').forEach(function (g) {
+        var any = Array.prototype.some.call(g.querySelectorAll('.ep'), function (e) { return !e.hidden; });
+        g.hidden = !any;
+      });
+    });
+  })();
+</script>
+</body>
+</html>`;
 }

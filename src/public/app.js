@@ -1853,7 +1853,8 @@ function inlineCode(text) {
 }
 
 async function renderApiDocs(root) {
-  const docs = await apiGet("/admin/api/docs");
+  // 用公开端点：文档本身不敏感，也便于与 /docs 页面共用同一份数据
+  const docs = await apiGet("/api/v1/docs");
   const base = location.origin;
 
   const groupsHtml = docs.groups

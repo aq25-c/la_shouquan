@@ -24,8 +24,10 @@ import {
   notFound,
   ok,
   post,
+  raw,
   unauthorized,
 } from "../http.ts";
+import { buildApiDocs, renderDocsPage } from "../api-spec.ts";
 import type { Ctx } from "../http.ts";
 import { customerTtl, currentCustomer, grantSession, requireCustomer } from "../auth.ts";
 import { buildLicenseFile, licenseView } from "../issuer.ts";
@@ -98,6 +100,22 @@ export function registerClientRoutes(): void {
   );
 
   get("/api/v1/public-key", () => ok(publicKeyInfo()));
+
+  /** 公开的 API 文档（JSON）：无需鉴权，供外部工具/文档站抓取 */
+  get("/api/v1/docs", () => ok(buildApiDocs()));
+
+  /** 公开的 API 文档（网页版）：无需登录，可直接把链接发给客户端开发者 */
+  get("/docs", (ctx) => {
+    const forwardedProto = ctx.headers["x-forwarded-proto"];
+    const proto =
+      config.trustProxy && typeof forwardedProto === "string"
+        ? forwardedProto.split(",")[0].trim()
+        : "http";
+    const host = ctx.headers.host ?? `localhost:${config.port}`;
+    return raw(renderDocsPage(buildApiDocs(), `${proto}://${host}`), "text/html; charset=utf-8", 200, {
+      "Cache-Control": "no-cache",
+    });
+  });
 
   /* ---------------------------- 账号 ---------------------------- */
 
