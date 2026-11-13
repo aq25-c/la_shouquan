@@ -741,6 +741,15 @@ function productForm(product) {
   });
 }
 
+/** 模块列表里的试用状态徽标（v12：模块级试用） */
+function trialBadge(m) {
+  const t = m.trial;
+  if (!t || !t.enabled) return '<span class="muted">未开放</span>';
+  const unit = t.mode === "count" ? "次" : "天";
+  const custom = m.trial_custom ? ' <span class="muted small">自定义</span>' : "";
+  return `<span class="badge badge-ok">${esc(String(t.value ?? "-"))} ${unit}</span>${custom}`;
+}
+
 async function moduleManager(productId) {
   const product = state.products.find((p) => p.id === productId);
   const res = await apiGet(`/admin/api/products/${productId}/modules`);
@@ -751,7 +760,7 @@ async function moduleManager(productId) {
       <div class="note">模块是 CDK 与授权的授权范围单位，客户端通过模块编码判断功能是否可用。</div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>模块名称</th><th>编码</th><th>状态</th><th class="right">操作</th></tr></thead>
+          <thead><tr><th>模块名称</th><th>编码</th><th>试用</th><th>状态</th><th class="right">操作</th></tr></thead>
           <tbody>
             ${
               rows.length
@@ -760,12 +769,18 @@ async function moduleManager(productId) {
                       (m) => `<tr>
                         <td>${esc(m.name)}</td>
                         <td class="mono">${esc(m.code)}</td>
+                        <td>${trialBadge(m)}</td>
                         <td>${m.status === "active" ? '<span class="badge badge-ok">启用</span>' : '<span class="badge">停用</span>'}</td>
-                        <td class="right"><button class="btn btn-sm" data-rm="${esc(m.id)}" type="button">删除</button></td>
+                        <td class="right">
+                          <div class="btn-row" style="justify-content:flex-end">
+                            <button class="btn btn-sm" data-trial="${esc(m.id)}" type="button">试用</button>
+                            <button class="btn btn-sm" data-rm="${esc(m.id)}" type="button">删除</button>
+                          </div>
+                        </td>
                       </tr>`,
                     )
                     .join("")
-                : emptyRow(4, "还没有模块")
+                : emptyRow(5, "还没有模块")
             }
           </tbody>
         </table>
@@ -794,6 +809,13 @@ async function moduleManager(productId) {
       };
     });
 
+    $$("[data-trial]", modal).forEach((btn) => {
+      btn.onclick = () => {
+        const m = rows.find((x) => x.id === btn.dataset.trial);
+        if (m) renderTrial(modal, m);
+      };
+    });
+
     $("[data-add]", modal).onclick = async () => {
       const code = $('[name="code"]', modal).value.trim();
       const name = $('[name="name"]', modal).value.trim();
@@ -809,6 +831,79 @@ async function moduleManager(productId) {
         rows.push(...refreshed.items);
         render(modal);
         toast("已添加", "ok");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+  };
+
+  const renderTrial = (modal, m) => {
+    const t = m.trial ?? {};
+    $(".modal-body", modal).innerHTML = `
+      <div class="note">模块 <b>${esc(m.name)}</b>（<code>${esc(m.code)}</code>）的试用配置。关闭后这个模块不参与客户自助试用。</div>
+      <div class="form-grid">
+        <label class="field"><span>开放试用</span>
+          <select name="t-enabled">
+            <option value="1" ${t.enabled ? "selected" : ""}>开放</option>
+            <option value="0" ${t.enabled ? "" : "selected"}>不开放</option>
+          </select>
+        </label>
+        <label class="field"><span>试用类型</span>
+          <select name="t-mode">
+            <option value="day" ${t.mode === "count" ? "" : "selected"}>按天数</option>
+            <option value="count" ${t.mode === "count" ? "selected" : ""}>按次数</option>
+          </select>
+        </label>
+        <label class="field"><span>试用数量（天 / 次）</span>
+          <input name="t-value" type="number" min="1" value="${esc(String(t.value ?? 14))}" />
+        </label>
+        <label class="field"><span>试用席位数</span>
+          <input name="t-seats" type="number" min="1" value="${esc(String(t.seats ?? 1))}" />
+        </label>
+        <label class="field"><span>每客户可试用次数</span>
+          <input name="t-max" type="number" min="0" value="${esc(String(t.max_per_customer ?? 1))}" />
+        </label>
+      </div>
+      <div class="note">${
+        m.trial_custom
+          ? "当前是这个模块自己的配置。"
+          : "当前继承产品级 / 全局配置，保存后会变成模块自定义。"
+      }</div>
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn btn-primary btn-sm" data-tsave type="button">保存</button>
+        <button class="btn btn-sm" data-treset type="button" ${m.trial_custom ? "" : "hidden"}>恢复继承</button>
+        <button class="btn btn-sm" data-tback type="button">返回模块列表</button>
+      </div>`;
+
+    const refresh = async () => {
+      const r = await apiGet(`/admin/api/products/${productId}/modules`);
+      rows.length = 0;
+      rows.push(...r.items);
+      render(modal);
+    };
+
+    $("[data-tback]", modal).onclick = () => render(modal);
+    $("[data-treset]", modal).onclick = async () => {
+      try {
+        await api("DELETE", `/admin/api/modules/${m.id}/trial`);
+        await refresh();
+        toast("已恢复继承产品 / 全局配置", "ok");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+    $("[data-tsave]", modal).onclick = async () => {
+      const body = {
+        enabled: $('[name="t-enabled"]', modal).value === "1",
+        mode: $('[name="t-mode"]', modal).value,
+        value: Number($('[name="t-value"]', modal).value) || 1,
+        seats: Number($('[name="t-seats"]', modal).value) || 1,
+        max_per_customer: Number($('[name="t-max"]', modal).value),
+      };
+      try {
+        await api("PATCH", `/admin/api/modules/${m.id}/trial`, body);
+        await refresh();
+        toast("试用配置已保存", "ok");
       } catch (err) {
         toast(err.message, "error");
       }

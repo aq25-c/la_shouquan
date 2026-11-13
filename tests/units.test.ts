@@ -23,9 +23,9 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v11，新增列齐全", () => {
+test("数据库迁移到 v12，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 11);
+  assert.equal(version, 12);
 
   const admin = columns("admin_users");
   assert.ok(admin.includes("permissions"), "admin_users.permissions");

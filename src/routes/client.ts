@@ -43,14 +43,21 @@ import {
   findCustomerById,
   touchCustomerLogin,
 } from "../store/accounts.ts";
-import { findModuleById, findProductByCode, findProductById, listModules, listProducts, moduleCodesFor } from "../store/catalog.ts";
-import { canStartTrial, getProductTrialConfig, getTrialConfig, trialCountFor } from "../store/trials.ts";
+import { findModuleById, findModuleByCode, findProductByCode, findProductById, listModules, listProducts, moduleCodesFor } from "../store/catalog.ts";
+import {
+  canStartModuleTrial,
+  getTrialConfig,
+  trialCountForModule,
+  trialModulesForProduct,
+} from "../store/trials.ts";
 import {
   activeDeviceCount,
   addLicenseModuleIds,
   applyModuleTerms,
   findModuleTermConflicts,
   recomputeLicenseExpiry,
+  setModuleTerm,
+  consumeModuleUsage,
   consumeUsage,
   effectiveStatus,
   findReusableLicense,
@@ -298,92 +305,141 @@ export function registerClientRoutes(): void {
 
   /* ---------------------------- 试用 ---------------------------- */
 
-  /** 试用配置（公开）：客户端可据此决定是否引导用户自助试用 */
+  /** 试用配置（公开）：按模块下发，客户端可据此让用户挑模块试用 */
   get("/api/v1/trial/info", () => {
-    const trialConfig = getTrialConfig();
-    const product = trialConfig.product_id ? findProductById(trialConfig.product_id) : null;
+    const trialGlobal = getTrialConfig();
+    const configured = trialGlobal.product_id ? findProductById(trialGlobal.product_id) : null;
+    const targets = configured ? [configured] : listProducts().filter((p) => p.status === "active");
+    const modules = targets.flatMap((p) =>
+      trialModulesForProduct(p.id).map(({ module, config }) => ({
+        product_code: p.code,
+        code: module.code,
+        name: module.name,
+        description: module.description,
+        mode: config.mode,
+        value: config.value,
+        days: config.days,
+        seats: config.seats,
+        max_per_customer: config.max_per_customer,
+      })),
+    );
     return ok({
-      enabled: trialConfig.enabled,
-      days: trialConfig.days,
-      seats: trialConfig.seats,
-      max_per_customer: trialConfig.max_per_customer,
-      product: product ? { code: product.code, name: product.name } : null,
-      module_codes: trialConfig.module_ids.length ? moduleCodesFor(trialConfig.module_ids) : [],
+      enabled: modules.length > 0,
+      seats: trialGlobal.seats,
+      max_per_customer: trialGlobal.max_per_customer,
+      days: trialGlobal.days,
+      product: configured ? { code: configured.code, name: configured.name } : null,
+      module_codes: modules.map((m) => m.code),
+      modules,
     });
   });
 
-  /** 我的试用情况（需客户登录） */
+  /** 我的试用情况（需客户登录）：按模块给出已用次数与是否还能试用 */
   get("/api/v1/trial/status", (ctx) => {
     const customer = requireCustomer(ctx);
-    const trialConfig = getTrialConfig();
+    const trialGlobal = getTrialConfig();
     const items = listProducts()
       .filter((p) => p.status === "active")
       .map((p) => {
-        const used = trialCountFor(customer.id, p.id);
-        return {
-          product: { code: p.code, name: p.name },
-          used,
-          remaining: Math.max(0, trialConfig.max_per_customer - used),
-        };
-      });
+        const modules = trialModulesForProduct(p.id).map(({ module, config }) => {
+          const used = trialCountForModule(customer.id, module.id);
+          const guard = canStartModuleTrial(customer.id, module.id);
+          return {
+            code: module.code,
+            name: module.name,
+            mode: config.mode,
+            value: config.value,
+            days: config.days,
+            max_per_customer: config.max_per_customer,
+            used,
+            remaining: Math.max(0, config.max_per_customer - used),
+            available: guard.ok,
+            reason: guard.ok ? null : guard.message,
+          };
+        });
+        return { product: { code: p.code, name: p.name }, modules };
+      })
+      .filter((p) => p.modules.length > 0);
     return ok({
-      enabled: trialConfig.enabled,
-      days: trialConfig.days,
-      seats: trialConfig.seats,
-      max_per_customer: trialConfig.max_per_customer,
+      enabled: items.length > 0,
+      seats: trialGlobal.seats,
+      max_per_customer: trialGlobal.max_per_customer,
+      days: trialGlobal.days,
       items,
     });
   });
 
-  /** 自助开通试用：按试用配置生成 trial 授权并绑定当前设备 */
+  /** 自助开通试用：按模块的开通配置生成 trial 授权并绑定当前设备 */
   post("/api/v1/trial/start", (ctx) => {
     const customer = requireCustomer(ctx);
     const deviceId = needStr(ctx, "device_id", 190);
     const deviceName = bodyStr(ctx, "device_name", { max: 190 });
     const platform = bodyStr(ctx, "platform", { max: 64 });
     const productCode = bodyStr(ctx, "product_code", { max: 64 });
+    const requestedCodes = bodyStrArray(ctx, "module_codes");
 
     const trialGlobal = getTrialConfig();
 
     let product = trialGlobal.product_id ? findProductById(trialGlobal.product_id) : null;
     if (!product && productCode) product = findProductByCode(productCode);
     if (!product) {
-      const candidate = listProducts().find((p) => p.status === "active");
+      const candidate = listProducts().find(
+        (p) => p.status === "active" && trialModulesForProduct(p.id).length > 0,
+      );
       product = candidate ? findProductById(candidate.id) : null;
     }
     if (!product) throw notFound("没有可试用的产品", "PRODUCT_NOT_FOUND");
     if (product.status !== "active") throw conflict("该产品当前不开放试用", "PRODUCT_DISABLED");
 
-    // v6：试用参数按产品配置，未配置的字段回落全局
-    const trialConfig = getProductTrialConfig(product.id);
+    // v12：试用按模块配置，只列开放试用的模块
+    const eligible = trialModulesForProduct(product.id);
+    if (!eligible.length) throw locked("该产品没有开放试用的模块", "TRIAL_DISABLED");
 
-    const guard = canStartTrial(customer.id, product.id);
-    if (!guard.ok) throw locked(guard.message, guard.code);
+    // 没指定就默认开通全部可试用模块
+    let picked = eligible;
+    if (requestedCodes && requestedCodes.length) {
+      const wanted = new Set(requestedCodes.map((c) => String(c).trim().toLowerCase()));
+      picked = eligible.filter((e) => wanted.has(e.module.code.toLowerCase()));
+      if (picked.length !== wanted.size) {
+        throw forbidden("所选模块不在试用范围内", "MODULE_NOT_ALLOWED");
+      }
+    }
 
-    // 试用模块：配置里指定则用它，否则给该产品全部模块
-    const moduleIds = trialConfig.module_ids.length
-      ? trialConfig.module_ids
-      : listModules(product.id).map((m) => m.id);
+    // 逐个模块校验：是否开放、次数是否用完、是否已有正式授权
+    for (const { module } of picked) {
+      const g = canStartModuleTrial(customer.id, module.id);
+      if (!g.ok) throw locked(g.message, g.code, { module_code: module.code });
+    }
+
+    const first = picked[0].config;
+    const terms = picked.map(({ module, config }) => ({
+      module,
+      config,
+      termType: (config.mode === "count" ? "count" : "day") as "count" | "day",
+      termValue: config.value,
+    }));
 
     const licenseKey = generateLicenseKey();
-    const license = withTx(() =>
-      createLicense({
+    const license = withTx(() => {
+      const row = createLicense({
         customerId: customer.id,
         productId: product.id,
         cdkId: null,
-        moduleIds,
-        seats: trialConfig.seats,
-        // v4：试用支持"试用几天"或"试用几次"
-        days: trialConfig.mode === "day" ? trialConfig.value : 30,
-        termType: trialConfig.mode,
-        termValue: trialConfig.value,
-        offlineGraceDays: trialConfig.offline_grace_days ?? undefined,
+        moduleIds: [], // 先建壳，下面逐模块写入各自的计费
+        seats: Math.max(...terms.map((t) => t.config.seats)),
+        days: first.days,
+        termType: terms[0].termType,
+        termValue: terms[0].termValue,
+        offlineGraceDays: first.offline_grace_days ?? undefined,
         keyHash: sha256hex(licenseKey),
-        note: trialConfig.mode === "day" ? `试用 ${trialConfig.value} 天` : `试用 ${trialConfig.value} 次`,
+        note: `试用 ${picked.map((p) => p.module.code).join("+")}`,
         kind: "trial",
         source: "trial",
-      }),
-    );
+      });
+      addLicenseModuleIds(row.id, terms.map((t) => t.module.id));
+      for (const t of terms) setModuleTerm(row.id, t.module.id, t.termType, t.termValue);
+      return recomputeLicenseExpiry(row.id) ?? row;
+    });
 
     upsertDevice({ licenseId: license.id, deviceId, deviceName, platform, ip: ctx.ip });
 
@@ -402,7 +458,11 @@ export function registerClientRoutes(): void {
       targetType: "license",
       targetId: license.id,
       ip: ctx.ip,
-      detail: { product: product.code, days: trialConfig.days, device_id: deviceId },
+      detail: {
+        product: product.code,
+        modules: picked.map((p) => p.module.code),
+        device_id: deviceId,
+      },
     });
 
     return created({
@@ -416,6 +476,14 @@ export function registerClientRoutes(): void {
       days_left: daysLeft(license.expires_at),
       product: { code: product.code, name: product.name },
       module_codes: issued.payload.mod,
+      modules: terms.map((t) => ({
+        code: t.module.code,
+        name: t.module.name,
+        mode: t.config.mode,
+        value: t.config.value,
+        expires_at:
+          listLicenseModules(license.id).find((r) => r.module_id === t.module.id)?.expires_at ?? null,
+      })),
       heartbeat_interval_hours: config.heartbeatIntervalHours,
       server_time: new Date().toISOString(),
     });
@@ -777,11 +845,21 @@ export function registerClientRoutes(): void {
     const licenseKey = needStr(ctx, "license_key", 200);
     const deviceId = needStr(ctx, "device_id", 190);
     const count = bodyInt(ctx, "count", { min: 1, max: 1000 }) ?? 1;
+    const moduleCode = bodyStr(ctx, "module_code", { max: 64 });
 
     const license = findLicenseByKeyHash(sha256hex(licenseKey));
     if (!license) throw notFound("许可证密钥无效", "INVALID_LICENSE_KEY");
 
-    if (license.term_type !== "count" || license.max_usages === null) {
+    // v12：指定模块且该模块自带额度时，按模块扣，不受「整张卡必须是次数型」的限制
+    let targetModuleId: string | null = null;
+    if (moduleCode) {
+      const mod = findModuleByCode(license.product_id, moduleCode);
+      if (!mod) throw notFound("模块不存在", "MODULE_NOT_FOUND");
+      const lm = listLicenseModules(license.id).find((r) => r.module_id === mod.id);
+      if (lm && lm.max_usages !== null && lm.max_usages !== undefined) targetModuleId = mod.id;
+    }
+
+    if (!targetModuleId && (license.term_type !== "count" || license.max_usages === null)) {
       throw conflict("该授权不是按次数计费，无需消耗次数", "NOT_COUNT_LICENSE");
     }
 
@@ -795,7 +873,9 @@ export function registerClientRoutes(): void {
     const customer = findCustomerById(license.customer_id);
     if (!customer || customer.status !== "active") throw locked("账号已被停用", "CUSTOMER_DISABLED");
 
-    const result = consumeUsage(license.id, count);
+    let result: { ok: boolean; max: number | null; used: number; remaining: number } | null = null;
+    if (targetModuleId) result = consumeModuleUsage(license.id, targetModuleId, count);
+    if (!result) result = consumeUsage(license.id, count);
     if (!result.ok) {
       throw locked(`次数已用完（总额度 ${result.max ?? 0} 次）`, "USAGE_EXHAUSTED", {
         max: result.max,

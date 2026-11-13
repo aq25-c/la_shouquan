@@ -48,6 +48,8 @@ export type ModuleRow = {
   name: string;
   description: string | null;
   status: string;
+  /** v12：该模块自己的试用配置 JSON（空串 = 沿用产品级 / 全局） */
+  trial_config: string;
   created_at: string;
 };
 

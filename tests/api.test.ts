@@ -878,7 +878,8 @@ test("试用：配置读写、自助申请、次数限制与延长", async () =>
   const status = await api("GET", "/api/v1/trial/status", undefined, tToken);
   assert.equal(status.json.data.enabled, true);
   const item = status.json.data.items.find((x: Json) => x.product.code === "app-pro");
-  assert.equal(item.remaining, 1);
+  assert.ok(item.modules.length >= 1, "应列出可试用的模块");
+  assert.equal(item.modules[0].remaining, 1);
 
   const started = await api("POST", "/api/v1/trial/start", { device_id: "TRIAL-DEV-1", device_name: "试用机" }, tToken);
   assert.equal(started.status, 201);
@@ -912,6 +913,100 @@ test("试用：配置读写、自助申请、次数限制与延长", async () =>
   // 恢复试用开关
   const restored = await api("PATCH", "/admin/api/settings/trial", { enabled: true }, adminToken);
   assert.equal(restored.json.data.config.enabled, true);
+});
+
+test("模块级试用：每个模块按自己的天数开通", async () => {
+  const DAY_MS = 86_400_000;
+  // core 试用 7 天，report 试用 3 天
+  const cfgA = await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[0]}/trial`,
+    { enabled: true, mode: "day", value: 7, seats: 1, max_per_customer: 2 },
+    adminToken,
+  );
+  assert.equal(cfgA.status, 200);
+  assert.equal(cfgA.json.data.config.value, 7);
+  assert.equal(cfgA.json.data.custom, true, "应标记为模块自定义");
+  const cfgB = await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[1]}/trial`,
+    { enabled: true, mode: "day", value: 3, seats: 1, max_per_customer: 2 },
+    adminToken,
+  );
+  assert.equal(cfgB.json.data.config.value, 3);
+
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "modtrial@test.local",
+    password: "ModTrial123",
+  });
+  const token = reg.json.data.session.token;
+
+  const info = await api("GET", "/api/v1/trial/info");
+  const ia = info.json.data.modules.find((m: Json) => m.code === "core");
+  const ib = info.json.data.modules.find((m: Json) => m.code === "report");
+  assert.equal(ia.days, 7, "core 应下发 7 天");
+  assert.equal(ib.days, 3, "report 应下发 3 天");
+
+  const before = Date.now();
+  const started = await api("POST", "/api/v1/trial/start", { device_id: "MT-1" }, token);
+  assert.equal(started.status, 201);
+  const ma = started.json.data.modules.find((m: Json) => m.code === "core");
+  const mb = started.json.data.modules.find((m: Json) => m.code === "report");
+  assert.ok(
+    Math.abs(Date.parse(ma.expires_at) - (before + 7 * DAY_MS)) < 15000,
+    "core 模块应试用 7 天",
+  );
+  assert.ok(
+    Math.abs(Date.parse(mb.expires_at) - (before + 3 * DAY_MS)) < 15000,
+    "report 模块应试用 3 天",
+  );
+  assert.ok(Date.parse(mb.expires_at) < Date.parse(ma.expires_at), "两个模块到期时间应不同");
+
+  // 清理模块级配置，避免影响后续用例（回到继承产品/全局）
+  await api("DELETE", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
+  await api("DELETE", `/admin/api/modules/${moduleIds[1]}/trial`, undefined, adminToken);
+});
+
+test("模块级试用：次数型按模块各自扣减", async () => {
+  // 只让 report 按次数试用（2 次），core 关闭试用
+  await api("PATCH", `/admin/api/modules/${moduleIds[0]}/trial`, { enabled: false }, adminToken);
+  const cfg = await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[1]}/trial`,
+    { enabled: true, mode: "count", value: 2, seats: 1, max_per_customer: 3 },
+    adminToken,
+  );
+  assert.equal(cfg.json.data.config.mode, "count");
+
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "modcount@test.local",
+    password: "ModCount123",
+  });
+  const token = reg.json.data.session.token;
+  const started = await api("POST", "/api/v1/trial/start", { device_id: "MC-1" }, token);
+  assert.equal(started.status, 201);
+  assert.equal(started.json.data.module_codes.length, 1, "只有 report 开放试用");
+  const key = started.json.data.license_key;
+
+  const consume = () =>
+    api("POST", "/api/v1/licenses/consume", {
+      license_key: key,
+      device_id: "MC-1",
+      module_code: "report",
+    });
+
+  const c1 = await consume();
+  assert.equal(c1.status, 200);
+  assert.equal(c1.json.data.remaining, 1, "模块自己的额度应扣到 1");
+  const c2 = await consume();
+  assert.equal(c2.json.data.remaining, 0);
+  const c3 = await consume();
+  assert.equal(c3.status, 403);
+  assert.equal(c3.json.error.code, "USAGE_EXHAUSTED");
+
+  // 清理模块级配置
+  await api("DELETE", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
+  await api("DELETE", `/admin/api/modules/${moduleIds[1]}/trial`, undefined, adminToken);
 });
 
 test("CDK：列表带出激活后的到期时间", async () => {

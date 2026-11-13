@@ -721,6 +721,10 @@ export type LicenseModuleRow = {
   term_type: string | null;
   /** v11：该模块自己的计费数值 */
   term_value: number | null;
+  /** v12：次数型模块自己的额度（null = 走授权级计次） */
+  max_usages: number | null;
+  /** v12：次数型模块已用次数 */
+  used_usages: number;
   created_at: string;
   updated_at: string;
 };
@@ -837,6 +841,85 @@ export function applyModuleTerms(
     merged.push(moduleId);
   }
   return { merged, created };
+}
+
+/**
+ * 直接设定某个模块的计费（不叠加，用于试用开通 / 手工开通）。
+ * 次数型：expires_at 置空，额度写到模块自己的 max_usages。
+ */
+export function setModuleTerm(
+  licenseId: string,
+  moduleId: string,
+  termType: TermType,
+  termValue: number,
+  baseMs: number = Date.now(),
+): LicenseModuleRow | null {
+  const at = nowIso();
+  const isCount = termCategory(termType) === "count";
+  const expiry = isCount ? null : new Date(computeExpiry(termType, termValue, baseMs)).toISOString();
+  const existing = db()
+    .prepare("SELECT * FROM license_modules WHERE license_id = ? AND module_id = ?")
+    .get(licenseId, moduleId) as unknown as LicenseModuleRow | undefined;
+
+  if (!existing) {
+    db()
+      .prepare(
+        `INSERT INTO license_modules
+           (id, license_id, module_id, expires_at, term_type, term_value, max_usages, used_usages, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      )
+      .run(
+        newId("lmd"),
+        licenseId,
+        moduleId,
+        expiry,
+        termType,
+        termValue,
+        isCount ? termValue : null,
+        at,
+        at,
+      );
+  } else {
+    db()
+      .prepare(
+        `UPDATE license_modules
+            SET expires_at = ?, term_type = ?, term_value = ?, max_usages = ?, used_usages = ?, updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(expiry, termType, termValue, isCount ? termValue : null, 0, at, existing.id);
+  }
+  return db()
+    .prepare("SELECT * FROM license_modules WHERE license_id = ? AND module_id = ?")
+    .get(licenseId, moduleId) as unknown as LicenseModuleRow | null;
+}
+
+/**
+ * 消耗某个模块的次数（模块自己有额度时走这里；返回 null 表示该模块走授权级计次）。
+ */
+export function consumeModuleUsage(
+  licenseId: string,
+  moduleId: string,
+  count = 1,
+): { ok: boolean; max: number; used: number; remaining: number } | null {
+  const row = db()
+    .prepare("SELECT * FROM license_modules WHERE license_id = ? AND module_id = ?")
+    .get(licenseId, moduleId) as unknown as LicenseModuleRow | undefined;
+  if (!row || row.max_usages === null || row.max_usages === undefined) return null;
+
+  const res = db()
+    .prepare(
+      `UPDATE license_modules SET used_usages = used_usages + ?, updated_at = ?
+        WHERE id = ? AND used_usages + ? <= max_usages`,
+    )
+    .run(count, nowIso(), row.id, count);
+  const applied = Number(res.changes) > 0;
+
+  const fresh = db()
+    .prepare("SELECT max_usages, used_usages FROM license_modules WHERE id = ?")
+    .get(row.id) as { max_usages: number; used_usages: number };
+  const max = Number(fresh.max_usages);
+  const used = Number(fresh.used_usages);
+  return { ok: applied, max, used, remaining: Math.max(0, max - used) };
 }
 
 /** 找出与本次计费类型冲突的模块（同一模块不能既有时长卡又压次数卡） */

@@ -1,5 +1,7 @@
 /** 试用（trial）：全局试用配置 + 每客户试用次数限制。配置存放在 settings 表。 */
 import { db, getSetting, scalar, setSetting } from "../db.ts";
+import { findModuleById, listModules } from "./catalog.ts";
+import type { ModuleRow } from "../types.ts";
 import { nowIso, parseJson, toJson } from "../util.ts";
 
 export type TrialConfig = {
@@ -115,7 +117,12 @@ export function getProductTrialConfig(productId: string): TrialConfig {
   const raw = row?.trial_config ?? "";
   if (!raw) return { ...base, product_id: productId };
   const patch = parseJson<Partial<TrialConfig>>(raw, {});
-  return { ...base, ...patch, product_id: productId };
+  const merged = { ...base, ...patch };
+  // 兼容字段 days 跟随 mode/value，避免只改 value 时 days 还是旧值
+  if (patch.value === undefined && patch.days !== undefined) merged.value = patch.days;
+  merged.days = merged.mode === "day" ? merged.value : merged.days;
+  merged.product_id = productId;
+  return merged;
 }
 
 /** 写入产品级试用配置（只覆盖传进来的字段） */
@@ -167,6 +174,103 @@ export function canStartTrial(customerId: string, productId: string): TrialGuard
       code: "TRIAL_NOT_ALLOWED",
       message: "该产品已有正式授权，无需试用",
     };
+  }
+  return { ok: true };
+}
+
+/* ---------------------------- 模块级试用（v12） ---------------------------- */
+
+/**
+ * 读取某模块的试用配置：模块自己配过的字段覆盖产品级，产品级覆盖全局。
+ * 没配过的模块沿用上层配置（这是「模块级优先」的回落规则）。
+ */
+export function getModuleTrialConfig(moduleId: string): TrialConfig {
+  const mod = findModuleById(moduleId);
+  if (!mod) return { ...getTrialConfig() };
+  const base = getProductTrialConfig(mod.product_id);
+  const raw = mod.trial_config ?? "";
+  if (!raw) return base;
+  const patch = parseJson<Partial<TrialConfig>>(raw, {});
+  const merged = { ...base, ...patch };
+  if (patch.value === undefined && patch.days !== undefined) merged.value = patch.days;
+  merged.days = merged.mode === "day" ? merged.value : merged.days;
+  return merged;
+}
+
+/** 写入模块级试用配置（只覆盖传进来的字段）。传空对象 = 清空、回到继承上层。 */
+export function setModuleTrialConfig(moduleId: string, patch: Partial<TrialConfig>): TrialConfig {
+  const mod = findModuleById(moduleId);
+  if (!mod) throw new Error("module not found");
+  const current = parseJson<Record<string, unknown>>(mod.trial_config ?? "", {});
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "product_id") continue; // 产品由模块决定
+    if (value === undefined) continue;
+    if (value === null) delete current[key];
+    else current[key] = value;
+  }
+  db()
+    .prepare("UPDATE modules SET trial_config = ? WHERE id = ?")
+    .run(toJson(current), moduleId);
+  return getModuleTrialConfig(moduleId);
+}
+
+/** 清空模块级试用配置，回到继承产品 / 全局 */
+export function clearModuleTrialConfig(moduleId: string): void {
+  db().prepare("UPDATE modules SET trial_config = '' WHERE id = ?").run(moduleId);
+}
+
+/** 该模块是否单独配过试用（用于后台展示「继承 / 自定义」） */
+export function moduleHasTrialConfig(moduleId: string): boolean {
+  const mod = findModuleById(moduleId);
+  return Boolean(mod?.trial_config);
+}
+
+/** 某产品下所有开放试用的模块及其配置 */
+export function trialModulesForProduct(
+  productId: string,
+): { module: ModuleRow; config: TrialConfig }[] {
+  return listModules(productId)
+    .filter((m) => m.status === "active")
+    .map((module) => ({ module, config: getModuleTrialConfig(module.id) }))
+    .filter((x) => x.config.enabled);
+}
+
+/** 某客户在某模块上已开通的试用次数 */
+export function trialCountForModule(customerId: string, moduleId: string): number {
+  return scalar(
+    `SELECT COUNT(*) AS n
+       FROM licenses l
+       JOIN license_modules lm ON lm.license_id = l.id
+      WHERE l.customer_id = ? AND lm.module_id = ? AND l.kind = 'trial'`,
+    customerId,
+    moduleId,
+  );
+}
+
+/** 校验客户能否对某个模块发起试用 */
+export function canStartModuleTrial(customerId: string, moduleId: string): TrialGuard {
+  const config = getModuleTrialConfig(moduleId);
+  if (!config.enabled) {
+    return { ok: false, code: "TRIAL_DISABLED", message: "该模块未开放试用" };
+  }
+  const used = trialCountForModule(customerId, moduleId);
+  if (used >= config.max_per_customer) {
+    return {
+      ok: false,
+      code: "TRIAL_ALREADY_USED",
+      message: `该模块试用次数已用完（上限 ${config.max_per_customer} 次）`,
+    };
+  }
+  const paid = scalar(
+    `SELECT COUNT(*) AS n
+       FROM licenses l
+       JOIN license_modules lm ON lm.license_id = l.id
+      WHERE l.customer_id = ? AND lm.module_id = ? AND l.kind = 'paid' AND l.status = 'active'`,
+    customerId,
+    moduleId,
+  );
+  if (paid > 0) {
+    return { ok: false, code: "TRIAL_NOT_ALLOWED", message: "该模块已有正式授权，无需试用" };
   }
   return { ok: true };
 }

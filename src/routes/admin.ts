@@ -144,7 +144,17 @@ import {
   updateLicense,
   upsertDevice,
 } from "../store/licensing.ts";
-import { getProductTrialConfig, getTrialConfig, setProductTrialConfig, setTrialConfig, trialSummary } from "../store/trials.ts";
+import {
+  clearModuleTrialConfig,
+  getModuleTrialConfig,
+  getProductTrialConfig,
+  getTrialConfig,
+  moduleHasTrialConfig,
+  setModuleTrialConfig,
+  setProductTrialConfig,
+  setTrialConfig,
+  trialSummary,
+} from "../store/trials.ts";
 import type { TrialConfig } from "../store/trials.ts";
 import type { LicenseRow } from "../types.ts";
 import { DAY, isEmail, normalizeEmail, parseJson, toMs } from "../util.ts";
@@ -953,7 +963,14 @@ export function registerAdminRoutes(): void {
     requireAdmin(ctx);
     const id = slash(ctx, "id");
     if (!findProductById(id)) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
-    return ok({ items: listModules(id) });
+    // v12：带上每个模块的试用配置（含从产品/全局继承的结果）
+    return ok({
+      items: listModules(id).map((m) => ({
+        ...m,
+        trial: getModuleTrialConfig(m.id),
+        trial_custom: moduleHasTrialConfig(m.id),
+      })),
+    });
   });
 
   post(`${P}/products/:id/modules`, (ctx) => {
@@ -986,8 +1003,85 @@ export function registerAdminRoutes(): void {
     requireAdmin(ctx);
     const codes = new Map(listProducts().map((p) => [p.id, p.code]));
     return ok({
-      items: listAllModules().map((m) => ({ ...m, product_code: codes.get(m.product_id) ?? null })),
+      items: listAllModules().map((m) => ({
+        ...m,
+        product_code: codes.get(m.product_id) ?? null,
+        trial: getModuleTrialConfig(m.id),
+        trial_custom: moduleHasTrialConfig(m.id),
+      })),
     });
+  });
+
+  /** v12：读取某个模块的试用配置（含继承来源） */
+  get(`${P}/modules/:id/trial`, (ctx) => {
+    requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const mod = findModuleById(id);
+    if (!mod) throw notFound("模块不存在", "MODULE_NOT_FOUND");
+    return ok({
+      module: { id: mod.id, code: mod.code, name: mod.name },
+      config: getModuleTrialConfig(id),
+      custom: moduleHasTrialConfig(id),
+      inherited_from: moduleHasTrialConfig(id) ? "module" : "product/global",
+    });
+  });
+
+  /** v12：写入模块级试用配置（只覆盖传入字段；传 null 清空该字段回到继承） */
+  patch(`${P}/modules/:id/trial`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const mod = findModuleById(id);
+    if (!mod) throw notFound("模块不存在", "MODULE_NOT_FOUND");
+
+    const patch: Partial<TrialConfig> = {};
+    const enabled = typeof ctx.body.enabled === "boolean" ? ctx.body.enabled : undefined;
+    if (enabled !== undefined) patch.enabled = enabled;
+    const mode = bodyStr(ctx, "mode", { max: 10 });
+    if (mode) {
+      if (!["day", "count"].includes(mode)) throw badRequest("mode 只能是 day / count", "INVALID_FIELD");
+      patch.mode = mode as "day" | "count";
+    }
+    const value = bodyInt(ctx, "value", { min: 1, max: 100000 });
+    if (value !== null) patch.value = value;
+    const seats = bodyInt(ctx, "seats", { min: 1, max: 100 });
+    if (seats !== null) patch.seats = seats;
+    const maxPerCustomer = bodyInt(ctx, "max_per_customer", { min: 0, max: 100 });
+    if (maxPerCustomer !== null) patch.max_per_customer = maxPerCustomer;
+    const grace = bodyInt(ctx, "offline_grace_days", { min: 0, max: 365 });
+    if (grace !== null) patch.offline_grace_days = grace;
+
+    const config = setModuleTrialConfig(id, patch);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "module.trial_update",
+      targetType: "module",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { code: mod.code, ...patch },
+    });
+    return ok({ config, custom: moduleHasTrialConfig(id) });
+  });
+
+  /** v12：清空模块级试用配置，回到继承产品 / 全局 */
+  del(`${P}/modules/:id/trial`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const mod = findModuleById(id);
+    if (!mod) throw notFound("模块不存在", "MODULE_NOT_FOUND");
+    clearModuleTrialConfig(id);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "module.trial_reset",
+      targetType: "module",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { code: mod.code },
+    });
+    return ok({ config: getModuleTrialConfig(id), custom: false });
   });
 
   patch(`${P}/modules/:id`, (ctx) => {
