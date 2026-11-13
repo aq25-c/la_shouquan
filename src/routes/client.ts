@@ -193,8 +193,8 @@ export function registerClientRoutes(): void {
     const name = bodyStr(ctx, "name", { max: 120 });
 
     if (!isEmail(email)) throw badRequestEmail();
-    if (password.length < 8) {
-      throw conflict("密码至少 8 位", "WEAK_PASSWORD");
+    if (password.length < 6) {
+      throw conflict("密码至少 6 位", "WEAK_PASSWORD");
     }
     if (findCustomerByEmail(email)) {
       throw conflict("该邮箱已注册，请直接登录", "EMAIL_TAKEN");
@@ -496,7 +496,7 @@ export function registerClientRoutes(): void {
           touchCustomerLogin(existing.id);
           plan = { kind: "existing", customerId: existing.id };
         } else {
-          if (!password || password.length < 8) throw conflict("新账号密码至少 8 位", "WEAK_PASSWORD");
+          if (!password || password.length < 6) throw conflict("新账号密码至少 6 位", "WEAK_PASSWORD");
           plan = { kind: "new", email, passwordHash: await hashPassword(password), name };
         }
       } else {

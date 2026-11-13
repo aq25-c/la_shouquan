@@ -251,7 +251,7 @@ export function registerAdminRoutes(): void {
     const admin = requireAdmin(ctx);
     const current = needStr(ctx, "current_password", 200);
     const next = needStr(ctx, "new_password", 200);
-    if (next.length < 8) throw badRequest("新密码至少 8 位", "WEAK_PASSWORD");
+    if (next.length < 6) throw badRequest("新密码至少 6 位", "WEAK_PASSWORD");
     if (!(await verifyPassword(current, admin.password_hash))) {
       throw unauthorized("当前密码不正确", "INVALID_CREDENTIALS");
     }
@@ -334,7 +334,7 @@ export function registerAdminRoutes(): void {
 
     if (!["staff", "agent"].includes(roleInput)) throw badRequest("role 只能是 staff / agent", "INVALID_FIELD");
     if (!isEmail(email)) throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
-    if (password.length < 8) throw badRequest("密码至少 8 位", "WEAK_PASSWORD");
+    if (password.length < 6) throw badRequest("密码至少 6 位", "WEAK_PASSWORD");
     if (findAdminByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
 
     let agentId: string | null = null;
@@ -408,7 +408,7 @@ export function registerAdminRoutes(): void {
 
     const password = bodyStr(ctx, "password", 200);
     if (password) {
-      if (password.length < 8) throw badRequest("密码至少 8 位", "WEAK_PASSWORD");
+      if (password.length < 6) throw badRequest("密码至少 6 位", "WEAK_PASSWORD");
       patchData.password_hash = await hashPassword(password);
     }
 
@@ -460,7 +460,7 @@ export function registerAdminRoutes(): void {
     return ok({ staff: updated ? adminView(updated) : null });
   });
 
-  delete(`${P}/staff/:id`, (ctx) => {
+  del(`${P}/staff/:id`, (ctx) => {
     const actor = requireOwner(ctx).admin;
     const id = slash(ctx, "id");
     const target = findAdminById(id);
@@ -671,7 +671,7 @@ export function registerAdminRoutes(): void {
     return ok({ price });
   });
 
-  delete(`${P}/prices/:id`, (ctx) => {
+  del(`${P}/prices/:id`, (ctx) => {
     const admin = requireAdmin(ctx);
     const id = slash(ctx, "id");
     if (!findPrice(id)) throw notFound("价格不存在", "PRICE_NOT_FOUND");
@@ -1228,7 +1228,7 @@ export function registerAdminRoutes(): void {
     const email = emailInput ? normalizeEmail(emailInput) : null;
     if (email && !isEmail(email)) throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
     if (email && findCustomerByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
-    if (password && password.length < 8) throw badRequest("密码至少 8 位", "WEAK_PASSWORD");
+    if (password && password.length < 6) throw badRequest("密码至少 6 位", "WEAK_PASSWORD");
 
     const customer = createCustomer({
       email,
@@ -1309,7 +1309,7 @@ export function registerAdminRoutes(): void {
     }
     const passwordInput = bodyStr(ctx, "password", 200);
     if (passwordInput) {
-      if (passwordInput.length < 8) throw conflict("密码至少 8 位", "WEAK_PASSWORD");
+      if (passwordInput.length < 6) throw conflict("密码至少 6 位", "WEAK_PASSWORD");
       patchData.password_hash = await hashPassword(passwordInput);
     }
     const name = bodyStr(ctx, "name", { max: 120 });

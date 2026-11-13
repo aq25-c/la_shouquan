@@ -822,48 +822,6 @@ async function moduleManager(productId) {
     footer: `<button class="btn" data-close2 type="button">关闭</button>`,
     onMount(modal, close) {
       render(modal);
-      const editModulesBtn = $("[data-edit-modules]", modal);
-      if (editModulesBtn) {
-        editModulesBtn.onclick = async () => {
-          const mods = await apiGet(`/admin/api/products/${l.product_id}/modules`).catch(() => ({ items: [] }));
-          const picked = new Set((data.modules ?? []).map((m) => m.id));
-          openModal({
-            title: `编辑模块：${l.license_no}`,
-            body: `<div class="note">可以勾选或取消，但必须至少保留一个模块；保存后客户端下次心跳/重新签发即可拿到新模块。</div>
-              <div class="checkbox-list" data-mods style="margin-top:12px">
-                ${
-                  mods.items
-                    .map(
-                      (m) =>
-                        `<label><input type="checkbox" value="${esc(m.id)}" ${picked.has(m.id) ? "checked" : ""} /><span>${esc(m.name)}（${esc(m.code)}）</span></label>`,
-                    )
-                    .join("") || '<span class="empty">该产品还没有模块</span>'
-                }
-              </div>`,
-            footer: `<button class="btn" data-c type="button">取消</button><button class="btn btn-primary" data-ok type="button">保存</button>`,
-            onMount(m2, close2) {
-              $("[data-c]", m2).onclick = close2;
-              $("[data-ok]", m2).onclick = async () => {
-                const ids = $$("[data-mods] input:checked", m2).map((i) => i.value);
-                if (!ids.length) {
-                  toast("请至少保留一个模块", "error");
-                  return;
-                }
-                try {
-                  await apiPatch(`/admin/api/licenses/${id}`, { module_ids: ids });
-                  toast("模块已更新", "ok");
-                  close2();
-                  close();
-                  navigate("licenses", true);
-                } catch (err) {
-                  toast(err.message, "error");
-                }
-              };
-            },
-          });
-        };
-      }
-
       $("[data-close2]", modal).onclick = () => {
         close();
         navigate("products");
@@ -1006,7 +964,7 @@ async function agentAccountForm(agentId) {
     : `<div class="note">该代理还没有登录账号。创建后它可登录后台，但只能看自己的卡密与余额。</div>
        <div class="form-grid" style="margin-top:12px">
          <label class="field"><span>登录邮箱</span><input name="email" placeholder="agent@example.com" /></label>
-         <label class="field"><span>初始密码（≥8 位）</span><input name="password" type="password" autocomplete="new-password" /></label>
+         <label class="field"><span>初始密码（≥6 位）</span><input name="password" type="password" autocomplete="new-password" /></label>
        </div>`;
 
   openModal({
@@ -1116,7 +1074,7 @@ async function renderAgents(root) {
             <thead>
               <tr>
                 <th>代理</th><th>联系人</th><th>CDK（已核销/总量）</th><th>激活率</th>
-                <th>授权</th><th>卡密余额</th><th>营收</th><th>最近激活</th><th>状态</th><th class="right">操作</th>
+                <th>授权</th><th>账户余额</th><th>最近激活</th><th>状态</th><th class="right">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -1131,7 +1089,6 @@ async function renderAgents(root) {
                           <td>${c.cdk_total > 0 ? percent(c.activation_rate) : "—"}</td>
                           <td>${c.license_total}（有效 ${c.license_active}）<div class="muted small">近 30 天新增 ${c.activated_30d}</div></td>
                           <td>${money(c.balance ?? 0)}<div class="muted small">${(c.balance ?? 0) > 0 ? "可继续生成" : "余额不足"}</div></td>
-                          <td>${money(c.revenue_total)}<div class="muted small">近 30 天 ${money(c.revenue_30d)}</div></td>
                           <td class="nowrap">${c.last_activated_at ? fmtDay(c.last_activated_at) : "—"}</td>
                           <td>${c.status === "active" ? '<span class="badge badge-ok">启用</span>' : '<span class="badge">停用</span>'}</td>
                           <td class="right">
@@ -1147,7 +1104,7 @@ async function renderAgents(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(10, "还没有代理。代理用于区分分销来源，并统计各代理的 CDK 与营收")
+                  : emptyRow(9, "还没有代理。代理用于区分分销来源，并统计各代理的 CDK 与激活")
               }
             </tbody>
           </table>
@@ -1210,25 +1167,26 @@ async function renderAgents(root) {
 function agentCreditForm(agent) {
   if (!agent) return;
   openModal({
-    title: `充值 / 扣减：${agent.name}`,
+    title: `充值 / 扣减余额：${agent.name}`,
     body: `
-      <div class="note">当前卡密余额：<strong>${agent.credit ?? 0} 张</strong>。代理生成卡密时按数量扣减，余额不足则无法生成。</div>
+      <div class="note">当前账户余额：<strong>${money(agent.balance ?? 0)}</strong>。代理生成卡密时按「单价 × 时长/次数 × 张数」从余额扣费。</div>
       <div class="form-grid">
-        <label class="field"><span>数量（正数=充值，负数=扣减）</span><input name="amount" type="number" value="100" /></label>
+        <label class="field"><span>金额（元，正数=充值，负数=扣减）</span><input name="amount" type="number" step="0.01" value="100" /></label>
       </div>`,
     footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">确定</button>`,
     onMount(modal, close) {
       $("[data-cancel]", modal).onclick = close;
       $("[data-save]", modal).onclick = async () => {
-        const amount = Number($('[name="amount"]', modal).value);
-        if (!Number.isFinite(amount) || amount === 0) {
-          toast("请填写非 0 的数量", "error");
+        const yuan = Number($('[name="amount"]', modal).value);
+        if (!Number.isFinite(yuan) || yuan === 0) {
+          toast("请填写非 0 的金额", "error");
           return;
         }
         try {
-          const res = await apiPost(`/admin/api/agents/${agent.id}/credit`, { amount });
+          const res = await apiPost(`/admin/api/agents/${agent.id}/balance`, { amount: Math.round(yuan * 100) });
+          const after = res.agent?.balance ?? res.channel?.balance ?? 0;
           close();
-          toast(`已更新，当前余额 ${res.agent.credit} 张`, "ok");
+          toast(`已更新，当前余额 ${money(after)}`, "ok");
           navigate("agents", true);
         } catch (err) {
           toast(err.message, "error");
@@ -1754,7 +1712,11 @@ async function openLicenseDetail(id) {
           <button class="btn btn-sm" data-reset-devices type="button">重置全部设备</button>
           <button class="btn btn-sm" data-rotate type="button">重置许可证密钥</button>
           <button class="btn btn-sm" data-reissue type="button">重新签发许可证文件</button>
-          <button class="btn btn-sm btn-danger" data-revoke type="button">吊销授权</button>
+          ${
+            l.status === "revoked"
+              ? '<button class="btn btn-sm" data-restore type="button">恢复授权</button>'
+              : '<button class="btn btn-sm btn-danger" data-revoke type="button">吊销授权</button>'
+          }
         </div>
       </div>
     </div>`;
@@ -1765,6 +1727,48 @@ async function openLicenseDetail(id) {
     body,
     footer: `<button class="btn" data-close2 type="button">关闭</button>`,
     onMount(modal, close) {
+      const editModulesBtn = $("[data-edit-modules]", modal);
+      if (editModulesBtn) {
+        editModulesBtn.onclick = async () => {
+          const mods = await apiGet(`/admin/api/products/${l.product_id}/modules`).catch(() => ({ items: [] }));
+          const picked = new Set((data.modules ?? []).map((m) => m.id));
+          openModal({
+            title: `编辑模块：${l.license_no}`,
+            body: `<div class="note">可以勾选或取消，但必须至少保留一个模块；保存后客户端下次心跳/重新签发即可拿到新模块。</div>
+              <div class="checkbox-list" data-mods style="margin-top:12px">
+                ${
+                  mods.items
+                    .map(
+                      (m) =>
+                        `<label><input type="checkbox" value="${esc(m.id)}" ${picked.has(m.id) ? "checked" : ""} /><span>${esc(m.name)}（${esc(m.code)}）</span></label>`,
+                    )
+                    .join("") || '<span class="empty">该产品还没有模块</span>'
+                }
+              </div>`,
+            footer: `<button class="btn" data-c type="button">取消</button><button class="btn btn-primary" data-ok type="button">保存</button>`,
+            onMount(m2, close2) {
+              $("[data-c]", m2).onclick = close2;
+              $("[data-ok]", m2).onclick = async () => {
+                const ids = $$("[data-mods] input:checked", m2).map((i) => i.value);
+                if (!ids.length) {
+                  toast("请至少保留一个模块", "error");
+                  return;
+                }
+                try {
+                  await apiPatch(`/admin/api/licenses/${id}`, { module_ids: ids });
+                  toast("模块已更新", "ok");
+                  close2();
+                  close();
+                  navigate("licenses", true);
+                } catch (err) {
+                  toast(err.message, "error");
+                }
+              };
+            },
+          });
+        };
+      }
+
       const refresh = async () => {
         close();
         await navigate("licenses", true);
@@ -1875,7 +1879,18 @@ async function openLicenseDetail(id) {
         }
       };
 
-      $("[data-revoke]", modal).onclick = async () => {
+      const restoreBtn = $("[data-restore]", modal);
+      if (restoreBtn) {
+        restoreBtn.onclick = async () => {
+          if (!(await confirmDialog("恢复该授权的正常状态？", { okText: "恢复" }))) return;
+          await act(async () => {
+            await apiPatch(`/admin/api/licenses/${id}`, { status: "active" });
+          }, "已恢复");
+        };
+      }
+
+      const revokeBtn = $("[data-revoke]", modal);
+      if (revokeBtn) revokeBtn.onclick = async () => {
         if (!(await confirmDialog("吊销后客户端心跳会立即失败且无法恢复，确定继续？", { danger: true, okText: "吊销" }))) return;
         await act(() => apiPost(`/admin/api/licenses/${id}/revoke`, { reason: "后台手动吊销" }), "已吊销");
       };
@@ -2095,7 +2110,7 @@ function customerForm() {
     body: `
       <div class="form-grid">
         <label class="field"><span>邮箱（用于登录，留空 = 仅后台代管）</span><input name="email" type="email" placeholder="buyer@example.com" /></label>
-        <label class="field"><span>登录密码（≥8 位，留空 = 不能登录）</span><input name="password" type="password" autocomplete="new-password" /></label>
+        <label class="field"><span>登录密码（≥6 位，留空 = 不能登录）</span><input name="password" type="password" autocomplete="new-password" /></label>
         <label class="field"><span>姓名</span><input name="name" placeholder="张三" /></label>
         <label class="field"><span>公司</span><input name="company" /></label>
         <label class="field"><span>电话</span><input name="phone" /></label>
@@ -2589,7 +2604,7 @@ async function staffForm(staff, opt) {
     body: `
       <div class="form-grid">
         <label class="field"><span>邮箱</span><input name="email" value="${esc(staff?.email ?? "")}" ${isNew ? "" : "disabled"} /></label>
-        <label class="field"><span>${isNew ? "初始密码（≥8 位）" : "重置密码（留空不改）"}</span><input name="password" type="password" autocomplete="new-password" /></label>
+        <label class="field"><span>${isNew ? "初始密码（≥6 位）" : "重置密码（留空不改）"}</span><input name="password" type="password" autocomplete="new-password" /></label>
         <label class="field"><span>名称</span><input name="name" value="${esc(staff?.name ?? "")}" /></label>
         <label class="field"><span>角色</span>
           <select name="role" ${isNew ? "" : "disabled"}>
@@ -2864,7 +2879,7 @@ async function renderSettings(root) {
       <div class="card-body">
         <div class="form-grid">
           <label class="field"><span>当前密码</span><input name="current" type="password" autocomplete="current-password" /></label>
-          <label class="field"><span>新密码（至少 8 位）</span><input name="next" type="password" autocomplete="new-password" /></label>
+          <label class="field"><span>新密码（至少 6 位）</span><input name="next" type="password" autocomplete="new-password" /></label>
         </div>
         <div class="form-actions"><button class="btn btn-primary btn-sm" data-change-pw type="button">修改密码</button></div>
       </div>
