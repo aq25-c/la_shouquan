@@ -33,6 +33,16 @@ function fmtDay(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** 客户单元格：姓名优先，邮箱做副行（v2.11：列表显示客户名称） */
+function customerCell(name, email, extra = "") {
+  const n = name ? String(name).trim() : "";
+  const e = email ? String(email).trim() : "";
+  const main = n || e || "—";
+  const sub = n && e && n !== e ? `<span class="cell-sub">${esc(e)}</span>` : "";
+  // 外面包一层：表格转卡片时这一格只算一个 flex item，姓名和邮箱不会被扯到两头
+  return `<span class="cell-stack"><span class="cell-main">${esc(main)}</span>${sub}${extra}</span>`;
+}
+
 /** 卡类型中文 */
 function termText(t) {
   return { hour: "按小时", day: "按天", month: "按月", year: "按年", count: "按次数" }[t] ?? t ?? "—";
@@ -287,7 +297,12 @@ function startSession(token, admin) {
   localStorage.setItem("lic_admin_token", token);
   $("#login-view").hidden = true;
   $("#app-view").hidden = false;
-  $("#admin-label").textContent = `${admin?.email ?? ""}${admin?.role && admin.role !== "owner" ? " · " + (admin.role === "agent" ? "代理" : "员工") : ""}`;
+  const who = (admin?.name && String(admin.name).trim()) || admin?.email || "管理员";
+  const roleText = admin?.role && admin.role !== "owner" ? (admin.role === "agent" ? "代理" : "员工") : "";
+  $("#admin-label").innerHTML =
+    `<span class="avatar">${esc(String(who).slice(0, 1).toUpperCase())}</span>` +
+    `<span class="name">${esc(who)}${roleText ? ` · ${roleText}` : ""}</span>`;
+  $("#admin-label").title = admin?.email ?? String(who);
   applyMenuPermissions();
 }
 
@@ -316,6 +331,35 @@ async function bootstrapSession() {
   }
 }
 
+/** 手机端抽屉导航：开/关都只改 body 上的 class，样式负责动画 */
+function closeDrawer() {
+  document.body.classList.remove("drawer-open");
+}
+
+/**
+ * 手机端表格转卡片：把表头文字写进每个单元格的 data-label，
+ * 复杂表（有 colspan/rowspan，比如价目表的分组行）保持横向滚动。
+ */
+function enhanceTables(root) {
+  root.querySelectorAll("table").forEach((table) => {
+    const heads = $$("thead th", table).map((th) => th.textContent.trim());
+    if (!heads.length) return;
+    const rows = $$("tbody tr", table);
+    const complex = rows.some((tr) => tr.querySelector("td[colspan], td[rowspan]"));
+    rows.forEach((tr) => {
+      [...tr.children].forEach((td, i) => {
+        if (td.colSpan > 1) return;
+        if (!td.dataset.label && heads[i]) td.dataset.label = heads[i];
+      });
+    });
+    if (complex) {
+      table.closest(".table-wrap")?.classList.add("scroll-x");
+    } else {
+      table.classList.add("card-table");
+    }
+  });
+}
+
 /* ============================ 导航 ============================ */
 
 const VIEWS = {
@@ -337,6 +381,7 @@ async function navigate(name, keepPage = false) {
   if (!view) return;
   state.view = name;
   if (!keepPage) state.pages[name] = 1;
+  closeDrawer();
   $$("#nav .nav-item, .sidebar-foot .nav-item").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === name);
   });
@@ -346,6 +391,7 @@ async function navigate(name, keepPage = false) {
   root.innerHTML = `<div class="card"><div class="card-body muted">加载中…</div></div>`;
   try {
     await view.render(root);
+    enhanceTables(root);
   } catch (err) {
     root.innerHTML = `<div class="card"><div class="card-body"><p class="error-text">加载失败：${esc(err.message)}</p></div></div>`;
   }
@@ -396,7 +442,7 @@ async function renderOverview(root) {
     <div class="stat-grid">
       <div class="stat accent"><div class="stat-label">有效授权</div><div class="stat-value">${s.licenses_active}</div>
         <div class="stat-hint">累计 ${s.licenses_total} 个授权</div></div>
-      <div class="stat warn"><div class="stat-label">7 天内到期</div><div class="stat-value">${s.licenses_expiring_7d}</div>
+      <div class="stat${s.licenses_expiring_7d > 0 ? " warn" : ""}"><div class="stat-label">7 天内到期</div><div class="stat-value">${s.licenses_expiring_7d}</div>
         <div class="stat-hint">已过期 ${s.licenses_expired} 个</div></div>
       <div class="stat"><div class="stat-label">未使用 CDK</div><div class="stat-value">${s.cdk_unused}</div>
         <div class="stat-hint">已核销 ${s.cdk_used} 个</div></div>
@@ -422,7 +468,7 @@ async function renderOverview(root) {
                       .map(
                         (l) => `<tr>
                           <td class="mono">${esc(l.license_no)}</td>
-                          <td>${esc(l.customer_email ?? l.customer_name ?? "—")}</td>
+                          <td>${customerCell(l.customer_name, l.customer_email)}</td>
                           <td>${esc(l.product_name)}</td>
                           <td class="nowrap">${fmtDay(l.expires_at)}</td>
                           <td><span class="badge badge-warn">${relDays(l.expires_at)}</span></td>
@@ -452,7 +498,7 @@ async function renderOverview(root) {
                       .map(
                         (l) => `<tr>
                           <td class="mono">${esc(l.license_no)}</td>
-                          <td>${esc(l.customer_email ?? l.customer_name ?? "—")}</td>
+                          <td>${customerCell(l.customer_name, l.customer_email)}</td>
                           <td>${esc(l.product_code)}</td>
                           <td class="nowrap">${fmtDay(l.starts_at)}</td>
                           <td class="nowrap">${fmtDay(l.expires_at)}</td>
@@ -1547,7 +1593,7 @@ async function renderCdks(root) {
                           <td>${c.days} 天</td>
                           <td>${c.seats}</td>
                           <td>${statusBadge(CDK_STATUS, c.status)}</td>
-                          <td>${esc(c.customer_email ?? "—")}</td>
+                          <td>${customerCell(c.customer_name, c.customer_email)}</td>
                           <td class="nowrap">${c.license_expires_at ? `${fmtDay(c.license_expires_at)}<div class="muted small">${relDays(c.license_expires_at)}</div>` : '<span class="muted small">未激活</span>'}</td>
                           <td class="nowrap">${fmtTime(c.created_at)}</td>
                           <td class="right">
@@ -1803,7 +1849,7 @@ async function renderLicenses(root) {
                       .map(
                         (l) => `<tr>
                           <td class="mono">${esc(l.license_no)}</td>
-                          <td>${esc(l.customer_email ?? l.customer_name ?? "—")}</td>
+                          <td>${customerCell(l.customer_name, l.customer_email)}</td>
                           <td>${esc(l.product_code)}</td>
                           <td class="nowrap">${licenseTermText(l)}</td>
                           <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
@@ -1863,7 +1909,7 @@ async function openLicenseDetail(id) {
     <div class="kv">
       <dt>授权单号</dt><dd class="mono">${esc(l.license_no)}</dd>
       <dt>状态</dt><dd>${statusBadge(LICENSE_STATUS, l.eff_status)} ${l.kind === "trial" ? '<span class="badge badge-info">试用</span>' : ""} <span class="muted small">来源 ${esc(l.source ?? "cdk")}</span></dd>
-      <dt>客户</dt><dd>${esc(data.customer?.email ?? data.customer?.name ?? "—")}</dd>
+      <dt>客户</dt><dd>${customerCell(data.customer?.name, data.customer?.email)}</dd>
       <dt>产品</dt><dd>${esc(l.product_name)} <span class="muted mono">${esc(l.product_code)}</span></dd>
       <dt>模块</dt><dd>${
         (data.modules ?? [])
@@ -2272,7 +2318,7 @@ async function renderCustomers(root) {
             <option value="active" ${filters.status === "active" ? "selected" : ""}>正常</option>
             <option value="disabled" ${filters.status === "disabled" ? "selected" : ""}>已停用</option>
           </select>
-          <input data-f-q placeholder="搜索邮箱 / 姓名 / 公司 / 电话" value="${esc(filters.q)}" />
+          <input data-f-q placeholder="搜索邮箱 / 姓名 / 公司" value="${esc(filters.q)}" />
           <button class="btn btn-primary btn-sm" data-new-customer type="button" ${state.role === "agent" ? "hidden" : ""}>+ 新增客户</button>
         </div>
       </div>
@@ -2287,9 +2333,12 @@ async function renderCustomers(root) {
                       .map(
                         (c) => `<tr>
                           <td>
-                            <strong>${esc(c.email ?? c.name ?? "匿名客户")}</strong>
-                            ${c.company ? `<div class="muted small">${esc(c.company)}</div>` : ""}
-                            ${!c.email ? '<div class="muted small">无登录账号（CDK 匿名激活）</div>' : ""}
+                            ${customerCell(
+                              c.name,
+                              c.email,
+                              c.company ? `<span class="cell-sub">${esc(c.company)}</span>` : "",
+                            )}
+                            ${!c.email ? '<span class="cell-sub">无登录账号（CDK 匿名激活）</span>' : ""}
                           </td>
                           <td>${c.license_count} 个（有效 ${c.active_license_count}）</td>
                           <td class="nowrap">${fmtDay(c.last_expires_at)}</td>
@@ -2449,7 +2498,7 @@ async function openCustomerDetail(id) {
   const c = data.customer;
 
   openModal({
-    title: `客户：${c.email ?? c.name ?? "匿名客户"}`,
+    title: `客户：${c.name || c.email || "匿名客户"}`,
     wide: true,
     body: `
       <div class="form-grid">
@@ -3235,8 +3284,45 @@ function bindChrome() {
     }
     endSession();
   });
+
+  // 手机端抽屉
+  $("#nav-toggle")?.addEventListener("click", () => document.body.classList.toggle("drawer-open"));
+  $("#drawer-mask")?.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDrawer();
+  });
+}
+
+/** 登录页的小交互：记住邮箱、密码显示切换 */
+function bindLoginExtras() {
+  const emailInput = $("#login-email");
+  const remember = $("#login-remember");
+  const toggle = $("[data-pwd-toggle]");
+  const pwd = $("#login-password");
+
+  const saved = localStorage.getItem("lic_admin_email");
+  if (saved) emailInput.value = saved;
+
+  toggle?.addEventListener("click", () => {
+    const show = pwd.type === "password";
+    pwd.type = show ? "text" : "password";
+    toggle.textContent = show ? "隐藏" : "显示";
+    pwd.focus();
+  });
+
+  // 捕获阶段先跑，赶在提交请求之前记下邮箱
+  $("#login-form").addEventListener(
+    "submit",
+    () => {
+      const email = emailInput.value.trim();
+      if (remember?.checked && email) localStorage.setItem("lic_admin_email", email);
+      else localStorage.removeItem("lic_admin_email");
+    },
+    true,
+  );
 }
 
 bindLogin();
+bindLoginExtras();
 bindChrome();
 void bootstrapSession();

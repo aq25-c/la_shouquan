@@ -2,7 +2,8 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0e172a" />
     <title>授权管理后台</title>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%91%3C/text%3E%3C/svg%3E" />
@@ -10,59 +11,100 @@
   <body>
     <!-- ============ 登录 ============ -->
     <div id="login-view" class="login-wrap" hidden>
-      <form id="login-form" class="login-card" autocomplete="on">
-        <div class="login-brand">
-          <span class="logo">🔑</span>
-          <div>
-            <h1>授权管理后台</h1>
-            <p class="muted small">注册 · 授权 · 到期控制 · CDK 管理</p>
+      <div class="login-shell">
+        <aside class="login-hero">
+          <div class="hero-brand">
+            <span class="logo-tile"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 9.5a3.5 3.5 0 1 1-3.4-3.5"/><path d="M12 3.5 20 11.5l-2.2 2.2-1.6-1.6-1.5 1.5-1.6-1.6-1.5 1.5-2.1-2.1"/></svg></span>
+            <strong>授权系统</strong>
           </div>
-        </div>
-        <label class="field">
-          <span>管理员邮箱</span>
-          <input id="login-email" name="email" type="email" autocomplete="username" required placeholder="admin@example.com" />
-        </label>
-        <label class="field">
-          <span>密码</span>
-          <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="••••••••" />
-        </label>
-        <button class="btn btn-primary btn-block" type="submit">登录</button>
-        <p id="login-error" class="error-text" hidden></p>
-      </form>
+          <h2 class="hero-title">软件授权、CDK 核销、到期控制，一套后台管到底</h2>
+          <p class="hero-sub">Ed25519 离线签名，客户端断网也能验签；数据留在自己的服务器上。</p>
+          <ul class="hero-features">
+            <li><i>✓</i><span>模块级到期：每个功能独立计时，互不影响</span></li>
+            <li><i>✓</i><span>CDK 批量生成、一次性核销、导出对账</span></li>
+            <li><i>✓</i><span>客户自助试用、解绑设备、重置许可证</span></li>
+          </ul>
+          <p class="hero-foot">自托管 · 无第三方依赖 · 一键 Docker 部署</p>
+        </aside>
+
+        <form id="login-form" class="login-card" autocomplete="on">
+          <div>
+            <h1>登录后台</h1>
+            <p class="login-lead">使用管理员账号继续</p>
+          </div>
+          <div class="field">
+            <span>管理员邮箱</span>
+            <input
+              id="login-email"
+              name="email"
+              type="email"
+              autocomplete="username"
+              inputmode="email"
+              required
+              placeholder="admin@example.com"
+            />
+          </div>
+          <div class="field">
+            <span>密码</span>
+            <div class="pwd-wrap">
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+                placeholder="••••••••"
+                aria-label="密码"
+              />
+              <button class="pwd-toggle" type="button" data-pwd-toggle>显示</button>
+            </div>
+          </div>
+          <div class="login-row">
+            <label><input type="checkbox" id="login-remember" checked /> 记住邮箱</label>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">登录</button>
+          <p id="login-error" class="error-text" hidden></p>
+        </form>
+      </div>
     </div>
 
     <!-- ============ 主体 ============ -->
     <div id="app-view" class="layout" hidden>
-      <aside class="sidebar">
+      <aside class="sidebar" id="sidebar">
         <div class="sidebar-brand">
-          <span class="logo">🔑</span>
+          <span class="logo-tile"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 9.5a3.5 3.5 0 1 1-3.4-3.5"/><path d="M12 3.5 20 11.5l-2.2 2.2-1.6-1.6-1.5 1.5-1.6-1.6-1.5 1.5-2.1-2.1"/></svg></span>
           <span>授权系统</span>
         </div>
         <nav id="nav" class="nav">
-          <button class="nav-item" data-view="overview"><span>📊</span>概览</button>
-          <button class="nav-item" data-view="products"><span>📦</span>产品与模块</button>
-          <button class="nav-item" data-view="cdks"><span>🎟️</span>CDK</button>
-          <button class="nav-item" data-view="agents"><span>🏪</span>代理</button>
-          <button class="nav-item" data-view="licenses"><span>🛡️</span>授权</button>
-          <button class="nav-item" data-view="customers"><span>👥</span>客户</button>
-          <button class="nav-item" data-view="staff"><span>👤</span>员工</button>
-          <button class="nav-item" data-view="audit"><span>📝</span>审计日志</button>
-          <button class="nav-item" data-view="apiDocs"><span>📘</span>API 文档</button>
+          <div class="nav-label">运营</div>
+          <button class="nav-item" data-view="overview"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>概览</button>
+          <button class="nav-item" data-view="products"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8.5 12 3.5 3 8.5l9 5 9-5zM3 8.5v7l9 5 9-5v-7"/></svg>产品与模块</button>
+          <button class="nav-item" data-view="cdks"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h16a1 1 0 0 1 1 1v1.6a2 2 0 0 0 0 3.8V17a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-1.6a2 2 0 0 0 0-3.8V9a1 1 0 0 1 1-1zM9 8v9"/></svg>CDK</button>
+          <button class="nav-item" data-view="agents"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 9 5 4.5h14L20.5 9zM4.5 9v11h15V9M9 20v-6h6v6"/></svg>代理</button>
+          <button class="nav-item" data-view="licenses"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5 20 6.5v5.6c0 4.6-3.3 7.6-8 8.9-4.7-1.3-8-4.3-8-8.9V6.5z"/></svg>授权</button>
+          <button class="nav-item" data-view="customers"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.5 19.5v-1a3.5 3.5 0 0 0-3.5-3.5H7a3.5 3.5 0 0 0-3.5 3.5v1M9.5 11.5a3.25 3.25 0 1 0 0-6.5 3.25 3.25 0 0 0 0 6.5zM16.5 5.3a3.25 3.25 0 0 1 0 6.4M20.5 19.5v-1a3.5 3.5 0 0 0-2.6-3.4"/></svg>客户</button>
+          <div class="nav-label">管理</div>
+          <button class="nav-item" data-view="staff"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12.2a4.1 4.1 0 1 0 0-8.2 4.1 4.1 0 0 0 0 8.2zM4.8 20a7.2 7.2 0 0 1 14.4 0"/></svg>员工</button>
+          <button class="nav-item" data-view="audit"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3.5H7.5a1.8 1.8 0 0 0-1.8 1.8v13.4a1.8 1.8 0 0 0 1.8 1.8h9a1.8 1.8 0 0 0 1.8-1.8V7.8zM14 3.5v4.3h4.3M8.8 12.6h6.4M8.8 16.4h4.2"/></svg>审计日志</button>
+          <button class="nav-item" data-view="apiDocs"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 5.5A1.8 1.8 0 0 1 6.3 3.7H19v16.6H6.3a1.8 1.8 0 0 1-1.8-1.8zM9 3.7v16.6"/></svg>API 文档</button>
         </nav>
         <div class="sidebar-foot">
-          <button class="nav-item" data-view="params"><span>⚙️</span>软件参数</button>
-          <button class="nav-item" data-view="settings"><span>🔑</span>设置与公钥</button>
+          <button class="nav-item" data-view="params"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h9M17 8h3M4 16h3M11 16h9M15 5v6M8 13v6"/></svg>软件参数</button>
+          <button class="nav-item" data-view="settings"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM19.1 14.4a1.4 1.4 0 0 0 .3 1.6l.1.1a1.7 1.7 0 1 1-2.4 2.4l-.1-.1a1.4 1.4 0 0 0-2.4 1v.2a1.7 1.7 0 1 1-3.4 0v-.1a1.4 1.4 0 0 0-2.4-1l-.1.1a1.7 1.7 0 1 1-2.4-2.4l.1-.1a1.4 1.4 0 0 0-1-2.4H5a1.7 1.7 0 1 1 0-3.4h.1a1.4 1.4 0 0 0 1-2.4l-.1-.1a1.7 1.7 0 1 1 2.4-2.4l.1.1a1.4 1.4 0 0 0 2.4-1V3a1.7 1.7 0 1 1 3.4 0v.1a1.4 1.4 0 0 0 2.4 1l.1-.1a1.7 1.7 0 1 1 2.4 2.4l-.1.1a1.4 1.4 0 0 0 1 2.4h.1a1.7 1.7 0 1 1 0 3.4h-.1a1.4 1.4 0 0 0-1 .9z"/></svg>设置与公钥</button>
         </div>
       </aside>
 
       <main class="main">
         <header class="topbar">
-          <div>
-            <h2 id="page-title">概览</h2>
-            <p id="page-subtitle" class="muted small"></p>
+          <div class="title-wrap" style="display: flex; align-items: center; gap: 10px; min-width: 0">
+            <button class="hamburger" id="nav-toggle" type="button" aria-label="打开菜单">☰</button>
+            <div style="min-width: 0">
+              <h2 id="page-title">概览</h2>
+              <p id="page-subtitle" class="muted small"></p>
+            </div>
           </div>
           <div class="topbar-right">
-            <span id="admin-label" class="pill"></span>
+            <span id="admin-label" class="user-pill"></span>
             <button id="logout-btn" class="btn btn-ghost btn-sm">退出</button>
           </div>
         </header>
@@ -70,6 +112,7 @@
       </main>
     </div>
 
+    <div class="drawer-mask" id="drawer-mask"></div>
     <div id="modal-root"></div>
     <div id="toast-root" class="toast-root"></div>
 
