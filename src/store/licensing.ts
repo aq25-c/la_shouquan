@@ -280,13 +280,79 @@ export function sweepExpiredDevices(force = false): number {
   return Number(res.changes);
 }
 
+/**
+ * 席位是「软件级」的：同一客户在同一个软件（产品）下的多条授权，共用一套席位。
+ *   - 席位上限 = 各条未吊销授权里最大的 seats
+ *   - 已用设备 = 这些授权下所有 active 设备之和
+ * 这样「老卡 1/1 + 新卡 5 席」会显示成 1/5，而不是 0/5。
+ */
+export function seatUsageForProduct(
+  customerId: string,
+  productId: string,
+): { seats: number; active_devices: number } {
+  const seatRow = db()
+    .prepare(
+      `SELECT COALESCE(MAX(seats), 0) AS seats
+         FROM licenses
+        WHERE customer_id = ? AND product_id = ? AND status != 'revoked'`,
+    )
+    .get(customerId, productId) as unknown as { seats: number };
+  const devRow = db()
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM devices d
+         JOIN licenses l ON l.id = d.license_id
+        WHERE l.customer_id = ? AND l.product_id = ? AND l.status != 'revoked' AND d.status = 'active'`,
+    )
+    .get(customerId, productId) as unknown as { n: number };
+  const seats = Number(seatRow?.seats ?? 0);
+  // 显示的设备数不超过席位上限：1 席位的卡只显示 1 台
+  return { seats, active_devices: Math.min(Number(devRow?.n ?? 0), seats) };
+}
+
+/** 把一批授权行里同一客户同一产品的席位/设备数统一成软件级口径 */
+function withSharedSeats<T extends { customer_id: string; product_id: string; status: string; seats: number; active_devices: number }>(
+  rows: T[],
+): T[] {
+  if (rows.length < 2) return rows;
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = `${row.customer_id}:${row.product_id}`;
+    const list = groups.get(key);
+    if (list) list.push(row);
+    else groups.set(key, [row]);
+  }
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const usable = group.filter((r) => r.status !== "revoked");
+    const seats = usable.length ? Math.max(...usable.map((r) => r.seats)) : group[0].seats;
+    // 设备数按席位封顶：1 席位的授权只显示 1 台
+    const devices = Math.min(
+      group.reduce((n, r) => n + r.active_devices, 0),
+      seats,
+    );
+    for (const row of group) {
+      row.seats = seats;
+      row.active_devices = devices;
+    }
+  }
+  return rows;
+}
+
 export function findLicenseById(id: string): LicenseListItem | null {
   sweepExpiredDevices();
   const now = nowIso();
   const row = db().prepare(`${licenseSelect()} WHERE l.id = ?`).get(now, now, id) as unknown as
     | LicenseListItem
     | undefined;
-  return row ?? null;
+  if (!row) return null;
+  // 单条也按软件级口径给出席位，客户端看到的才是「这套软件一共有几台」
+  const shared = seatUsageForProduct(row.customer_id, row.product_id);
+  if (shared.seats > 0) {
+    row.seats = shared.seats;
+    row.active_devices = shared.active_devices;
+  }
+  return row;
 }
 
 export function findLicenseByKeyHash(keyHash: string): LicenseListItem | null {
@@ -294,15 +360,23 @@ export function findLicenseByKeyHash(keyHash: string): LicenseListItem | null {
   const row = db().prepare(`${licenseSelect()} WHERE l.key_hash = ?`).get(now, now, keyHash) as unknown as
     | LicenseListItem
     | undefined;
-  return row ?? null;
+  if (!row) return null;
+  const shared = seatUsageForProduct(row.customer_id, row.product_id);
+  if (shared.seats > 0) {
+    row.seats = shared.seats;
+    row.active_devices = shared.active_devices;
+  }
+  return row;
 }
 
 export function listLicensesByCustomer(customerId: string): LicenseListItem[] {
   sweepExpiredDevices();
   const now = nowIso();
-  return db()
-    .prepare(`${licenseSelect()} WHERE l.customer_id = ? ORDER BY l.created_at DESC`)
-    .all(now, now, customerId) as unknown as LicenseListItem[];
+  return withSharedSeats(
+    db()
+      .prepare(`${licenseSelect()} WHERE l.customer_id = ? ORDER BY l.created_at DESC`)
+      .all(now, now, customerId) as unknown as LicenseListItem[],
+  );
 }
 
 export function listLicenses(opts: {
@@ -360,7 +434,7 @@ export function listLicenses(opts: {
   const totalRow = db()
     .prepare(`SELECT COUNT(*) AS n FROM (${licenseSelect()}) ${clause}`)
     .get(now, now, ...params) as { n: number } | undefined;
-  return { items, total: Number(totalRow?.n ?? 0) };
+  return { items: withSharedSeats(items), total: Number(totalRow?.n ?? 0) };
 }
 
 export function createLicense(input: {

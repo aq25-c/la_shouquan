@@ -218,6 +218,8 @@ function openModal({ title, body, footer = "", wide = false, onMount }) {
     if (e.target.classList.contains("modal-backdrop")) close();
   });
   onMount?.($(".modal", root), close);
+  // 弹窗里的表格也走卡片化：手机上设备表就不会横向撑开
+  enhanceTables(root);
   return close;
 }
 

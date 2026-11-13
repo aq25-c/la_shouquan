@@ -42,7 +42,9 @@ import {
   createCustomer,
   findCustomerByEmail,
   findCustomerById,
+  revokeSessionsFor,
   touchCustomerLogin,
+  updateCustomer,
 } from "../store/accounts.ts";
 import { findModuleById, findModuleByCode, findProductByCode, findProductById, listModules, listProducts, moduleCodesFor } from "../store/catalog.ts";
 import {
@@ -53,6 +55,7 @@ import {
 } from "../store/trials.ts";
 import {
   activeDeviceCount,
+  seatUsageForProduct,
   addLicenseModuleIds,
   applyModuleTerms,
   findModuleTermConflicts,
@@ -310,7 +313,7 @@ export function registerClientRoutes(): void {
           license_no: byKey.license_no,
           status: effectiveStatus(byKey),
           seats: byKey.seats,
-          active_devices: activeDeviceCount(byKey.id),
+          active_devices: byKey.active_devices,
           expires_at: byKey.expires_at,
         },
       });
@@ -368,7 +371,7 @@ export function registerClientRoutes(): void {
         expires_at: row.expires_at,
         days_left: daysLeft(row.expires_at),
         seats: row.seats,
-        active_devices: activeDeviceCount(row.id),
+        active_devices: row.active_devices,
         product: { code: row.product_code, name: row.product_name },
         modules,
         devices: listDevices(row.id)
@@ -393,6 +396,35 @@ export function registerClientRoutes(): void {
         active_modules: licenses.reduce((n, l) => n + l.modules.filter((m) => m.active).length, 0),
       },
     });
+  });
+
+  /**
+   * 客户自助改密码：原密码 + 新密码。
+   * 改完把该账号的其它会话全部作废，再发一个新会话给当前这台设备，
+   * 免得用户改完密码自己被踢出去。
+   */
+  post("/api/v1/auth/password", async (ctx) => {
+    const customer = requireCustomer(ctx);
+    const current = needStr(ctx, "current_password", 200);
+    const next = needStr(ctx, "new_password", 200);
+    if (next.length < 8) throw badRequest("新密码至少 8 位", "WEAK_PASSWORD");
+    if (next === current) throw badRequest("新密码不能和原密码一样", "SAME_PASSWORD");
+    if (!customer.password_hash || !(await verifyPassword(current, customer.password_hash))) {
+      throw unauthorized("原密码不正确", "INVALID_CREDENTIALS");
+    }
+
+    updateCustomer(customer.id, { password_hash: await hashPassword(next) });
+    revokeSessionsFor("customer", customer.id);
+    audit({
+      actorType: "customer",
+      actorId: customer.id,
+      actorLabel: customer.email,
+      action: "customer.password_change",
+      targetType: "customer",
+      targetId: customer.id,
+      ip: ctx.ip,
+    });
+    return ok({ changed: true, relogin_others: true, ...sessionPayload(ctx, customer.id) });
   });
 
   /* ---------------------------- 试用 ---------------------------- */
@@ -593,6 +625,11 @@ export function registerClientRoutes(): void {
       status: cdk.status,
       product: product ? { code: product.code, name: product.name } : null,
       module_codes: moduleCodesFor(moduleIdsOf(cdk)),
+      // 带上模块名称，前端不用再拿 code 猜这是哪个功能
+      modules: moduleIdsOf(cdk).map((id) => {
+        const mod = findModuleById(id);
+        return { code: mod?.code ?? id, name: mod?.name ?? id };
+      }),
       days: cdk.days,
       seats: cdk.seats,
       redeem_before: cdk.expires_at,
@@ -842,7 +879,8 @@ export function registerClientRoutes(): void {
       if (!device) throw notFound("该设备未绑定此授权，请重新激活", "DEVICE_NOT_BOUND");
       if (device.status !== "active") {
         // 只有「到期自动释放」的机器能在续费后自己回来；手动解绑的不许自动复位
-        if (device.released_reason === "expired" && activeDeviceCount(license.id) < license.seats) {
+        const usage = seatUsageForProduct(license.customer_id, license.product_id);
+        if (device.released_reason === "expired" && usage.active_devices < usage.seats) {
           upsertDevice({
             licenseId: license.id,
             deviceId,
@@ -933,11 +971,12 @@ export function registerClientRoutes(): void {
 
     const existing = findDevice(license.id, deviceId);
     if (!existing || existing.status !== "active") {
-      const active = activeDeviceCount(license.id);
-      if (active >= license.seats) {
+      // 席位按「软件」算：同一客户同产品的多条授权共用一个席位池
+      const usage = seatUsageForProduct(license.customer_id, license.product_id);
+      if (usage.active_devices >= usage.seats) {
         throw conflict("席位已满，请先在其他设备上解绑或联系服务商扩容", "SEAT_LIMIT", {
-          seats: license.seats,
-          active_devices: active,
+          seats: usage.seats,
+          active_devices: usage.active_devices,
         });
       }
       upsertDevice({ licenseId: license.id, deviceId, deviceName, platform, ip: ctx.ip });

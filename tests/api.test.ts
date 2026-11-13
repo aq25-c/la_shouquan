@@ -2739,3 +2739,74 @@ test("网页激活：bind_device=false 只绑账号，不占席位；门户总�
   assert.equal(ov2.json.data.licenses[0].active_devices, 1);
   assert.equal(ov2.json.data.licenses[0].devices[0].device_id, "WEB-PC-1");
 });
+
+
+test("客户自助改密码：校验原密码，改完其它会话失效", async () => {
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "pwchange@test.local",
+    password: "OldPass12345",
+    name: "改密测试",
+  });
+  assert.equal(reg.status, 201);
+  const tokenA = reg.json.data.session.token;
+
+  // 另一台设备登录
+  const login = await api("POST", "/api/v1/auth/login", {
+    email: "pwchange@test.local",
+    password: "OldPass12345",
+  });
+  assert.equal(login.status, 200);
+  const tokenB = login.json.data.session.token;
+
+  // 原密码错 → 401
+  const wrong = await api(
+    "POST",
+    "/api/v1/auth/password",
+    { current_password: "not-my-password", new_password: "NewPass12345" },
+    tokenA,
+  );
+  assert.equal(wrong.status, 401);
+  assert.equal(wrong.json.error.code, "INVALID_CREDENTIALS");
+
+  // 新密码太短 → 400
+  const weak = await api(
+    "POST",
+    "/api/v1/auth/password",
+    { current_password: "OldPass12345", new_password: "short" },
+    tokenA,
+  );
+  assert.equal(weak.status, 400);
+  assert.equal(weak.json.error.code, "WEAK_PASSWORD");
+
+  // 正常修改：拿到新 token
+  const changed = await api(
+    "POST",
+    "/api/v1/auth/password",
+    { current_password: "OldPass12345", new_password: "NewPass12345" },
+    tokenA,
+  );
+  assert.equal(changed.status, 200);
+  assert.equal(changed.json.data.changed, true);
+  const tokenNew = changed.json.data.token;
+  assert.ok(tokenNew, "应返回新会话 token");
+
+  // 旧的两台会话都失效
+  for (const [label, tk] of [["A", tokenA], ["B", tokenB]]) {
+    const me = await api("GET", "/api/v1/auth/me", undefined, tk);
+    assert.equal(me.status, 401, `旧会话 ${label} 应失效`);
+  }
+  const meNew = await api("GET", "/api/v1/me/overview", undefined, tokenNew);
+  assert.equal(meNew.status, 200, "新 token 应可用");
+
+  // 旧密码登不进来，新密码可以
+  const oldLogin = await api("POST", "/api/v1/auth/login", {
+    email: "pwchange@test.local",
+    password: "OldPass12345",
+  });
+  assert.equal(oldLogin.status, 401);
+  const newLogin = await api("POST", "/api/v1/auth/login", {
+    email: "pwchange@test.local",
+    password: "NewPass12345",
+  });
+  assert.equal(newLogin.status, 200);
+});

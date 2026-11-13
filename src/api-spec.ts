@@ -52,6 +52,13 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     auth: "customer",
     desc: "返回客户信息、名下全部授权（含在用设备与 `days_left`、`usages.remaining`），以及优先展示用的 `active_license`。",
   },
+  "POST /api/v1/auth/password": {
+    title: "修改密码（客户自助）",
+    auth: "customer",
+    params: "`current_password`✅、`new_password`✅（至少 8 位）",
+    desc: "校验原密码后改密。改完该账号的**其它会话全部失效**，同时返回一个新的 `token` 给当前设备，避免改完自己被踢下线。",
+    notes: "401 INVALID_CREDENTIALS（原密码不对）、400 WEAK_PASSWORD / SAME_PASSWORD。",
+  },
   "GET /api/v1/me/overview": {
     title: "授权总览（客户门户用）",
     auth: "customer",

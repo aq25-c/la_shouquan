@@ -337,6 +337,7 @@ input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px
 .acct-info strong { display: block; font-size: 15.5px; }
 .acct-info span { display: block; color: var(--muted); font-size: 12.5px; word-break: break-all; }
 .acct-stats { display: flex; gap: 18px; flex: 0 0 auto; }
+.acct-pw { margin-left: auto; flex: 0 0 auto; }
 .acct-stat { text-align: right; }
 .acct-stat b { display: block; font-size: 19px; line-height: 1.2; }
 .acct-stat span { font-size: 11.5px; color: var(--muted); }
@@ -545,6 +546,7 @@ input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px
   .btn { min-height: 46px; }
 
   .acct-card { padding: 14px; gap: 12px; flex-wrap: wrap; }
+  .acct-pw { margin-left: 0; width: 100%; }
   .acct-stats { width: 100%; justify-content: space-between; border-top: 1px dashed var(--border); padding-top: 10px; }
   .acct-stat { text-align: left; }
 

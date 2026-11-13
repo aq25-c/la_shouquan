@@ -94,7 +94,8 @@ async function api(method, path, body) {
     payload = null;
   }
 
-  if (res.status === 401) {
+  // 只有「会话失效」才自动登出；登录/改密时密码错也是 401，不能把用户踢出去
+  if (res.status === 401 && state.token && payload?.error?.code !== "INVALID_CREDENTIALS") {
     clearSession();
     renderAuth();
     throw new Error(payload?.error?.message || "登录已过期，请重新登录");
@@ -244,6 +245,7 @@ function renderLicenses() {
         <div class="acct-stat"><b>${sum.active_modules ?? 0}</b><span>可用模块</span></div>
         <div class="acct-stat"><b>${sum.expiring_7d ?? 0}</b><span>7 天内到期</span></div>
       </div>
+      <button class="btn btn-sm acct-pw" id="btn-password" type="button">修改密码</button>
     </section>`;
 
   if (!data.licenses.length) {
@@ -256,10 +258,12 @@ function renderLicenses() {
          <p style="margin-top:14px"><button class="btn btn-primary" id="go-activate" type="button">去激活</button></p>
        </section>`;
     $("#go-activate").onclick = () => switchTab("activate");
+    $("#btn-password")?.addEventListener("click", openPasswordModal);
     return;
   }
 
   pane.innerHTML = account + `<div class="lic-grid">${data.licenses.map(licenseCard).join("")}</div>`;
+  $("#btn-password")?.addEventListener("click", openPasswordModal);
 }
 
 function licenseCard(lic) {
@@ -330,6 +334,83 @@ function licenseCard(lic) {
   </article>`;
 }
 
+/* ============================ 修改密码 ============================ */
+
+function openPasswordModal() {
+  const root = $("#modal-root");
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head">
+          <h3 style="font-size:15.5px">修改密码</h3>
+          <button class="btn btn-ghost btn-sm" data-close type="button">✕</button>
+        </div>
+        <div class="modal-body">
+          <label class="field"><span>原密码</span>
+            <input id="pw-current" type="password" autocomplete="current-password" placeholder="当前登录密码" />
+          </label>
+          <label class="field"><span>新密码（至少 8 位）</span>
+            <input id="pw-next" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+          </label>
+          <label class="field"><span>确认新密码</span>
+            <input id="pw-confirm" type="password" autocomplete="new-password" placeholder="再输一次" />
+          </label>
+          <p class="form-error" id="pw-error" hidden></p>
+          <p class="small muted">改完后其它设备上的登录会失效，需要重新登录；当前这台会保持登录。</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" data-close type="button">取消</button>
+          <button class="btn btn-primary" id="pw-save" type="button">保存</button>
+        </div>
+      </div>
+    </div>`;
+
+  const close = () => {
+    root.innerHTML = "";
+  };
+  const fail = (msg) => {
+    const box = $("#pw-error", root);
+    box.textContent = msg;
+    box.hidden = false;
+  };
+
+  $$("[data-close]", root).forEach((b) => (b.onclick = close));
+  $("#pw-current", root).focus();
+
+  $("#pw-save", root).onclick = async () => {
+    const current = $("#pw-current", root).value;
+    const next = $("#pw-next", root).value;
+    const confirm = $("#pw-confirm", root).value;
+    $("#pw-error", root).hidden = true;
+
+    if (!current) return fail("请先填原密码");
+    if (next.length < 8) return fail("新密码至少 8 位");
+    if (next === current) return fail("新密码不能和原密码一样");
+    if (next !== confirm) return fail("两次输入的新密码不一致");
+
+    const btn = $("#pw-save", root);
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+    try {
+      const data = await api("POST", "/api/v1/auth/password", {
+        current_password: current,
+        new_password: next,
+      });
+      // 后端会作废其它会话并发一个新的过来，这里接住它，保持当前设备不掉线
+      if (data?.token) {
+        state.token = data.token;
+        localStorage.setItem(TOKEN_KEY, data.token);
+      }
+      close();
+      toast("密码已修改", "ok");
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "保存";
+      fail(err.message);
+    }
+  };
+}
+
 /* ============================ 激活 ============================ */
 
 function renderActivate() {
@@ -393,7 +474,11 @@ function inspectHtml(info, { withActivate = false } = {}) {
       </div>
       <div><span class="small muted">包含模块</span>
         <div class="mod-list" style="margin-top:6px">
-          ${(info.module_codes ?? []).map((m) => `<span class="mod-chip">${esc(m)}</span>`).join("") || '<span class="small muted">—</span>'}
+          ${
+            (info.modules ?? [])
+              .map((m) => `<span class="mod-chip" title="${esc(m.code)}">${esc(m.name || m.code)}</span>`)
+              .join("") || '<span class="small muted">—</span>'
+          }
         </div>
       </div>
       ${withActivate && info.usable ? `<button class="btn btn-primary" id="btn-activate" type="button" style="margin-top:4px">确认激活</button>` : ""}

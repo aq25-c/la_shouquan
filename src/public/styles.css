@@ -572,6 +572,8 @@ tr.group-row td { background: var(--surface-soft); font-size: 12.5px; }
   background: rgba(15, 23, 42, 0.42);
   backdrop-filter: blur(2px);
   display: grid;
+  /* minmax(0,1fr)：内容再宽也不会把弹窗撑出屏幕 */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 24px;
   z-index: 50;
@@ -581,6 +583,7 @@ tr.group-row td { background: var(--surface-soft); font-size: 12.5px; }
   background: var(--surface);
   border-radius: 14px;
   width: 100%;
+  min-width: 0;
   max-width: 580px;
   max-height: 86vh;
   display: flex;
@@ -600,7 +603,7 @@ tr.group-row td { background: var(--surface-soft); font-size: 12.5px; }
 .modal-head h3 { font-size: 15.5px; }
 /* 子元素不参与压缩：否则内容高的卡片会被 flex 压扁、再被 overflow:hidden 切掉 */
 .modal-body > * { flex: 0 0 auto; }
-.modal-body { padding: 18px; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+.modal-body { padding: 18px; overflow-y: auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
 .modal-foot { padding: 13px 18px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; background: var(--surface-soft); }
 
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
@@ -749,6 +752,8 @@ tr.group-row td { background: var(--surface-soft); font-size: 12.5px; }
   }
   .modal-head { padding: 14px 16px; padding-top: max(14px, env(safe-area-inset-top)); }
   .modal-body { padding: 14px 16px; }
+  /* 窄屏把键值表的标签列收窄，值列允许换行 */
+  .kv { grid-template-columns: 92px minmax(0, 1fr); gap: 8px 10px; }
   /* 底部按钮多时排成两列，别挤成一排误触 */
   .form-actions .btn { flex: 1 1 calc(50% - 6px); }
   .modal-foot {
