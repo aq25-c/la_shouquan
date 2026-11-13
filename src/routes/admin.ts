@@ -135,6 +135,8 @@ import {
   releaseAllDevices,
   releaseDevice,
   revokeCdk,
+  updateCdk,
+  deleteCdk,
   revokeLicense,
   rotateLicenseKey,
   stats,
@@ -1168,28 +1170,7 @@ export function registerAdminRoutes(): void {
     return ok({ items: listBatches(q(ctx, "product_id")) });
   });
 
-  post(`${P}/cdks/:id/revoke`, (ctx) => {
-    const admin = requireAdmin(ctx);
-    const id = slash(ctx, "id");
-    const cdk = findCdkById(id);
-    if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
-    if (cdk.status !== "unused") throw conflict("只有未使用的 CDK 可以作废", "CDK_NOT_UNUSED");
-    const reason = bodyStr(ctx, "reason", { max: 500 });
-    revokeCdk(id, reason);
-    audit({
-      actorType: "admin",
-      actorId: admin.id,
-      actorLabel: admin.email,
-      action: "cdk.revoke",
-      targetType: "cdk",
-      targetId: id,
-      ip: ctx.ip,
-      detail: { code: cdk.code, reason },
-    });
-    return ok({ revoked: true });
-  });
-
-  /** CSV 导出：按批次或按当前筛选条件 */
+  /** CDK 详情：含产品、模块（名称）、绑定客户与批次 */
   get(`${P}/cdks/export`, (ctx) => {
     requireAdmin(ctx);
     const batchId = q(ctx, "batch_id");
@@ -1215,6 +1196,120 @@ export function registerAdminRoutes(): void {
       "Content-Disposition": `attachment; filename="${filename}"`,
     });
   });
+
+  get(`${P}/cdks/:id`, (ctx) => {
+    requireStaff(ctx);
+    const id = slash(ctx, "id");
+    const cdk = findCdkById(id);
+    if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    const product = findProductById(cdk.product_id);
+    const customer = cdk.customer_id ? findCustomerById(cdk.customer_id) : null;
+    return ok({
+      cdk: { ...cdk, module_ids: parseJson<string[]>(cdk.module_ids, []) },
+      product: product ? { id: product.id, code: product.code, name: product.name } : null,
+      modules: moduleIdsOf(cdk).map((mid) => {
+        const m = findModuleById(mid);
+        return { id: mid, code: m?.code ?? mid, name: m?.name ?? mid };
+      }),
+      customer: customer ? { id: customer.id, email: customer.email, name: customer.name } : null,
+      activated: cdk.status === "used" || Boolean(cdk.customer_id),
+    });
+  });
+
+  /** 修改 CDK：只有未激活的卡可以改（模块至少保留 1 个） */
+  patch(`${P}/cdks/:id`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const cdk = findCdkById(id);
+    if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    if (cdk.status === "used" || cdk.customer_id) {
+      throw conflict("该 CDK 已被激活，不能修改", "CDK_ACTIVATED");
+    }
+
+    const patchData: Parameters<typeof updateCdk>[1] = {};
+    const moduleIds = bodyStrArray(ctx, "module_ids");
+    if (moduleIds) {
+      if (!moduleIds.length) throw badRequest("请至少保留一个模块", "MISSING_FIELD", { field: "module_ids" });
+      validateModuleIds(cdk.product_id, moduleIds);
+      patchData.moduleIds = moduleIds;
+    }
+    if (ctx.body.expires_at !== undefined) {
+      const expiresAt = isoOrNull(ctx, "expires_at");
+      patchData.expiresAt = expiresAt; // null = 取消兑换期限
+    }
+    const seats = bodyInt(ctx, "seats", { min: 1, max: 100 });
+    if (seats !== null) patchData.seats = seats;
+    const note = bodyStr(ctx, "note", { max: 500 });
+    if (note !== null) patchData.note = note;
+    const termType = bodyStr(ctx, "term_type", 20);
+    if (termType) {
+      if (!["hour", "day", "month", "year", "count"].includes(termType)) {
+        throw badRequest("term_type 只能是 hour/day/month/year/count", "INVALID_FIELD");
+      }
+      patchData.termType = termType as TermType;
+    }
+    const termValue = bodyInt(ctx, "term_value", { min: 1, max: 100000 });
+    if (termValue !== null) patchData.termValue = termValue;
+
+    const updated = updateCdk(id, patchData);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "cdk.update",
+      targetType: "cdk",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { code: cdk.code, ...patchData },
+    });
+    return ok({ cdk: { ...updated, module_ids: parseJson<string[]>((updated ?? cdk).module_ids, []) } });
+  });
+
+  /** 删除 CDK：只有未激活的可以删（已作废但没激活的也能删） */
+  del(`${P}/cdks/:id`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const cdk = findCdkById(id);
+    if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    if (cdk.status === "used" || cdk.customer_id) {
+      throw conflict("该 CDK 已被激活，不能删除（只能作废）", "CDK_ACTIVATED");
+    }
+    deleteCdk(id);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "cdk.delete",
+      targetType: "cdk",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { code: cdk.code, status: cdk.status },
+    });
+    return ok({ deleted: true });
+  });
+
+  post(`${P}/cdks/:id/revoke`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const cdk = findCdkById(id);
+    if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    if (cdk.status !== "unused") throw conflict("只有未使用的 CDK 可以作废", "CDK_NOT_UNUSED");
+    const reason = bodyStr(ctx, "reason", { max: 500 });
+    revokeCdk(id, reason);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "cdk.revoke",
+      targetType: "cdk",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { code: cdk.code, reason },
+    });
+    return ok({ revoked: true });
+  });
+
+  /** CSV 导出：按批次或按当前筛选条件 */
 
   /* ---------------------------- 客户 ---------------------------- */
 

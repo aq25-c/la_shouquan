@@ -213,6 +213,22 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   },
   "GET /admin/api/cdks": { title: "CDK 列表", auth: "admin", params: "`product_id?`、`batch_id?`、`status?`、`agent_id?`（`__none__`=直销）、`q?`、分页", desc: "含代理、结算单价，以及激活后产生的 `license_expires_at` / `license_kind`。" },
   "GET /admin/api/cdk-batches": { title: "CDK 批次", auth: "admin", params: "`product_id?`", desc: "批次列表，含已核销数量。" },
+  "GET /admin/api/cdks/:id": {
+    title: "CDK 详情",
+    auth: "admin",
+    desc: "返回 CDK 本体、产品、模块（含名称）、绑定客户与 `activated` 标记（是否已激活）。",
+  },
+  "PATCH /admin/api/cdks/:id": {
+    title: "修改 CDK（仅未激活）",
+    auth: "admin",
+    params: "`module_ids[]?`（至少 1 个）、`expires_at?`（null 取消兑换期限）、`seats?`、`note?`、`term_type?`、`term_value?`",
+    desc: "只有未激活的 CDK 可以修改；已激活返回 409 CDK_ACTIVATED。改 term_value 会同步旧字段 days。",
+  },
+  "DELETE /admin/api/cdks/:id": {
+    title: "删除 CDK（仅未激活）",
+    auth: "admin",
+    desc: "未激活的（含已作废但从未激活）可删除；已激活的一律拒绝（409 CDK_ACTIVATED）。",
+  },
   "POST /admin/api/cdks/:id/revoke": { title: "作废 CDK", auth: "admin", params: "`reason?`", desc: "只有未使用的 CDK 可作废。" },
   "GET /admin/api/cdks/export": { title: "导出 CDK（CSV）", auth: "admin", params: "`batch_id?`、`product_id?`、`status?`", desc: "返回 text/csv（含 BOM，Excel 可直接打开）。" },
 

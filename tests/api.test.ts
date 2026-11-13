@@ -1932,3 +1932,81 @@ test("请求体解析：空 body 视为空对象，表单编码与非对象给�
   assert.equal(arr.status, 400, "数组会被包装，但仍因缺 cdk 参数被拒");
   assert.notEqual(arr.json.error.code, "INVALID_JSON");
 });
+
+/* ==================== CDK 修改与删除 ==================== */
+
+test("CDK 修改与删除：未激活可改可删（模块至少一个），已激活一律拒绝", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    {
+      product_id: productId,
+      module_ids: [moduleIds[0], moduleIds[1]],
+      term_type: "day",
+      term_value: 30,
+      count: 2,
+      seats: 1,
+    },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  const [cdkA, cdkB] = gen.json.data.codes;
+
+  const findId = async (code: string) => {
+    const list = await api("GET", `/admin/api/cdks?q=${encodeURIComponent(code)}`, undefined, adminToken);
+    const row = list.json.data.items.find((c: Json) => c.code === code);
+    assert.ok(row, `应能查到 ${code}`);
+    return row.id as string;
+  };
+
+  const cdkId = await findId(cdkA);
+  const detail = await api("GET", `/admin/api/cdks/${cdkId}`, undefined, adminToken);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.json.data.activated, false);
+  assert.equal(detail.json.data.modules.length, 2, "详情应列出 2 个模块");
+
+  // 改模块 / 席位 / 计费数量
+  const patched = await api(
+    "PATCH",
+    `/admin/api/cdks/${cdkId}`,
+    { module_ids: [moduleIds[0]], seats: 3, term_type: "day", term_value: 60 },
+    adminToken,
+  );
+  assert.equal(patched.status, 200);
+  assert.deepEqual(patched.json.data.cdk.module_ids, [moduleIds[0]]);
+  assert.equal(patched.json.data.cdk.seats, 3);
+  assert.equal(patched.json.data.cdk.term_value, 60, "改 term_value 应同步");
+
+  // 模块清空 → 拒绝
+  const empty = await api("PATCH", `/admin/api/cdks/${cdkId}`, { module_ids: [] }, adminToken);
+  assert.equal(empty.status, 400);
+  assert.equal(empty.json.error.code, "MISSING_FIELD");
+
+  // 删除未激活的 → 成功
+  const del = await api("DELETE", `/admin/api/cdks/${cdkId}`, undefined, adminToken);
+  assert.equal(del.status, 200);
+  const gone = await api("GET", `/admin/api/cdks/${cdkId}`, undefined, adminToken);
+  assert.equal(gone.status, 404, "删除后应查不到");
+
+  // 激活第二张卡后，修改/删除都要被拒
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdkB,
+    device_id: "CDK-EDIT-1",
+    email: "cdkedit@test.local",
+    password: "CdkEdit123",
+  });
+  assert.equal(act.status, 201);
+  const usedId = await findId(cdkB);
+
+  const patchUsed = await api("PATCH", `/admin/api/cdks/${usedId}`, { seats: 2 }, adminToken);
+  assert.equal(patchUsed.status, 409);
+  assert.equal(patchUsed.json.error.code, "CDK_ACTIVATED");
+
+  const delUsed = await api("DELETE", `/admin/api/cdks/${usedId}`, undefined, adminToken);
+  assert.equal(delUsed.status, 409);
+  assert.equal(delUsed.json.error.code, "CDK_ACTIVATED");
+
+  // 已激活的 CDK 详情里 activated 应为 true
+  const usedDetail = await api("GET", `/admin/api/cdks/${usedId}`, undefined, adminToken);
+  assert.equal(usedDetail.json.data.activated, true);
+});

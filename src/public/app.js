@@ -1249,6 +1249,120 @@ function agentForm(agent) {
 
 /* ============================ CDK ============================ */
 
+/** CDK 详情：未激活的可改模块/兑换期/席位/时长，已激活的只读 */
+async function cdkDetail(cdkId) {
+  const data = await apiGet(`/admin/api/cdks/${cdkId}`);
+  const c = data.cdk;
+  const activated = data.activated;
+  const productId = data.product?.id ?? c.product_id;
+  const allMods = await apiGet(`/admin/api/products/${productId}/modules`).catch(() => ({ items: [] }));
+  const mine = new Set((data.modules ?? []).map((m) => m.id));
+
+  const moduleList = allMods.items.length
+    ? allMods.items
+        .map(
+          (m) =>
+            `<label><input type="checkbox" value="${esc(m.id)}" ${mine.has(m.id) ? "checked" : ""} ${activated ? "disabled" : ""} /><span>${esc(m.name)}（${esc(m.code)}）</span></label>`,
+        )
+        .join("")
+    : '<span class="empty">该产品还没有模块</span>';
+
+  const statusBadgeHtml =
+    c.status === "unused"
+      ? '<span class="badge badge-ok">未使用</span>'
+      : c.status === "used"
+        ? '<span class="badge">已激活</span>'
+        : '<span class="badge badge-warn">已作废</span>';
+
+  openModal({
+    title: `CDK 详情：${c.code}`,
+    wide: true,
+    body: `
+      <div class="kv">
+        <dt>状态</dt><dd>${statusBadgeHtml}</dd>
+        <dt>产品</dt><dd>${esc(data.product?.name ?? "—")} <span class="muted mono">${esc(data.product?.code ?? "")}</span></dd>
+        <dt>计费</dt><dd>${licenseTermText({ term_type: c.term_type, term_value: c.term_value, max_usages: null, used_usages: 0 })}</dd>
+        <dt>席位</dt><dd>${c.seats}</dd>
+        <dt>兑换截止</dt><dd>${c.expires_at ? fmtTime(c.expires_at) : "不限"}</dd>
+        <dt>绑定客户</dt><dd>${data.customer ? esc(data.customer.email ?? data.customer.name ?? "—") : "—"}</dd>
+        <dt>生成时间</dt><dd>${fmtTime(c.created_at)}</dd>
+        ${c.revoked_at ? `<dt>作废时间</dt><dd>${fmtTime(c.revoked_at)}${c.revoked_reason ? " · " + esc(c.revoked_reason) : ""}</dd>` : ""}
+        ${c.note ? `<dt>备注</dt><dd>${esc(c.note)}</dd>` : ""}
+      </div>
+      ${
+        activated
+          ? '<div class="note">该 CDK 已被激活，不能再修改或删除。</div>'
+          : `<div class="card"><div class="card-head"><h3>修改（仅未激活可改）</h3></div><div class="card-body">
+        <div class="form-grid">
+          <label class="field"><span>兑换截止时间（留空 = 不限）</span>
+            <input name="exp" type="datetime-local" value="${c.expires_at ? toLocalInput(c.expires_at) : ""}" /></label>
+          <label class="field"><span>席位</span><input name="seats" type="number" min="1" max="100" value="${c.seats}" /></label>
+          <label class="field"><span>计费类型</span>
+            <select name="term">
+              ${["hour", "day", "month", "year", "count"]
+                .map((t) => `<option value="${t}" ${c.term_type === t ? "selected" : ""}>${termText(t)}</option>`)
+                .join("")}
+            </select></label>
+          <label class="field"><span>数量（时长 / 次数）</span>
+            <input name="termValue" type="number" min="1" value="${c.term_value ?? c.days}" /></label>
+        </div>
+        <div class="field full"><span>包含模块（至少勾选 1 个）</span>
+          <div class="checkbox-list" data-mods>${moduleList}</div></div>
+        <div class="form-actions"><button class="btn btn-primary btn-sm" data-save type="button">保存修改</button></div>
+      </div></div>`
+      }`,
+    footer: `<button class="btn" data-close2 type="button">关闭</button>${
+      activated ? "" : '<button class="btn btn-danger" data-del type="button">删除此 CDK</button>'
+    }`,
+    onMount(modal, close) {
+      $("[data-close2]", modal).onclick = () => {
+        close();
+        navigate("cdks", true);
+      };
+      if (activated) return;
+
+      $("[data-save]", modal).onclick = async () => {
+        const ids = $$("[data-mods] input:checked", modal).map((i) => i.value);
+        if (!ids.length) {
+          toast("请至少保留一个模块", "error");
+          return;
+        }
+        const expVal = $('[name="exp"]', modal).value;
+        const payload = {
+          module_ids: ids,
+          seats: Number($('[name="seats"]', modal).value),
+          term_type: $('[name="term"]', modal).value,
+          term_value: Number($('[name="termValue"]', modal).value),
+          expires_at: expVal ? new Date(expVal).toISOString() : null,
+        };
+        try {
+          await apiPatch(`/admin/api/cdks/${cdkId}`, payload);
+          toast("已保存", "ok");
+          close();
+          navigate("cdks", true);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+
+      const delBtn = $("[data-del]", modal);
+      if (delBtn) {
+        delBtn.onclick = async () => {
+          if (!(await confirmDialog(`删除 CDK ${c.code}？删除后不可恢复。`, { danger: true, okText: "删除" }))) return;
+          try {
+            await api("DELETE", `/admin/api/cdks/${cdkId}`);
+            toast("已删除", "ok");
+            close();
+            navigate("cdks", true);
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        };
+      }
+    },
+  });
+}
+
 async function renderCdks(root) {
   await ensureCatalog();
   const pageKey = "cdks";
@@ -1341,7 +1455,13 @@ async function renderCdks(root) {
                           <td>${esc(c.customer_email ?? "—")}</td>
                           <td class="nowrap">${c.license_expires_at ? `${fmtDay(c.license_expires_at)}<div class="muted small">${relDays(c.license_expires_at)}</div>` : '<span class="muted small">未激活</span>'}</td>
                           <td class="nowrap">${fmtTime(c.created_at)}</td>
-                          <td class="right">${c.status === "unused" ? `<button class="btn btn-sm" data-revoke="${esc(c.id)}" type="button">作废</button>` : ""}</td>
+                          <td class="right">
+                            <div class="btn-row" style="justify-content:flex-end">
+                              <button class="btn btn-sm" data-cdk-detail="${esc(c.id)}" type="button">详情</button>
+                              ${c.status === "unused" ? `<button class="btn btn-sm" data-revoke="${esc(c.id)}" type="button">作废</button>` : ""}
+                              ${c.status !== "used" && !c.customer_id ? `<button class="btn btn-sm btn-danger" data-cdk-del="${esc(c.id)}" type="button">删除</button>` : ""}
+                            </div>
+                          </td>
                         </tr>`,
                       )
                       .join("")
@@ -1483,6 +1603,22 @@ async function renderCdks(root) {
 
   $$("[data-copy]", root).forEach((btn) => {
     btn.onclick = () => copyText(btn.dataset.copy);
+  });
+  $$("[data-cdk-detail]", root).forEach((btn) => {
+    btn.onclick = () => cdkDetail(btn.dataset.cdkDetail);
+  });
+  $$("[data-cdk-del]", root).forEach((btn) => {
+    btn.onclick = async () => {
+      const code = btn.closest("tr")?.querySelector(".mono")?.textContent?.trim() ?? "";
+      if (!(await confirmDialog(`删除 CDK ${code}？删除后不可恢复。`, { danger: true, okText: "删除" }))) return;
+      try {
+        await api("DELETE", `/admin/api/cdks/${btn.dataset.cdkDel}`);
+        toast("已删除", "ok");
+        navigate("cdks", true);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
   });
   $$("[data-revoke]", root).forEach((btn) => {
     btn.onclick = async () => {

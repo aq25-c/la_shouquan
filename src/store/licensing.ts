@@ -762,3 +762,60 @@ export function setLicenseModuleExpiry(
     .get(licenseId, moduleId) as unknown as LicenseModuleRow | undefined;
   return row ?? null;
 }
+
+/**
+ * 修改 CDK 的可编辑字段（仅未激活的卡允许，业务校验在路由层）。
+ * 改 termValue 时同步 days，保证老字段与计费类型一致。
+ */
+export function updateCdk(
+  id: string,
+  patch: {
+    moduleIds?: string[];
+    expiresAt?: string | null;
+    seats?: number;
+    note?: string | null;
+    termType?: TermType;
+    termValue?: number;
+  },
+): CdkRow | null {
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (patch.moduleIds) {
+    sets.push("module_ids = ?");
+    params.push(toJson(patch.moduleIds));
+  }
+  if (patch.expiresAt !== undefined) {
+    sets.push("expires_at = ?");
+    params.push(nz(patch.expiresAt));
+  }
+  if (typeof patch.seats === "number") {
+    sets.push("seats = ?");
+    params.push(patch.seats);
+  }
+  if (patch.note !== undefined) {
+    sets.push("note = ?");
+    params.push(nz(patch.note));
+  }
+  if (patch.termType) {
+    sets.push("term_type = ?");
+    params.push(patch.termType);
+  }
+  if (typeof patch.termValue === "number") {
+    sets.push("term_value = ?", "days = ?");
+    params.push(patch.termValue, patch.termValue);
+  }
+
+  if (sets.length) {
+    params.push(id);
+    db().prepare(`UPDATE cdks SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+  }
+  const row = db().prepare("SELECT * FROM cdks WHERE id = ?").get(id) as unknown as CdkRow | undefined;
+  return row ?? null;
+}
+
+/** 删除 CDK（仅未激活的允许，业务校验在路由层） */
+export function deleteCdk(id: string): boolean {
+  const res = db().prepare("DELETE FROM cdks WHERE id = ?").run(id);
+  return Number(res.changes) > 0;
+}
