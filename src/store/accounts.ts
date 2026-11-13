@@ -273,3 +273,17 @@ export function customerBelongsToAgent(customerId: string, agentId: string): boo
     .get(customerId, agentId) as { ok: number } | undefined;
   return Boolean(row);
 }
+
+/**
+ * 删除某代理名下的登录账号（role=agent 且 agent_id = 该代理）。
+ * 用于「删除代理」时级联清理，避免留下指向已删代理的悬空账号。
+ */
+export function deleteAgentAccounts(agentId: string): { id: string; email: string }[] {
+  const rows = db()
+    .prepare("SELECT id, email FROM admin_users WHERE agent_id = ? AND role = 'agent'")
+    .all(agentId) as { id: string; email: string }[];
+  for (const row of rows) {
+    db().prepare("DELETE FROM admin_users WHERE id = ?").run(row.id);
+  }
+  return rows;
+}

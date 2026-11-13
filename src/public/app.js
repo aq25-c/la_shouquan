@@ -2646,7 +2646,7 @@ async function staffForm(staff, opt) {
         state.agents
           .map(
             (c) =>
-              `<option value="${esc(c.id)}" ${staff?.agent_id === c.id ? "selected" : ""}>${esc(c.name)}（余额 ${c.credit ?? 0} 张）</option>`,
+              `<option value="${esc(c.id)}" ${staff?.agent_id === c.id ? "selected" : ""}>${esc(c.name)}（余额 ${money(c.balance ?? 0)}）</option>`,
           )
           .join("");
 

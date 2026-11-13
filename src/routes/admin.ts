@@ -81,6 +81,7 @@ import {
   createAdmin,
   createCustomer,
   deleteStaff,
+  deleteAgentAccounts,
   findAdminByEmail,
   findAdminById,
   findCustomerByEmail,
@@ -572,6 +573,11 @@ export function registerAdminRoutes(): void {
     if (refs.batches > 0 || refs.licenses > 0) {
       throw conflict("该代理已有 CDK 批次或授权，不能删除（建议改为停用）", "AGENT_IN_USE", refs);
     }
+
+    // 级联：删除该代理的登录账号，并让已登录会话立即失效（否则会留下指向已删代理的悬空账号）
+    const removedAccounts = deleteAgentAccounts(id);
+    for (const acc of removedAccounts) revokeSessionsFor("admin", acc.id);
+
     deleteAgent(id);
     audit({
       actorType: "admin",
@@ -581,7 +587,7 @@ export function registerAdminRoutes(): void {
       targetType: "agent",
       targetId: id,
       ip: ctx.ip,
-      detail: { code: agent.code },
+      detail: { code: agent.code, deleted_accounts: removedAccounts.map((a) => a.email) },
     });
     return ok({ deleted: true });
   });

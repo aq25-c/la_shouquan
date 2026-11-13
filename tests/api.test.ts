@@ -1849,3 +1849,46 @@ test("模块说明：后台可改，客户端登录后能读到", async () => {
   assert.ok(hbMod, "心跳应返回模块明细");
   assert.equal(hbMod.module_description, "核心能力：导出与报表");
 });
+
+test("删除代理时级联删除其登录账号，并让已登录会话失效", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "cascade-agent", name: "级联删除代理" }, adminToken);
+  assert.equal(ag.status, 201);
+  const agentId = ag.json.data.agent.id;
+
+  const staff = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "cascade@test.local", password: "Cascade123", role: "agent", agent_id: agentId },
+    adminToken,
+  );
+  assert.equal(staff.status, 201);
+
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "cascade@test.local",
+    password: "Cascade123",
+  });
+  assert.equal(login.status, 200);
+  const agentToken = login.json.data.token;
+
+  // 删除代理
+  const del = await api("DELETE", `/admin/api/agents/${agentId}`, undefined, adminToken);
+  assert.equal(del.status, 200);
+
+  // 账号随代理一起删除 → 无法再登录
+  const relogin = await api("POST", "/admin/api/auth/login", {
+    email: "cascade@test.local",
+    password: "Cascade123",
+  });
+  assert.equal(relogin.status, 401, "代理账号应随代理一起删除");
+
+  // 已登录的会话立即失效
+  const me = await api("GET", "/admin/api/auth/me", undefined, agentToken);
+  assert.equal(me.status, 401, "旧会话应立即失效");
+
+  // 代理账号列表里也没有了
+  const list = await api("GET", "/admin/api/staff?role=agent", undefined, adminToken);
+  assert.ok(
+    !list.json.data.items.some((a: Json) => a.email === "cascade@test.local"),
+    "列表中不应再出现该账号",
+  );
+});
