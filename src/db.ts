@@ -15,7 +15,7 @@ let database: DatabaseSync | null = null;
  * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
  * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
 let migration: { from: number; to: number } = { from: 0, to: 0 };
@@ -349,6 +349,26 @@ CREATE INDEX IF NOT EXISTS idx_licmod_license ON license_modules(license_id);
 `;
 
 /**
+ * v10：远程变量
+ *   - remote_vars：按产品维护一组可远程下发的参数，支持 text / image / json 三种载荷
+ *     仅登录客户可读取（客户端接口需要客户会话 token）。
+ */
+const SCHEMA_V10 = `
+CREATE TABLE IF NOT EXISTS remote_vars (
+  id          TEXT PRIMARY KEY,
+  product_id  TEXT NOT NULL,
+  key         TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'text',
+  value       TEXT NOT NULL DEFAULT '',
+  description TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL,
+  UNIQUE (product_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_vars_product ON remote_vars(product_id);
+`;
+
+/**
  * v8：授权到期上限
  *   - licenses.max_expires_at：该授权允许的最大到期时间（= CDK 激活时算出的实际到期时间）
  *     代理调整到期时间可以缩短、也可以恢复，但不能超过这个上限；管理员不受此限制。
@@ -431,6 +451,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 7) runMigration(db, SCHEMA_V7, 7);
   if (version < 8) runMigration(db, SCHEMA_V8, 8);
   if (version < 9) runMigration(db, SCHEMA_V9, 9);
+  if (version < 10) runMigration(db, SCHEMA_V10, 10);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

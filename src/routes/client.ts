@@ -14,6 +14,7 @@ import {
 } from "../crypto.ts";
 import {
   badRequest,
+  q,
   bodyInt,
   bodyStr,
   bodyStrArray,
@@ -68,6 +69,7 @@ import {
   upsertDevice,
   createLicense,
 } from "../store/licensing.ts";
+import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
 import { isEmail, normalizeEmail } from "../util.ts";
 
@@ -134,6 +136,7 @@ function licenseSnapshot(customerId: string) {
           module_id: lm.module_id,
           module_code: mod?.code ?? lm.module_id,
           module_name: mod?.name ?? lm.module_id,
+          module_description: mod?.description ?? null,
           expires_at: modExpiry,
           days_left: modMs ? Math.max(0, Math.ceil((modMs - now) / 86_400_000)) : 0,
           active: status === "active" && (!modMs || modMs > now),
@@ -263,6 +266,29 @@ export function registerClientRoutes(): void {
         devices: devicesById.get(item.license_id) ?? [],
       })),
       active_license: snapshot.active_license,
+    });
+  });
+
+  /* ---------------------------- 远程变量 ---------------------------- */
+
+  /**
+   * 远程变量（必须登录）：未登录直接 401，避免被匿名抓取。
+   * 不传 product 时默认取该客户名下第一个有效授权对应的产品。
+   */
+  get("/api/v1/vars", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const code = q(ctx, "product");
+
+    let product = code ? findProductByCode(code) : null;
+    if (!product) {
+      const mine = listLicensesByCustomer(customer.id).filter((r) => r.status !== "revoked");
+      product = mine.length ? findProductById(mine[0].product_id) : null;
+    }
+    if (!product) throw notFound("没有可读取的产品，请先激活或指定 ?product=", "PRODUCT_NOT_FOUND");
+
+    return ok({
+      product: { code: product.code, name: product.name },
+      vars: varsForClient(product.id),
     });
   });
 
@@ -647,6 +673,7 @@ export function registerClientRoutes(): void {
             module_id: lm.module_id,
             module_code: mod?.code ?? lm.module_id,
             module_name: mod?.name ?? lm.module_id,
+            module_description: mod?.description ?? null,
             expires_at: exp,
             days_left: ms ? Math.max(0, Math.ceil((ms - nowMs) / 86_400_000)) : 0,
             active: eff === "active" && (!ms || ms > nowMs),

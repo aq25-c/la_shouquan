@@ -23,9 +23,9 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v9，新增列齐全", () => {
+test("数据库迁移到 v10，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 9);
+  assert.equal(version, 10);
 
   const admin = columns("admin_users");
   assert.ok(admin.includes("permissions"), "admin_users.permissions");
@@ -126,7 +126,7 @@ test("数据库版本：新库一次建到最新，user_version 等于 SCHEMA_VE
   const tables = (db().prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
     (r) => r.name,
   );
-  for (const t of ["agents", "products", "modules", "customers", "licenses", "cdks", "cdk_batches", "agent_prices", "license_modules"]) {
+  for (const t of ["agents", "products", "modules", "customers", "licenses", "cdks", "cdk_batches", "agent_prices", "license_modules", "remote_vars"]) {
     assert.ok(tables.includes(t), `缺少表 ${t}`);
   }
 });
@@ -171,4 +171,24 @@ test("数据库版本：需要升级的旧库会先自动备份，新库则不�
     }
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("最长离线时间：按授权自己的宽限天数计算，并以实际到期封顶", async () => {
+  const { offlineExpiryMs } = await import("../src/issuer.ts");
+  const now = Date.now();
+  const DAY = 86_400_000;
+
+  // 授权剩 100 天、宽限 20 天 → 取 (now + 20 天)
+  const long = { expires_at: new Date(now + 100 * DAY).toISOString(), offline_grace_days: 20 } as never;
+  const ms1 = offlineExpiryMs(long, now);
+  assert.ok(Math.abs(ms1 - (now + 20 * DAY)) < 2000, `应按授权自己的 20 天计算，实际差 ${((ms1 - now) / DAY).toFixed(1)} 天`);
+
+  // 授权只剩 3 天、宽限 20 天 → 取授权到期（不能超过真实到期）
+  const short = { expires_at: new Date(now + 3 * DAY).toISOString(), offline_grace_days: 20 } as never;
+  const ms2 = offlineExpiryMs(short, now);
+  assert.ok(Math.abs(ms2 - (now + 3 * DAY)) < 2000, "授权更短时应封顶到实际到期时间");
+
+  // 宽限为 0 → 只能在线用
+  const zero = { expires_at: new Date(now + 100 * DAY).toISOString(), offline_grace_days: 0 } as never;
+  assert.ok(offlineExpiryMs(zero, now) - now < 2000, "宽限 0 天应几乎不可离线使用");
 });

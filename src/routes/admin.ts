@@ -60,6 +60,8 @@ import {
   totalPrice,
   upsertPrice,
 } from "../store/prices.ts";
+import { REMOTE_VAR_KINDS, deleteVar, listVars, upsertVar, varView } from "../store/vars.ts";
+import type { RemoteVarKind } from "../store/vars.ts";
 import { normalizeTerm } from "../permissions.ts";
 import {
   agentReferences,
@@ -871,6 +873,71 @@ export function registerAdminRoutes(): void {
       detail: patchData,
     });
     return ok({ config: updated });
+  });
+
+  /* ---------------------------- 远程变量 ---------------------------- */
+
+  /** 远程变量：按产品维护可下发的参数（text / image / json） */
+  get(`${P}/products/:id/vars`, (ctx) => {
+    requireStaff(ctx);
+    const id = slash(ctx, "id");
+    if (!findProductById(id)) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
+    return ok({ items: listVars(id).map(varView) });
+  });
+
+  post(`${P}/products/:id/vars`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    if (!findProductById(id)) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
+
+    const key = needStr(ctx, "key", 64);
+    if (!/^[A-Za-z0-9_.-]{1,64}$/.test(key)) {
+      throw badRequest("key 只能是字母 / 数字 / 下划线 / 点 / 横线", "INVALID_FIELD");
+    }
+    const kindInput = (bodyStr(ctx, "kind", 20) ?? "text") as RemoteVarKind;
+    if (!REMOTE_VAR_KINDS.includes(kindInput)) {
+      throw badRequest("kind 只能是 text / image / json", "INVALID_FIELD");
+    }
+    const value = bodyStr(ctx, "value", { max: 200000 }) ?? "";
+    if (kindInput === "json" && value.trim()) {
+      try {
+        JSON.parse(value);
+      } catch {
+        throw badRequest("json 类型的 value 必须是合法 JSON", "INVALID_FIELD");
+      }
+    }
+    const description = bodyStr(ctx, "description", { max: 500 });
+
+    const variable = upsertVar({ productId: id, key, kind: kindInput, value, description });
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "var.upsert",
+      targetType: "product",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { key, kind: kindInput, bytes: value.length },
+    });
+    return ok({ variable: varView(variable) });
+  });
+
+  del(`${P}/products/:id/vars/:key`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const key = slash(ctx, "key");
+    if (!deleteVar(id, key)) throw notFound("变量不存在", "VAR_NOT_FOUND");
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "var.delete",
+      targetType: "product",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { key },
+    });
+    return ok({ deleted: true });
   });
 
   get(`${P}/products/:id/modules`, (ctx) => {

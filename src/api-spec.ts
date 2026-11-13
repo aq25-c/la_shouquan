@@ -81,6 +81,13 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /api/v1/licenses/:id/reenroll": { title: "重新获取许可证文件", auth: "customer", params: "`device_id`✅", desc: "本地缓存丢失时重新拉取签名文件。" },
 
   /* ---------------- 客户端 · 试用 ---------------- */
+  "GET /api/v1/vars": {
+    title: "远程变量（需登录）",
+    auth: "customer",
+    params: "`product?`（产品编码，留空取该客户第一个有效授权对应的产品）",
+    desc: "返回该产品配置的远程变量 `vars`，值为 text / image / json 三种载荷（json 已解析为对象）。",
+    notes: "未登录直接 401，匿名无法读取；图片通常是 URL 或 data URI 字符串。",
+  },
   "GET /api/v1/trial/info": { title: "试用配置", auth: "public", desc: "是否开放自助试用、天数、席位、次数上限、限定产品与模块。" },
   "GET /api/v1/trial/status": { title: "我的试用额度", auth: "customer", desc: "每个在售产品的已用次数与剩余次数。" },
   "POST /api/v1/trial/start": {
@@ -162,6 +169,18 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/products": { title: "新增产品", auth: "admin", params: "`code`、`name`、`description?`", desc: "`code` 匹配 `^[a-z0-9][a-z0-9_-]{0,63}$`。" },
   "PATCH /admin/api/products/:id": { title: "编辑产品", auth: "admin", params: "`name?`、`description?`、`status?`", desc: "`status`: active / disabled。" },
   "DELETE /admin/api/products/:id": { title: "删除产品", auth: "admin", desc: "已有授权或 CDK 时返回 409 PRODUCT_IN_USE。" },
+  "GET /admin/api/products/:id/vars": {
+    title: "远程变量列表",
+    auth: "admin",
+    desc: "按产品列出远程变量（含 kind、value、preview）。",
+  },
+  "POST /admin/api/products/:id/vars": {
+    title: "新增/修改变量",
+    auth: "admin",
+    params: "`key`✅（字母数字下划线点横线）、`kind`（text/image/json，默认 text）、`value`、`description?`",
+    desc: "同产品下 key 唯一，存在即覆盖；json 类型会校验 value 必须是合法 JSON。",
+  },
+  "DELETE /admin/api/products/:id/vars/:key": { title: "删除变量", auth: "admin" },
   "GET /admin/api/products/:id/trial": {
     title: "读取产品试用配置",
     auth: "admin",
@@ -414,6 +433,17 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
   .conv-item { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
   .conv-item h3 { margin:0 0 6px; font-size:13px; color:var(--primary); }
   .conv-item p { margin:0; font-size:12.5px; color:var(--muted); overflow-wrap:anywhere; }
+  .offline-body { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:18px 20px; }
+  .offline-body .lead { margin:0 0 14px; font-size:13.5px; }
+  .offline-body h3 { margin:18px 0 8px; font-size:14px; color:var(--primary); }
+  .offline-body p { margin:0 0 8px; font-size:13px; color:var(--muted); overflow-wrap:anywhere; }
+  .offline-body pre { margin:0 0 10px; overflow-x:auto; background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; }
+  .offline-body pre code { font-size:12px; line-height:1.6; white-space:pre; }
+  .offline-table { width:100%; border-collapse:collapse; margin:8px 0 12px; font-size:12.5px; }
+  .offline-table th, .offline-table td { border:1px solid var(--border); padding:7px 10px; text-align:left; vertical-align:top; }
+  .offline-table th { background:var(--bg); color:var(--primary); font-weight:600; }
+  .offline-list { margin:6px 0 0; padding-left:20px; font-size:12.5px; color:var(--muted); }
+  .offline-list li { margin-bottom:4px; }
   .err-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:2px; }
   .err-list code { white-space:nowrap; background:var(--bg); border:1px solid var(--border); padding:2px 7px; border-radius:6px; font-size:12px; }
   .group { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:16px; overflow:hidden; }
@@ -450,6 +480,100 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
 <main>
   <div class="conventions">${conventionsHtml}</div>
   ${groupsHtml}
+
+  <section class="group" id="offline">
+    <h2>离线验证使用说明</h2>
+    <div class="offline-body">
+      <p class="lead"><b>一句话：</b>许可证文件本身可以完全离线校验（Ed25519 签名），但 <b>首次激活必须联网一次</b> —— 因为要核销 CDK 并绑定设备指纹。</p>
+
+      <h3>① 许可证文件长什么样</h3>
+      <p>激活与每次心跳都会返回 <code>license_file</code>，格式是 <code>payload 的 base64url . 签名的 base64url</code>。解开后：</p>
+      <pre><code class="lang-json">{
+  "v": 1,
+  "kid": "k1",                  // 签名密钥编号
+  "lic": "lic_xxx",             // 授权 ID
+  "lic_no": "LIC-2026-00001",   // 授权单号
+  "cus": "cus_xxx",             // 客户 ID
+  "prd": "app-pro",             // 产品编码
+  "mod": ["core", "export"],    // 已开通模块（不含未勾选的）
+  "dev": "a3f8…",               // 设备指纹哈希，绑死这台机器
+  "seat": 2,                    // 席位
+  "iat": 1763000000,            // 签发时间（Unix 秒）
+  "exp": 1763604800,            // 离线有效期 ← 注意见下文
+  "grace_until": 1765600000,    // 授权真实到期时间
+  "status": "active",
+  "term": { "type": "day", "value": 30 },
+  "usage": null                 // 次数卡时为 { max, used }
+}</code></pre>
+
+      <h3>② 客户端验签四步（Node.js 示例）</h3>
+      <pre><code class="lang-js">const { createPublicKey, verify } = require("node:crypto");
+
+// 公钥内置在客户端（也可首次联网时取自 GET /api/v1/public-key 并缓存）
+const PUBLIC_KEY_PEM = '-----BEGIN PUBLIC KEY-----
+…
+-----END PUBLIC KEY-----';
+
+function verifyLicenseFile(file) {
+  const dot = file.indexOf(".");
+  if (dot &lt;= 0) throw new Error("许可证格式错误");
+  const body = file.slice(0, dot);
+  const sig = Buffer.from(file.slice(dot + 1), "base64url");
+
+  // ① 验签：确认是本服务签发、且内容未被篡改
+  if (!verify(null, Buffer.from(body, "utf8"), createPublicKey(PUBLIC_KEY_PEM), sig)) {
+    throw new Error("许可证签名无效");
+  }
+
+  const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+
+  // ② 设备绑定：dev 必须等于本机指纹的哈希
+  if (payload.dev !== myDeviceHash()) throw new Error("许可证不属于本机");
+
+  // ③ 状态
+  if (payload.status === "revoked") throw new Error("授权已吊销");
+
+  // ④ 时间：区分「需要联网」与「真的到期」
+  const now = Date.now() / 1000;
+  if (payload.exp &lt;= now) {
+    if (payload.grace_until &gt; now) throw new Error("NEED_ONLINE");  // 只是太久没联网
+    throw new Error("EXPIRED");                                      // 真的到期了
+  }
+  return payload;    // payload.mod 即当前可用模块
+}</code></pre>
+
+      <h3>③ ⚠️ 最容易踩的坑：<code>exp</code> 不是授权到期时间</h3>
+      <p><code>exp = min(授权真实到期时间, 签发时刻 + 该授权的最长离线时间)</code>。所以 <code>exp</code> 过期只代表「太久没联网」，不代表授权过期。</p>
+      <table class="offline-table">
+        <thead><tr><th>情况</th><th>含义</th><th>客户端应该怎么做</th></tr></thead>
+        <tbody>
+          <tr><td><code>exp</code> 未到</td><td>完全正常</td><td>直接放行</td></tr>
+          <tr><td><code>exp</code> 已过，<code>grace_until</code> 未到</td><td>只是很久没联网，授权其实还有效</td><td>提示「请联网验证」，<b>不要</b>显示「授权已过期」</td></tr>
+          <tr><td><code>grace_until</code> 已过</td><td>真的到期</td><td>提示续费</td></tr>
+        </tbody>
+      </table>
+      <p>「最长离线时间」可在授权详情里逐条设置（默认取全局 <code>OFFLINE_GRACE_DAYS</code>）；改动后点「重新签发许可证文件」立即生效，否则下一次心跳后按新值计算。</p>
+
+      <h3>④ 三种部署场景</h3>
+      <table class="offline-table">
+        <thead><tr><th>场景</th><th>做法</th></tr></thead>
+        <tbody>
+          <tr><td>能联网（最常见）</td><td>正常激活 → 本地保存 <code>license_file</code> → 每次启动本地验签；建议按 <code>heartbeat_interval_hours</code>（默认 24 小时）心跳换新文件。</td></tr>
+          <tr><td>偶尔联网</td><td>把 <code>OFFLINE_GRACE_DAYS</code> 调大（如 30～90 天），给「偶尔联网」留窗口。代价：真实吊销/到期后，最坏要等这么久客户端才会知道。</td></tr>
+          <tr><td>永久不能联网</td><td>当前不支持「离线首次激活」（设备指纹必须先上报）。可行做法：让该机器通过手机热点/临时网线联网激活一次；或联系服务商按设备指纹代签。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>⑤ 相关接口</h3>
+      <ul class="offline-list">
+        <li><code>POST /api/v1/licenses/activate</code> —— 激活并获取首份 <code>license_file</code>（需联网一次）</li>
+        <li><code>POST /api/v1/licenses/heartbeat</code> —— 滚动续期，返回新的 <code>license_file</code></li>
+        <li><code>GET /api/v1/public-key</code> —— 取验签公钥（建议内置到客户端）</li>
+        <li><code>POST /api/v1/licenses/consume</code> —— 次数卡消耗（需联网）</li>
+        <li><code>GET /api/v1/vars</code> —— 远程变量（需登录，可用于下发最新公告/配置）</li>
+      </ul>
+    </div>
+  </section>
 </main>
 <footer>license-server v${escHtml(docs.version)} · 本文档页无需登录，可直接分享给客户端开发者</footer>
 <script>

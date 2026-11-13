@@ -1745,3 +1745,107 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
     "叠加后所有模块应随授权一起展期",
   );
 });
+
+/* ==================== 远程变量 + 模块说明 ==================== */
+
+test("远程变量：未登录 401，登录后按产品读取文本/图片/JSON", async () => {
+  // ① 未登录无法获取
+  const anon = await api("GET", "/api/v1/vars");
+  assert.equal(anon.status, 401, "未登录必须拿不到远程变量");
+
+  // ② 管理员配置三种类型
+  const t = await api(
+    "POST",
+    `/admin/api/products/${productId}/vars`,
+    { key: "notice", kind: "text", value: "系统维护公告" },
+    adminToken,
+  );
+  assert.equal(t.status, 200);
+  await api(
+    "POST",
+    `/admin/api/products/${productId}/vars`,
+    { key: "banner", kind: "image", value: "https://example.com/a.png" },
+    adminToken,
+  );
+  await api(
+    "POST",
+    `/admin/api/products/${productId}/vars`,
+    { key: "conf", kind: "json", value: JSON.stringify({ min_version: "1.2.0" }) },
+    adminToken,
+  );
+
+  // ③ json 类型写坏内容 → 拒绝
+  const bad = await api(
+    "POST",
+    `/admin/api/products/${productId}/vars`,
+    { key: "bad", kind: "json", value: "{not json" },
+    adminToken,
+  );
+  assert.equal(bad.status, 400);
+
+  // ④ 客户登录后可读，json 已解析成对象
+  const login = await api("POST", "/api/v1/auth/login", {
+    email: "buyer@test.local",
+    password: "buyerPass123",
+  });
+  const token = login.json.data.session.token;
+  const vars = await api("GET", "/api/v1/vars?product=app-pro", undefined, token);
+  assert.equal(vars.status, 200);
+  assert.equal(vars.json.data.vars.notice, "系统维护公告");
+  assert.equal(vars.json.data.vars.banner, "https://example.com/a.png");
+  assert.deepEqual(vars.json.data.vars.conf, { min_version: "1.2.0" });
+
+  // ⑤ 后台列表能看到变量
+  const list = await api("GET", `/admin/api/products/${productId}/vars`, undefined, adminToken);
+  assert.ok(list.json.data.items.length >= 3);
+
+  // ⑥ 删除
+  const del = await api("DELETE", `/admin/api/products/${productId}/vars/notice`, undefined, adminToken);
+  assert.equal(del.status, 200);
+});
+
+test("模块说明：后台可改，客户端登录后能读到", async () => {
+  const patched = await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[0]}`,
+    { description: "核心能力：导出与报表" },
+    adminToken,
+  );
+  assert.equal(patched.status, 200);
+
+  const login = await api("POST", "/api/v1/auth/login", {
+    email: "buyer@test.local",
+    password: "buyerPass123",
+  });
+  const token = login.json.data.session.token;
+
+  const me = await api("GET", "/api/v1/auth/me", undefined, token);
+  const licenses = me.json.data.licenses ?? [];
+  const mods = licenses.flatMap((l: Json) => l.modules ?? []);
+  const target = mods.find((m: Json) => m.module_id === moduleIds[0]);
+  assert.ok(target, "客户授权里应包含该模块");
+  assert.equal(target.module_description, "核心能力：导出与报表");
+
+  // 心跳同样返回模块说明
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, seats: 1 },
+    adminToken,
+  );
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: gen.json.data.codes[0],
+    device_id: "DESC-1",
+    email: "buyer@test.local",
+    password: "buyerPass123",
+  });
+  assert.equal(act.status, 201);
+  const hb = await api("POST", "/api/v1/licenses/heartbeat", {
+    license_key: act.json.data.license_key,
+    device_id: "DESC-1",
+  });
+  assert.equal(hb.status, 200);
+  const hbMod = (hb.json.data.modules ?? []).find((m: Json) => m.module_id === moduleIds[0]);
+  assert.ok(hbMod, "心跳应返回模块明细");
+  assert.equal(hbMod.module_description, "核心能力：导出与报表");
+});

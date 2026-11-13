@@ -529,6 +529,95 @@ async function productTrialForm(productId) {
   return modal;
 }
 
+/** 远程变量管理：文本 / 图片（URL 或 data URI）/ JSON，客户端登录后可读 */
+async function varManager(productId) {
+  const product = state.products.find((p) => p.id === productId);
+  const data = await apiGet(`/admin/api/products/${productId}/vars`);
+  const items = data.items ?? [];
+
+  openModal({
+    title: `远程变量：${product?.name ?? ""}`,
+    wide: true,
+    body: `
+      <div class="note">客户端登录后可通过 <code>GET /api/v1/vars</code> 读取这里配置的变量；<b>未登录无法获取</b>。</div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead><tr><th>Key</th><th>类型</th><th>值</th><th class="right">操作</th></tr></thead>
+          <tbody>
+            ${
+              items.length
+                ? items
+                    .map(
+                      (v) => `<tr>
+                        <td class="mono">${esc(v.key)}</td>
+                        <td>${esc(v.kind)}</td>
+                        <td class="mono" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(v.preview)}">${esc(v.preview)}</td>
+                        <td class="right"><button class="btn btn-sm" data-del-var="${esc(v.key)}" type="button">删除</button></td>
+                      </tr>`,
+                    )
+                    .join("")
+                : emptyRow(4, "还没有配置变量")
+            }
+          </tbody>
+        </table>
+      </div>
+      <div class="form-grid" style="margin-top:14px">
+        <label class="field"><span>Key（字母 / 数字 / _ . -）</span><input name="vkey" placeholder="notice_text" /></label>
+        <label class="field"><span>类型</span>
+          <select name="vkind">
+            <option value="text">文本</option>
+            <option value="image">图片（URL 或 data URI）</option>
+            <option value="json">JSON</option>
+          </select></label>
+        <label class="field full"><span>值</span>
+          <textarea name="vvalue" rows="4" placeholder="文本内容 / https://example.com/a.png / {&quot;version&quot;:&quot;1.2.0&quot;}"></textarea></label>
+        <label class="field full"><span>说明（可选）</span><input name="vdesc" /></label>
+      </div>`,
+    footer: `<button class="btn" data-close2 type="button">关闭</button><button class="btn btn-primary" data-save type="button">保存变量</button>`,
+    onMount(modal, close) {
+      $("[data-close2]", modal).onclick = () => {
+        close();
+        navigate("products", true);
+      };
+      $("[data-save]", modal).onclick = async () => {
+        const key = $("[name=vkey]", modal).value.trim();
+        const kind = $("[name=vkind]", modal).value;
+        const value = $("[name=vvalue]", modal).value;
+        if (!key) {
+          toast("请填写 Key", "error");
+          return;
+        }
+        try {
+          await apiPost(`/admin/api/products/${productId}/vars`, {
+            key,
+            kind,
+            value,
+            description: $("[name=vdesc]", modal).value.trim(),
+          });
+          toast("已保存", "ok");
+          close();
+          varManager(productId);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+      $$("[data-del-var]", modal).forEach((btn) => {
+        btn.onclick = async () => {
+          if (!(await confirmDialog(`删除变量 ${btn.dataset.delVar}？`, { danger: true, okText: "删除" }))) return;
+          try {
+            await api("DELETE", `/admin/api/products/${productId}/vars/${encodeURIComponent(btn.dataset.delVar)}`);
+            toast("已删除", "ok");
+            close();
+            varManager(productId);
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        };
+      });
+    },
+  });
+}
+
 async function renderProducts(root) {
   await ensureCatalog(true);
   root.innerHTML = `
@@ -557,6 +646,7 @@ async function renderProducts(root) {
                             <div class="btn-row" style="justify-content:flex-end">
                               <button class="btn btn-sm" data-modules="${esc(p.id)}" type="button">模块</button>
                               <button class="btn btn-sm" data-trial="${esc(p.id)}" type="button">试用</button>
+                              <button class="btn btn-sm" data-vars="${esc(p.id)}" type="button">变量</button>
                               <button class="btn btn-sm" data-edit="${esc(p.id)}" type="button">编辑</button>
                               <button class="btn btn-sm" data-toggle="${esc(p.id)}" type="button">${p.status === "active" ? "停用" : "启用"}</button>
                               <button class="btn btn-sm" data-del="${esc(p.id)}" type="button">删除</button>
@@ -576,6 +666,9 @@ async function renderProducts(root) {
   $("[data-new-product]", root).onclick = () => productForm();
   $$("[data-trial]", root).forEach((btn) => {
     btn.onclick = () => productTrialForm(btn.dataset.trial);
+  });
+  $$("[data-vars]", root).forEach((btn) => {
+    btn.onclick = () => varManager(btn.dataset.vars);
   });
   $$("[data-edit]", root).forEach((btn) => {
     btn.onclick = () => productForm(state.products.find((p) => p.id === btn.dataset.edit));
@@ -680,6 +773,8 @@ async function moduleManager(productId) {
       <div class="form-grid">
         <label class="field"><span>模块编码</span><input name="code" placeholder="report" /></label>
         <label class="field"><span>模块名称</span><input name="name" placeholder="报表模块" /></label>
+        <label class="field full"><span>模块说明（客户端可经接口读取，用于展示给用户）</span>
+          <textarea name="description" rows="2" placeholder="例如：导出 Excel / PDF 报表"></textarea></label>
         <div class="field full"><button class="btn btn-primary btn-sm" data-add type="button">+ 添加模块</button></div>
       </div>`;
 
@@ -702,12 +797,13 @@ async function moduleManager(productId) {
     $("[data-add]", modal).onclick = async () => {
       const code = $('[name="code"]', modal).value.trim();
       const name = $('[name="name"]', modal).value.trim();
+      const description = $('[name="description"]', modal).value.trim();
       if (!code || !name) {
         toast("请填写模块编码与名称", "error");
         return;
       }
       try {
-        await apiPost(`/admin/api/products/${productId}/modules`, { code, name });
+        await apiPost(`/admin/api/products/${productId}/modules`, { code, name, description });
         const refreshed = await apiGet(`/admin/api/products/${productId}/modules`);
         rows.length = 0;
         rows.push(...refreshed.items);
@@ -1639,9 +1735,11 @@ async function openLicenseDetail(id) {
           <label class="field"><span>到期时间（直接设定）</span>
             <input name="expires_at" type="datetime-local" value="${toLocalInput(l.expires_at)}" /></label>
           <label class="field"><span>席位数</span><input name="seats" type="number" min="1" max="100" value="${l.seats}" /></label>
-          <label class="field"><span>离线宽限（天）</span><input name="grace" type="number" min="0" max="365" value="${l.offline_grace_days}" /></label>
+          <label class="field"><span>最长离线时间（天，默认取全局 ${state.config?.offline_grace_days ?? 7}）</span>
+            <input name="grace" type="number" min="0" max="365" value="${l.offline_grace_days}" /></label>
           <label class="field"><span>备注</span><input name="note" value="${esc(l.note ?? "")}" /></label>
         </div>
+        <div class="note">「最长离线时间」决定许可证文件在完全离线时能用多久（仍以本授权的实际到期时间封顶）。保存后点下方「重新签发许可证文件」立即生效，否则客户端下次心跳（${state.config?.heartbeat_interval_hours ?? 24} 小时）后按新值计算。</div>
         <div class="form-actions">
           <button class="btn btn-primary btn-sm" data-save type="button">保存调整</button>
           <button class="btn btn-sm" data-extend-30 type="button">+30 天</button>
