@@ -2865,3 +2865,61 @@ test("设备与操作日志按「客户 + 软件」共享：试用卡与 CDK 卡
   assert.ok(actions.includes("license.bind_device"), "日志里应有绑定设备");
   assert.ok(actions.includes("license.extend"), "日志里应有加时");
 });
+
+
+test("门户：客户能看设备和日志，只能解绑（不能重绑）", async () => {
+  const email = "portaldev@test.local";
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email,
+    password: "PortalPass12345",
+    name: "门户设备",
+  });
+  const token = reg.json.data.session.token;
+  const customerId = reg.json.data.customer.id;
+
+  const mk = await api(
+    "POST",
+    "/admin/api/licenses",
+    { customer_id: customerId, product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 3 },
+    adminToken,
+  );
+  const licId = mk.json.data.license.id;
+  await api("POST", `/admin/api/licenses/${licId}/devices`, { device_id: "portal-dev-01" }, adminToken);
+
+  // 设备列表：能看到自己账号下的设备
+  const devs = await api("GET", `/api/v1/me/licenses/${licId}/devices`, undefined, token);
+  assert.equal(devs.status, 200);
+  assert.equal(devs.json.data.devices.length, 1);
+  assert.equal(devs.json.data.devices[0].device_id, "portal-dev-01");
+
+  // 日志：能看到绑定记录，且操作人只给「我 / 服务商」，不暴露邮箱
+  const logs = await api("GET", `/api/v1/me/licenses/${licId}/logs`, undefined, token);
+  assert.equal(logs.status, 200);
+  const bind = logs.json.data.items.find((i) => i.action === "license.bind_device");
+  assert.ok(bind, "应有绑定记录");
+  assert.ok(["我", "服务商", "代理商"].includes(bind.actor));
+  const raw = JSON.stringify(logs.json.data.items);
+  assert.ok(!raw.includes("root@test.local"), "不应把后台账号邮箱给客户");
+
+  // 别人的授权看不到
+  const other = await api("POST", "/api/v1/auth/register", {
+    email: "portalother@test.local",
+    password: "PortalPass12345",
+  });
+  const otherToken = other.json.data.session.token;
+  const denied = await api("GET", `/api/v1/me/licenses/${licId}/devices`, undefined, otherToken);
+  assert.equal(denied.status, 403);
+
+  // 解绑
+  const rel = await api("POST", "/api/v1/me/devices/portal-dev-01/release", undefined, token);
+  assert.equal(rel.status, 200);
+  assert.equal(rel.json.data.released, true);
+  assert.equal(rel.json.data.license_no, mk.json.data.license.license_no);
+
+  const after = await api("GET", `/api/v1/me/licenses/${licId}/devices`, undefined, token);
+  assert.equal(after.json.data.devices[0].status, "released");
+
+  // 再解一次 → 404（已经不在用了）
+  const again = await api("POST", "/api/v1/me/devices/portal-dev-01/release", undefined, token);
+  assert.equal(again.status, 404);
+});

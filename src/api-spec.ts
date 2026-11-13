@@ -66,6 +66,26 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     desc: "返回该授权**同一客户 + 同一软件**下所有授权的操作记录（时间倒序）：激活、加时、冻结/恢复、绑定与解绑设备、重新签发等。用途是「设备与解绑历史」里的操作日志页签，同一客户多条授权看到的是同一份。",
     notes: "单条记录字段：`at`、`action`、`actor_label`、`detail`（JSON 字符串，含 device_id / days / by 等）、`target_id`（属于哪条授权）。",
   },
+  "GET /api/v1/me/licenses/:id/devices": {
+    title: "我的设备（客户门户）",
+    auth: "customer",
+    params: "路径参数 `id` 为授权 id",
+    desc: "返回这条授权所在「同一客户 + 同一软件」下的全部设备（含已解绑历史）与授权清单。门户里点开某条授权看到的设备列表就是它，试用卡绑的设备在付费卡里同样可见。",
+    notes: "设备字段：`device_id`、`device_name`、`platform`、`status`（active/released）、`license_no`（挂在哪条授权）、`released_reason`（manual/expired）、`first_seen_at`、`last_seen_at`、`released_at`。",
+  },
+  "GET /api/v1/me/licenses/:id/logs": {
+    title: "我的操作记录（客户门户）",
+    auth: "customer",
+    params: "路径参数 `id` 为授权 id",
+    desc: "同一客户同一软件下的操作时间线（激活、加时、调整、绑定与解绑设备等），按时间倒序。操作人只返回「我 / 服务商 / 代理商」，不暴露内部账号邮箱与 IP。",
+  },
+  "POST /api/v1/me/devices/:deviceId/release": {
+    title: "客户自助解绑设备",
+    auth: "customer",
+    params: "路径参数 `deviceId` 为设备标识",
+    desc: "按设备找，不用知道它挂在哪条授权下；解绑后席位立即释放。客户门户只提供「解绑」这一个操作，不提供重新绑定或重置全部设备。",
+    notes: "404 DEVICE_NOT_BOUND：该设备不存在或本来就没在用。",
+  },
   "GET /api/v1/me/overview": {
     title: "授权总览（客户门户用）",
     auth: "customer",

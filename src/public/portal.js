@@ -264,6 +264,9 @@ function renderLicenses() {
 
   pane.innerHTML = account + `<div class="lic-grid">${data.licenses.map(licenseCard).join("")}</div>`;
   $("#btn-password")?.addEventListener("click", openPasswordModal);
+  $$("[data-licdev]").forEach((btn) => {
+    btn.onclick = () => openDeviceModal(btn.dataset.licdev);
+  });
 }
 
 function licenseCard(lic) {
@@ -330,8 +333,184 @@ function licenseCard(lic) {
     <div class="dev-block">
       <h4 style="margin:0 0 6px;font-size:12px;font-weight:600;color:var(--muted)">已登录设备</h4>
       ${devices}
+      <button class="btn btn-sm lic-more" data-licdev="${esc(lic.id)}" type="button">设备与操作记录 →</button>
     </div>
   </article>`;
+}
+
+/* ==================== 单条授权：设备与操作记录 ==================== */
+
+const LOG_LABELS = {
+  "license.create": "开通授权",
+  "license.activate": "激活",
+  "license.consume": "激活（激活码）",
+  "license.trial_start": "开始试用",
+  "license.extend": "加时",
+  "license.update": "调整授权",
+  "license.bind_device": "绑定设备",
+  "license.release_device": "解绑设备",
+  "license.reset_devices": "重置设备",
+  "license.reissue": "重新签发",
+  "license.rotate_key": "重置密钥",
+  "license.revoke": "吊销授权",
+};
+const LOG_TONES = {
+  "license.release_device": "badge-danger",
+  "license.revoke": "badge-danger",
+  "license.reset_devices": "badge-danger",
+  "license.bind_device": "badge-ok",
+  "license.activate": "badge-ok",
+  "license.consume": "badge-ok",
+  "license.trial_start": "badge-ok",
+  "license.extend": "badge-warn",
+};
+const STATUS_CN = { active: "有效", suspended: "暂停", revoked: "吊销", expired: "已到期", pending: "未生效" };
+
+function logDetailText(d) {
+  if (!d || typeof d !== "object") return "";
+  const parts = [];
+  if (d.device_id) parts.push(`设备 ${d.device_id}`);
+  if (d.device_name) parts.push(d.device_name);
+  if (d.platform) parts.push(d.platform);
+  if (d.days != null) parts.push(`${d.days > 0 ? "+" : ""}${d.days} 天`);
+  if (d.new_expires_at) parts.push(`到期改为 ${fmtTime(d.new_expires_at)}`);
+  if (d.expires_at && !d.new_expires_at) parts.push(`到期 ${fmtTime(d.expires_at)}`);
+  if (d.seats != null) parts.push(`席位 ${d.seats}`);
+  if (d.status) parts.push(`状态改为 ${STATUS_CN[d.status] ?? d.status}`);
+  if (d.cdk) parts.push(`激活码 ${d.cdk}`);
+  if (d.product) parts.push(`产品 ${d.product}`);
+  if (d.released === false) parts.push("（本来就没在用）");
+  const skip = new Set([
+    "device_id", "device_name", "platform", "days", "new_expires_at", "expires_at",
+    "seats", "status", "cdk", "product", "modules", "module_codes", "by", "released",
+    "rebind", "not_reset", "from_now",
+  ]);
+  for (const [k, v] of Object.entries(d)) {
+    if (skip.has(k) || v == null || v === "" || typeof v === "object") continue;
+    parts.push(`${k}=${v}`);
+  }
+  return parts.join(" · ");
+}
+
+function deviceItemHtml(d, showLicense) {
+  const active = d.status === "active";
+  const stateBadge = active
+    ? '<span class="badge badge-ok">在用</span>'
+    : d.released_reason === "expired"
+      ? '<span class="badge badge-warn">到期释放</span>'
+      : '<span class="badge">已解绑</span>';
+  return `<div class="dev-item">
+    <div class="dev-main">
+      <b>${esc(d.device_name || d.device_id)}</b>
+      ${d.device_name ? `<span class="mono small">${esc(d.device_id)}</span>` : ""}
+      <span>${esc(d.platform || "未知平台")} · 最后在线 ${fmtTime(d.last_seen_at)}</span>
+      ${showLicense && d.license_no ? `<span class="muted small">所属授权 ${esc(d.license_no)}</span>` : ""}
+    </div>
+    <div class="dev-side">
+      ${stateBadge}
+      ${active ? `<button class="btn btn-sm" data-release="${esc(d.device_id)}" type="button">解绑</button>` : ""}
+    </div>
+  </div>`;
+}
+
+async function openDeviceModal(licenseId) {
+  const root = $("#modal-root");
+  root.innerHTML = `<div class="modal-backdrop"><div class="modal"><div class="modal-body">
+      <p class="muted small">加载中…</p></div></div></div>`;
+
+  let devData, logData;
+  try {
+    [devData, logData] = await Promise.all([
+      api("GET", `/api/v1/me/licenses/${licenseId}/devices`),
+      api("GET", `/api/v1/me/licenses/${licenseId}/logs`),
+    ]);
+  } catch (err) {
+    root.innerHTML = "";
+    toast(err.message, "error");
+    return;
+  }
+
+  const devices = devData.devices ?? [];
+  const logs = logData.items ?? [];
+  const group = devData.group ?? [];
+  const licNo = devData.license?.license_no ?? "";
+
+  const devHtml = devices.length
+    ? devices.map((d) => deviceItemHtml(d, group.length > 1)).join("")
+    : `<p class="muted small">还没有设备登录。客户端第一次启动并激活后会占用一个席位。</p>`;
+
+  const logHtml = logs.length
+    ? logs
+        .map(
+          (e) => `<div class="log-item">
+            <div class="log-top">
+              <span class="badge ${LOG_TONES[e.action] ?? "badge-info"}">${esc(LOG_LABELS[e.action] ?? e.action)}</span>
+              <time class="muted small">${fmtTime(e.at)}</time>
+            </div>
+            <p>${esc(logDetailText(e.detail)) || '<span class="muted">—</span>'}</p>
+            <p class="muted small">${esc(e.actor)}${e.license_no ? ` · ${esc(e.license_no)}` : ""}</p>
+          </div>`,
+        )
+        .join("")
+    : `<p class="muted small">还没有操作记录。</p>`;
+
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-head">
+          <h3 style="font-size:15.5px">设备与操作记录 <span class="muted mono small">${esc(licNo)}</span></h3>
+          <button class="btn btn-ghost btn-sm" data-close type="button">✕</button>
+        </div>
+        <div class="modal-body">
+          ${group.length > 1 ? `<p class="small muted">同一软件下的 ${group.length} 条授权共用这批设备和记录。</p>` : ""}
+          <div class="seg">
+            <button class="seg-item is-on" data-pane-btn="devices" type="button">设备 ${devices.length}</button>
+            <button class="seg-item" data-pane-btn="logs" type="button">操作记录 ${logs.length}</button>
+          </div>
+          <div class="dev-list" data-pane="devices">${devHtml}</div>
+          <div class="log-list" data-pane="logs" hidden>${logHtml}</div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" data-close type="button">关闭</button>
+        </div>
+      </div>
+    </div>`;
+
+  const close = () => {
+    root.innerHTML = "";
+  };
+  $$("[data-close]", root).forEach((b) => (b.onclick = close));
+
+  $$("[data-pane-btn]", root).forEach((btn) => {
+    btn.onclick = () => {
+      $$("[data-pane-btn]", root).forEach((b) => b.classList.toggle("is-on", b === btn));
+      $$("[data-pane]", root).forEach((p) => {
+        p.hidden = p.dataset.pane !== btn.dataset.paneBtn;
+      });
+    };
+  });
+
+  // 只能解绑：不提供重新绑定、重置设备等其它操作
+  $$("[data-release]", root).forEach((btn) => {
+    btn.onclick = async () => {
+      const deviceId = btn.dataset.release;
+      if (!window.confirm(`解绑这台设备？\n\n${deviceId}\n\n解绑后它可以换到别的电脑上使用，席位会空出来。`)) return;
+      btn.disabled = true;
+      btn.textContent = "解绑中…";
+      try {
+        await api("POST", `/api/v1/me/devices/${encodeURIComponent(deviceId)}/release`);
+        // 重新拉一次总览，席位和卡片才会跟着变
+        state.overview = await api("GET", "/api/v1/me/overview");
+        close();
+        renderLicenses();
+        toast("已解绑，席位已空出", "ok");
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "解绑";
+        toast(err.message, "error");
+      }
+    };
+  });
 }
 
 /* ============================ 修改密码 ============================ */

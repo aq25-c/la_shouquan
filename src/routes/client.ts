@@ -37,7 +37,7 @@ import { customerTtl, currentCustomer, grantSession, requireCustomer } from "../
 import { buildLicenseFile, licenseView } from "../issuer.ts";
 import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
-import { audit } from "../store/audit.ts";
+import { audit, listAuditByTargets } from "../store/audit.ts";
 import {
   createCustomer,
   findCustomerByEmail,
@@ -75,6 +75,8 @@ import {
   findLicenseByKeyHash,
   listDevices,
   listDevicesForGroup,
+  licenseGroup,
+  licenseGroupIds,
   listLicensesByCustomer,
   markCdkUsed,
   moduleIdsOf,
@@ -1194,6 +1196,74 @@ export function registerClientRoutes(): void {
     return ok({ released });
   });
 
+  /**
+   * 客户自助：某条授权下的设备与操作记录。
+   * 设备与日志都按「同一客户 + 同一软件」返回（和后台口径一致），
+   * 但操作人只显示「服务商 / 我」，不暴露内部账号邮箱与 IP。
+   */
+  get("/api/v1/me/licenses/:id/devices", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const license = findLicenseById(ctx.params.id);
+    if (!license) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    if (license.customer_id !== customer.id) throw forbidden("无权查看该授权");
+    return ok({
+      license: { id: license.id, license_no: license.license_no },
+      group: licenseGroup(license.customer_id, license.product_id),
+      devices: listDevicesForGroup(license.customer_id, license.product_id).map((d) => ({
+        device_id: d.device_id,
+        device_name: d.device_name,
+        platform: d.platform,
+        status: d.status,
+        license_no: d.license_no,
+        first_seen_at: d.first_seen_at,
+        last_seen_at: d.last_seen_at,
+        released_at: d.released_at,
+        released_reason: d.released_reason ?? null,
+      })),
+    });
+  });
+
+  get("/api/v1/me/licenses/:id/logs", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const license = findLicenseById(ctx.params.id);
+    if (!license) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    if (license.customer_id !== customer.id) throw forbidden("无权查看该授权");
+    const ids = licenseGroupIds(license.customer_id, license.product_id);
+    const group = licenseGroup(license.customer_id, license.product_id);
+    const noOf = (lid: string) => group.find((g) => g.id === lid)?.license_no ?? null;
+    return ok({
+      items: listAuditByTargets(ids, 200).map((row) => ({
+        at: row.at,
+        action: row.action,
+        license_no: noOf(row.target_id ?? ""),
+        actor: row.actor_type === "customer" ? "我" : row.actor_type === "agent" ? "代理商" : "服务商",
+        detail: stripInternalFields(row.detail),
+      })),
+    });
+  });
+
+  /** 客户自助解绑：按设备找，不要求知道它挂在哪条授权下 */
+  post("/api/v1/me/devices/:deviceId/release", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const deviceId = ctx.params.deviceId;
+    const rows = listLicensesByCustomer(customer.id);
+    const hit = rows
+      .map((row) => ({ row, device: findDevice(row.id, deviceId) }))
+      .find((x) => x.device && x.device.status === "active");
+    if (!hit) throw notFound("找不到这台正在使用的设备", "DEVICE_NOT_BOUND");
+    const released = releaseDevice(hit.row.id, deviceId);
+    audit({
+      actorType: "customer",
+      actorId: customer.id,
+      action: "license.release_device",
+      targetType: "license",
+      targetId: hit.row.id,
+      ip: ctx.ip,
+      detail: { device_id: deviceId, released, by: "customer" },
+    });
+    return ok({ released, license_no: hit.row.license_no });
+  });
+
   /** 重新拉取当前设备的签名许可证（客户端缓存丢失时用） */
   post("/api/v1/licenses/:id/reenroll", (ctx) => {
     const customer = requireCustomer(ctx);
@@ -1226,4 +1296,24 @@ export function registerClientRoutes(): void {
 
 function badRequestEmail() {
   return badRequest("邮箱格式不正确", "INVALID_EMAIL");
+}
+
+/** 客户侧日志：去掉内部字段（邮箱、代理、结算价、IP 由响应层不带出） */
+function stripInternalFields(detail: string | null): Record<string, unknown> | null {
+  if (!detail) return null;
+  let d: unknown;
+  try {
+    d = JSON.parse(detail);
+  } catch {
+    return null;
+  }
+  if (!d || typeof d !== "object") return null;
+  const drop = new Set(["customer", "customer_email", "agent_id", "unit_price", "ip"]);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
+    if (drop.has(k)) continue;
+    if (v === null || v === "" || typeof v === "object") continue;
+    out[k] = v;
+  }
+  return out;
 }
