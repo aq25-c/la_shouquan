@@ -195,7 +195,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       // 代理还需要读产品/模块列表来生成卡密（写操作仍被功能权限挡住）
       if (
         staffCtx.isAgent &&
-        !/^\/admin\/api\/(cdks|cdk-batches|auth|products|modules|customers|agent-home)/.test(path)
+        !/^\/admin\/api\/(cdks|cdk-batches|auth|products|modules|customers|agent-home|licenses)/.test(path)
       ) {
         throw forbidden("代理账号只能访问卡密相关接口", "FORBIDDEN_AGENT_SCOPE");
       }

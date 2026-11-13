@@ -2164,6 +2164,133 @@ function licenseLogText(entry) {
   return parts.join(" · ");
 }
 
+/** 代理/后台通用：某条授权的设备与操作日志（只提供解绑，不提供重绑/重置） */
+async function openLicenseMini(id) {
+  const [data, logData] = await Promise.all([
+    apiGet(`/admin/api/licenses/${id}`),
+    apiGet(`/admin/api/licenses/${id}/logs`).catch(() => ({ items: [] })),
+  ]);
+  const l = data.license;
+  const group = data.group ?? [];
+  const noOf = (lid) => group.find((g) => g.id === lid)?.license_no ?? "";
+  const devices = data.devices ?? [];
+  const logs = logData.items ?? [];
+  const act = devices.filter((d) => d.status === "active");
+
+  openModal({
+    title: `设备与日志：${l.license_no}`,
+    wide: true,
+    body: `
+      <div class="kv">
+        <dt>产品</dt><dd>${esc(l.product_name)} <span class="muted mono">${esc(l.product_code)}</span></dd>
+        <dt>客户</dt><dd>${customerCell(data.customer?.name, data.customer?.email)}</dd>
+        <dt>状态</dt><dd>${statusBadge(LICENSE_STATUS, l.eff_status)}${
+          l.max_expires_at ? ` <span class="muted small">最多可到 ${fmtDay(l.max_expires_at)}</span>` : ""
+        }</dd>
+        <dt>到期</dt><dd>${fmtDay(l.expires_at)} <span class="muted small">${relDays(l.expires_at)}</span></dd>
+        <dt>设备</dt><dd>${l.active_devices} / ${l.seats} 台在用${
+          group.length > 1 ? ` <span class="muted small">（同软件 ${group.length} 条授权共用席位与设备）</span>` : ""
+        }</dd>
+      </div>
+
+      <div class="seg" role="tablist">
+        <button class="seg-item is-on" data-dtab="devices" type="button">设备 ${devices.length}</button>
+        <button class="seg-item" data-dtab="logs" type="button">操作日志 ${logs.length}</button>
+      </div>
+
+      <div data-pane="devices">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>设备</th><th>平台</th><th>状态</th><th>所属授权</th><th>最近心跳</th><th class="right">操作</th></tr></thead>
+            <tbody>
+              ${
+                devices.length
+                  ? devices
+                      .map(
+                        (d) => `<tr>
+                          <td class="mono">${esc(d.device_id)}${d.device_name ? `<div class="muted small">${esc(d.device_name)}</div>` : ""}</td>
+                          <td>${esc(d.platform ?? "—")}</td>
+                          <td>${
+                            d.status === "active"
+                              ? '<span class="badge badge-ok">在用</span>'
+                              : d.released_reason === "expired"
+                                ? '<span class="badge badge-warn">到期释放</span>'
+                                : '<span class="badge">已解绑</span>'
+                          }</td>
+                          <td class="mono small">${esc(noOf(d.license_id) || "—")}</td>
+                          <td class="nowrap small">${fmtTime(d.last_seen_at)}</td>
+                          <td class="right">${
+                            d.status === "active"
+                              ? `<button class="btn btn-sm" data-free="${esc(d.device_id)}" data-lic="${esc(d.license_id)}" type="button">解绑</button>`
+                              : '<span class="muted small">—</span>'
+                          }</td>
+                        </tr>`,
+                      )
+                      .join("")
+                  : emptyRow(6, "这台还没绑过设备")
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div data-pane="logs" hidden>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>时间</th><th>操作</th><th>操作人</th><th>说明</th><th>所属授权</th></tr></thead>
+            <tbody>
+              ${
+                logs.length
+                  ? logs
+                      .map(
+                        (e) => `<tr>
+                          <td class="nowrap small">${fmtTime(e.at)}</td>
+                          <td><span class="badge ${licenseLogTone(e.action)}">${esc(licenseLogLabel(e.action))}</span></td>
+                          <td class="small">${esc(
+                            e.actor_label ??
+                              (e.actor_type === "customer" ? "客户" : e.actor_type === "agent" ? "代理商" : e.actor_type === "admin" ? "管理员" : "—"),
+                          )}</td>
+                          <td class="small">${esc(licenseLogText(e)) || '<span class="muted">—</span>'}</td>
+                          <td class="mono small">${esc(noOf(e.target_id) || "—")}</td>
+                        </tr>`,
+                      )
+                      .join("")
+                  : emptyRow(5, "还没有操作记录")
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>`,
+    footer: `<button class="btn" data-close2 type="button">关闭</button>`,
+    onMount(modal, close) {
+      $("[data-close2]", modal).onclick = close;
+      const tabs = $$("[data-dtab]", modal);
+      tabs.forEach((btn) => {
+        btn.onclick = () => {
+          tabs.forEach((b) => b.classList.toggle("is-on", b === btn));
+          $$("[data-pane]", modal).forEach((p) => {
+            p.hidden = p.dataset.pane !== btn.dataset.dtab;
+          });
+        };
+      });
+
+      $$("[data-free]", modal).forEach((btn) => {
+        btn.onclick = async () => {
+          if (!(await confirmDialog(`解绑设备 ${btn.dataset.free}？席位会空出来。`, { okText: "解绑" }))) return;
+          try {
+            await apiPost(`/admin/api/licenses/${btn.dataset.lic}/devices/${encodeURIComponent(btn.dataset.free)}/release`);
+            close();
+            toast("已解绑", "ok");
+            openLicenseMini(id);
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        };
+      });
+    },
+  });
+}
+
 async function openLicenseDetail(id) {
   const [data, logData] = await Promise.all([
     apiGet(`/admin/api/licenses/${id}`),
@@ -2937,7 +3064,7 @@ async function openCustomerDetail(id) {
         <div class="card-body tight">
           <div class="table-wrap">
             <table>
-              <thead><tr><th>单号</th><th>产品</th><th>状态</th><th>到期</th><th>设备</th></tr></thead>
+              <thead><tr><th>单号</th><th>产品</th><th>状态</th><th>到期</th><th>设备（同软件共用）</th><th class="right">操作</th></tr></thead>
               <tbody>
                 ${
                   data.licenses.length
@@ -2948,11 +3075,12 @@ async function openCustomerDetail(id) {
                             <td>${esc(l.product_code)}</td>
                             <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
                             <td class="nowrap">${fmtDay(l.expires_at)}</td>
-                            <td>${l.devices.filter((d) => d.status === "active").length}/${l.seats}</td>
+                            <td>${l.pool_active_devices ?? 0} / ${l.pool_seats ?? l.seats} 台<span class="muted small"> · ${l.devices.filter((d) => d.status === "active").length} 台挂在本单</span></td>
+                            <td class="right"><button class="btn btn-sm" data-lic-view="${esc(l.id)}" type="button">设备与日志</button></td>
                           </tr>`,
                         )
                         .join("")
-                    : emptyRow(5, "暂无授权")
+                    : emptyRow(6, "暂无授权")
                 }
               </tbody>
             </table>
@@ -2965,6 +3093,9 @@ async function openCustomerDetail(id) {
         close();
         navigate("customers", true);
       };
+      $$("[data-lic-view]", modal).forEach((btn) => {
+        btn.onclick = () => openLicenseMini(btn.dataset.licView);
+      });
       $("[data-save]", modal).onclick = async () => {
         try {
           await apiPatch(`/admin/api/customers/${id}`, {

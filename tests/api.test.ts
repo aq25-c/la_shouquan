@@ -1148,11 +1148,15 @@ test("代理账号：绑定代理、权限固定、只能碰卡密", async () =>
   });
   const agentToken = login.json.data.token;
 
-  // 代理被限制在卡密相关接口
-  for (const p of ["/admin/api/licenses", "/admin/api/agents"]) {
-    const res = await api("GET", p, undefined, agentToken);
-    assert.equal(res.status, 403, `${p} 应被代理拒绝`);
-  }
+  // 代理只能看自己的授权（列表里会被强制过滤），代理管理页则完全拒绝
+  const ownLic = await api("GET", "/admin/api/licenses", undefined, agentToken);
+  assert.equal(ownLic.status, 200, "代理可以看自己的授权");
+  assert.ok(
+    ownLic.json.data.items.every((l: Json) => l.agent_id === agentId),
+    "只能看到自己代理的授权",
+  );
+  const noAgents = await api("GET", "/admin/api/agents", undefined, agentToken);
+  assert.equal(noAgents.status, 403, "/admin/api/agents 应被代理拒绝");
 
   // 代理不能管员工
   const staffRes = await api("GET", "/admin/api/staff", undefined, agentToken);
@@ -3174,4 +3178,95 @@ test("调整到期：超上限会被夹取，并留下「加/减了几天 + 原�
   assert.equal(de.days, -3);
   assert.equal(de.from_expires_at, cap);
   assert.notEqual(de.to_expires_at, cap);
+});
+
+
+test("代理端：客户授权列表设备数按共享池统一，且能看日志、能解绑", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "pool-a", name: "共享池代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  const staff = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "pool-agent@test.local", password: "PoolAgent123", role: "agent", agent_id: agId },
+    adminToken,
+  );
+  assert.equal(staff.status, 201);
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "pool-agent@test.local",
+    password: "PoolAgent123",
+  });
+  const agentToken = login.json.data.token;
+
+  // 两张同产品卡（5 席位）+ 一个客户
+  const mk = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 5, count: 2, agent_id: agId },
+    adminToken,
+  );
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "pool-buyer@test.local",
+    password: "PoolBuyer123",
+  });
+  const buyerToken = reg.json.data.session.token;
+  const buyerId = reg.json.data.customer.id;
+
+  const a1 = await api("POST", "/api/v1/licenses/activate", { cdk: mk.json.data.codes[0], bind_device: false }, buyerToken);
+  const a2 = await api("POST", "/api/v1/licenses/activate", { cdk: mk.json.data.codes[1], bind_device: false }, buyerToken);
+  await api("POST", `/admin/api/licenses/${a1.json.data.license.id}/devices`, { device_id: "POOL-DEV-1" }, adminToken);
+
+  // 客户详情：两条授权的设备数都按「同软件共享池」给，显示一致
+  const detail = await api("GET", `/admin/api/customers/${buyerId}`, undefined, agentToken);
+  assert.equal(detail.status, 200);
+  const pools = detail.json.data.licenses.map((l: Json) => `${l.pool_active_devices}/${l.pool_seats}`);
+  assert.deepEqual(new Set(pools).size, 1, `两条授权的设备数应一致：${pools.join(", ")}`);
+  assert.equal(pools[0], "1/5");
+
+  // 代理能看这条授权的设备与日志
+  const devs = await api("GET", `/admin/api/licenses/${a1.json.data.license.id}`, undefined, agentToken);
+  assert.equal(devs.status, 200);
+  assert.ok(devs.json.data.devices.some((d: Json) => d.device_id === "POOL-DEV-1"));
+  const logs = await api("GET", `/admin/api/licenses/${a1.json.data.license.id}/logs`, undefined, agentToken);
+  assert.equal(logs.status, 200);
+  assert.ok(logs.json.data.items.length > 0);
+
+  // 代理解绑自己客户名下的设备
+  const rel = await api(
+    "POST",
+    `/admin/api/licenses/${a1.json.data.license.id}/devices/POOL-DEV-1/release`,
+    undefined,
+    agentToken,
+  );
+  assert.equal(rel.status, 200);
+  assert.equal(rel.json.data.released, true);
+
+  // 别人的授权：看不了、也解绑不了
+  const other = await api("POST", "/admin/api/agents", { code: "pool-b", name: "别家代理" }, adminToken);
+  const otherStaff = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "pool-other@test.local", password: "PoolOther123", role: "agent", agent_id: other.json.data.agent.id },
+    adminToken,
+  );
+  assert.equal(otherStaff.status, 201);
+  const otherLogin = await api("POST", "/admin/api/auth/login", {
+    email: "pool-other@test.local",
+    password: "PoolOther123",
+  });
+  const otherToken = otherLogin.json.data.token;
+
+  const deny = await api("GET", `/admin/api/licenses/${a1.json.data.license.id}`, undefined, otherToken);
+  assert.equal(deny.status, 403);
+  const denyRel = await api(
+    "POST",
+    `/admin/api/licenses/${a1.json.data.license.id}/devices/POOL-DEV-1/release`,
+    undefined,
+    otherToken,
+  );
+  assert.equal(denyRel.status, 403);
+
+  // 代理的授权列表只看自己
+  const list = await api("GET", "/admin/api/licenses", undefined, otherToken);
+  assert.equal(list.status, 200);
+  assert.ok(list.json.data.items.every((l: Json) => l.agent_id === other.json.data.agent.id));
 });

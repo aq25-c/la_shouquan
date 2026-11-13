@@ -35,6 +35,7 @@ import {
 } from "../http.ts";
 import type { Ctx } from "../http.ts";
 import { adminTtl, grantSession, requireAdmin, requireFeature, requireOwner, requireStaff } from "../auth.ts";
+import type { StaffContext } from "../auth.ts";
 import { currentSession } from "../auth.ts";
 import {
   AGENT_PERMISSIONS,
@@ -49,6 +50,14 @@ import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget, listAuditByTargets } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
+
+/** 代理只能看/碰自己名下客户的授权（管理员不受限） */
+function assertAgentCanSeeLicense(staffCtx: StaffContext, license: { customer_id: string }): void {
+  if (!staffCtx.isAgent) return;
+  if (!customerBelongsToAgent(license.customer_id, staffCtx.agentId ?? "")) {
+    throw forbidden("该授权不属于你的代理", "FORBIDDEN_AGENT_SCOPE");
+  }
+}
 
 /** 每分钟每个 IP 的后台登录尝试上限（测试里可调高，避免整库用例被判成暴力破解） */
 const ADMIN_LOGIN_LIMIT = Math.max(1, Number(process.env.ADMIN_LOGIN_RATE_LIMIT ?? 10) || 10);
@@ -143,6 +152,7 @@ import {
   listCdks,
   listDevices,
   listDevicesForGroup,
+  seatUsageForProduct,
   licenseGroupIds,
   licenseGroup,
   listLicenses,
@@ -1526,10 +1536,21 @@ export function registerAdminRoutes(): void {
     if (staffCtx.isAgent && !customerBelongsToAgent(id, staffCtx.agentId ?? "")) {
       throw forbidden("该客户不属于你的代理", "FORBIDDEN_AGENT_SCOPE");
     }
-    const licenses = listLicensesByCustomer(id).map((row) => ({
-      ...licenseView(row),
-      devices: listDevices(row.id),
-    }));
+    // 设备与席位按「同一客户 + 同一软件」共享，这里带上共享池口径，
+    // 避免同一客户的多条授权显示出不一样的设备数量
+    const poolCache = new Map<string, { seats: number; active_devices: number }>();
+    const licenses = listLicensesByCustomer(id).map((row) => {
+      if (!poolCache.has(row.product_id)) {
+        const u = seatUsageForProduct(id, row.product_id);
+        poolCache.set(row.product_id, { seats: u.seats, active_devices: u.active_devices });
+      }
+      return {
+        ...licenseView(row),
+        devices: listDevicesForGroup(id, row.product_id).filter((d) => d.license_id === row.id),
+        pool_seats: poolCache.get(row.product_id)?.seats ?? row.seats,
+        pool_active_devices: poolCache.get(row.product_id)?.active_devices ?? 0,
+      };
+    });
     // v13：把「能不能删」一并告诉前端，避免点了才报错
     const purge = checkCustomerPurgeable(id);
     return ok({
@@ -1727,7 +1748,9 @@ export function registerAdminRoutes(): void {
   /* ---------------------------- 授权 ---------------------------- */
 
   get(`${P}/licenses`, (ctx) => {
-    requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
+    // 代理只能看自己代理下的授权，传什么筛选都无效
+    const agentFilter = staffCtx.isAgent ? (staffCtx.agentId ?? "__none__") : q(ctx, "agent_id");
     const { page, pageSize } = paging(ctx);
     const expiring = q(ctx, "expiring_within_days");
     const result = listLicenses({
@@ -1735,7 +1758,7 @@ export function registerAdminRoutes(): void {
       status: q(ctx, "status"),
       productId: q(ctx, "product_id"),
       customerId: q(ctx, "customer_id"),
-      agentId: q(ctx, "agent_id"),
+      agentId: agentFilter,
       kind: q(ctx, "kind"),
       expiringWithinDays: expiring === null ? null : Number.parseInt(expiring, 10),
       page,
@@ -1753,9 +1776,10 @@ export function registerAdminRoutes(): void {
   });
 
   get(`${P}/licenses/:id`, (ctx) => {
-    requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
     const id = slash(ctx, "id");
     const license = findLicenseById(id);
+    if (license) assertAgentCanSeeLicense(staffCtx, license);
     if (!license) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
     const customer = findCustomerById(license.customer_id);
     return ok({
@@ -1783,10 +1807,11 @@ export function registerAdminRoutes(): void {
 
   /** 授权的操作日志（绑定/解绑/加时/冻结…），按「同一客户 + 同一软件」合并展示 */
   get(`${P}/licenses/:id/logs`, (ctx) => {
-    requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
     const id = slash(ctx, "id");
     const license = findLicenseById(id);
     if (!license) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    assertAgentCanSeeLicense(staffCtx, license);
     const ids = licenseGroupIds(license.customer_id, license.product_id);
     return ok({
       items: listAuditByTargets(ids, 200),
@@ -1933,10 +1958,13 @@ export function registerAdminRoutes(): void {
 
   /** 后台解绑单个设备（释放席位，便于客户换机） */
   post(`${P}/licenses/:id/devices/:deviceId/release`, (ctx) => {
-    const admin = requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
+    const admin = staffCtx.admin;
     const id = slash(ctx, "id");
     const deviceId = slash(ctx, "deviceId");
-    if (!findLicenseById(id)) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    const lic = findLicenseById(id);
+    if (!lic) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    assertAgentCanSeeLicense(staffCtx, lic);
     const released = releaseDevice(id, deviceId);
     audit({
       actorType: "admin",

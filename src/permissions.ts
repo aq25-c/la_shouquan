@@ -50,7 +50,8 @@ export const OWNER_PERMISSIONS: Permissions = { menus: ALL_MENUS, features: ALL_
 export const AGENT_PERMISSIONS: Permissions = {
   // 代理：首页 + 卡密 + 自己名下的客户
   menus: ["overview", "cdks", "customers"],
-  features: ["cdk.generate", "cdk.revoke", "customer.manage", "customer.expiry"],
+  // license.device 只用于「看设备 + 解绑」，绑定接口本身要求超级管理员
+  features: ["cdk.generate", "cdk.revoke", "customer.manage", "customer.expiry", "license.device"],
 };
 
 export function parsePermissions(raw: string | null | undefined, role: StaffRole): Permissions {
