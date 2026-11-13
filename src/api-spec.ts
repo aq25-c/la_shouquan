@@ -15,6 +15,10 @@ export type ApiDocEntry = {
   desc?: string;
   params?: string;
   notes?: string;
+  /** 关键返回字段（客户端解析用） */
+  returns?: string;
+  /** 该接口常见错误码 */
+  errors?: string;
 };
 
 /** key = `${METHOD} ${path}` */
@@ -297,6 +301,68 @@ export type ApiDocs = {
   conventions: { title: string; text?: string; codes?: string[] }[];
 };
 
+/**
+ * 核心接口的「返回字段 / 常见错误」补充表。
+ * 单独维护，不改动上面已有条目，避免大段编辑出错。
+ */
+const EXTRA_DOCS: Record<string, { returns?: string; errors?: string }> = {
+  "POST /api/v1/licenses/activate": {
+    returns:
+      "`license`、`license_key`（仅返回这一次，客户端必须本地保存）、`license_file`（离线许可证）、`license_payload`、`offline_expires_at`、`expires_at`、`days_left`、`module_codes`、`merged`（true=同类型卡叠加续费）、`session`（新客户时附带）",
+    errors:
+      "`404 CDK_NOT_FOUND`、`409 CDK_ALREADY_USED` / `CDK_REVOKED` / `CDK_EXPIRED` / `SEAT_LIMIT` / `TERM_CONFLICT`、`400 MODULE_NOT_ALLOWED`（模块超出 CDK 范围）/ `MISSING_FIELD`、`403 LICENSE_*`",
+  },
+  "POST /api/v1/licenses/heartbeat": {
+    returns: "`license`、`modules`（每个模块的 `expires_at` / `days_left` / `active`）、`license_file`（滚动续期）、`offline_expires_at`、`expires_at`、`days_left`、`heartbeat_interval_hours`",
+    errors: "`404 INVALID_LICENSE_KEY` / `DEVICE_NOT_BOUND`、`403 LICENSE_EXPIRED` / `LICENSE_REVOKED` / `LICENSE_SUSPENDED`",
+  },
+  "POST /api/v1/cdks/inspect": {
+    returns: "`code`、`status`、`product`、`module_codes`、`days`、`seats`、`redeem_before`、`usable`（是否可激活）",
+    errors: "`404 CDK_NOT_FOUND`",
+  },
+  "POST /api/v1/auth/login": {
+    returns: "`customer`、`session.token`、`licenses`（含 `modules` 逐模块到期）、`active_license`（优先正式授权，其次试用，都没有为 null）",
+    errors: "`401 INVALID_CREDENTIALS`、`403 CUSTOMER_DISABLED`",
+  },
+  "POST /api/v1/licenses/consume": {
+    returns: "`consumed`、`remaining`、`max`、`used`、`license_file`（含最新 `usage`）",
+    errors: "`403 USAGE_EXHAUSTED`、`409 NOT_COUNT_LICENSE`、`404 DEVICE_NOT_BOUND` / `INVALID_LICENSE_KEY`",
+  },
+  "GET /api/v1/vars": {
+    returns: "`product`（code/name）、`vars`（对象，json 类型已解析）",
+    errors: "`401 UNAUTHORIZED`（未登录）、`404 PRODUCT_NOT_FOUND`",
+  },
+  "POST /admin/api/cdks/generate": {
+    returns: "`batch`（含 `term_type` / `term_value` / `count`）、`codes`（卡密明文数组）",
+    errors: "`404 PRODUCT_NOT_FOUND` / `AGENT_NOT_FOUND`、`400 INVALID_MODULES` / `MISSING_FIELD`、`409 BALANCE_INSUFFICIENT` / `PRICE_NOT_CONFIGURED`（代理按价格扣费时）、`403 AGENT_*_DENIED`",
+  },
+  "POST /admin/api/staff": {
+    returns: "`staff`（含 `role` / `permissions` / `agent_id` / `agent_profile`）",
+    errors: "`409 EMAIL_TAKEN`、`400 MISSING_FIELD`（代理缺 agent_id）/ `INVALID_FIELD`（role 非法）/ `WEAK_PASSWORD`、`403 FORBIDDEN`（非 owner）",
+  },
+  "POST /admin/api/agents": {
+    returns: "`agent`（`code` / `name` / `credit` / `balance`）",
+    errors: "`409 CODE_TAKEN`、`400 INVALID_FIELD`（编码格式）",
+  },
+  "PATCH /admin/api/licenses/:id": {
+    returns: "`license`（更新后的授权）",
+    errors: "`404 LICENSE_NOT_FOUND`、`400 INVALID_FIELD` / `MISSING_FIELD`（`module_ids` 为空）/ `INVALID_MODULES`",
+  },
+  "POST /admin/api/customers/:id/adjust-expiry": {
+    returns: "`updated`（受影响的授权数）、`licenses`（更新后的授权列表）",
+    errors: "`404 CUSTOMER_NOT_FOUND`、`400 MISSING_FIELD`、`403 FORBIDDEN_AGENT_SCOPE`（客户不归该代理）；代理延长会**自动钳制**到 CDK 授予的上限，不报错",
+  },
+  "DELETE /admin/api/cdks/:id": {
+    returns: "`deleted: true`",
+    errors: "`404 CDK_NOT_FOUND`、`409 CDK_ACTIVATED`（已激活的不能删）",
+  },
+};
+
+for (const [key, extra] of Object.entries(EXTRA_DOCS)) {
+  const entry = ENTRIES[key];
+  if (entry) Object.assign(entry, extra);
+}
+
 export function buildApiDocs(): ApiDocs {
   const routes = listRoutes().filter((r) => r.method !== "ANY");
   const missing: string[] = [];
@@ -317,6 +383,8 @@ export function buildApiDocs(): ApiDocs {
       title: entry?.title ?? "（未补充描述）",
       desc: entry?.desc,
       params: entry?.params,
+      returns: entry?.returns,
+      errors: entry?.errors,
       notes: entry?.notes,
     });
     buckets.set(group, list);
@@ -406,6 +474,8 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
         <div class="body">
           ${e.desc ? `<p>${inlineCode(e.desc)}</p>` : ""}
           ${e.params ? `<p class="kv"><b>参数</b> ${inlineCode(e.params)}</p>` : ""}
+          ${e.returns ? `<p class="kv"><b>返回</b> ${inlineCode(e.returns)}</p>` : ""}
+          ${e.errors ? `<p class="note"><b>常见错误</b> ${inlineCode(e.errors)}</p>` : ""}
           ${e.notes ? `<p class="note">${inlineCode(e.notes)}</p>` : ""}
           <pre><code>curl -X ${escHtml(e.method)} '${escHtml(baseUrl + e.path)}'</code></pre>
         </div>
@@ -496,6 +566,71 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
 <main>
   <div class="conventions">${conventionsHtml}</div>
   ${groupsHtml}
+
+  <section class="group" id="flow">
+    <h2>软件使用流程</h2>
+    <div class="offline-body">
+      <h3>① 服务商（管理员）开通流程</h3>
+      <table class="offline-table">
+        <thead><tr><th>步骤</th><th>在哪做</th><th>做什么</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>产品与模块</td><td>新建产品（如 <code>app-pro</code>），再为它建模块（如 <code>core</code>、<code>export</code>）——模块是授权的功能单位</td></tr>
+          <tr><td>2</td><td>产品与模块 → 试用</td><td>（可选）给该产品配试用：允许试用几天 / 几次、席位、每个客户可试用次数</td></tr>
+          <tr><td>3</td><td>软件参数</td><td>配置<b>全局默认卡密价格</b>（按产品/模块/卡类型，单位「元 / 单位」）；代理未单独定价时用它结算</td></tr>
+          <tr><td>4</td><td>CDK</td><td>批量生成卡密：选产品、勾模块、选计费方式（按时/天/月/年/次数）、数量、席位、兑换截止时间</td></tr>
+          <tr><td>5</td><td>客户 / 授权</td><td>客户激活后在这里管理：延长期限、编辑模块、绑定/解绑设备、暂停、吊销或恢复</td></tr>
+        </tbody>
+      </table>
+
+      <h3>② 代理商分销流程（可选）</h3>
+      <table class="offline-table">
+        <thead><tr><th>步骤</th><th>在哪做</th><th>做什么</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>代理</td><td>新建代理（编码 + 名称）</td></tr>
+          <tr><td>2</td><td>代理 → 充值</td><td>给代理账户充值余额（金额，元）；代理生成卡密时按「单价 × 时长/次数 × 张数」扣费</td></tr>
+          <tr><td>3</td><td>代理 → 定价</td><td>（可选）为这个代理单独定价；留空则沿用全局默认价</td></tr>
+          <tr><td>4</td><td>代理 → 账号</td><td>创建代理的登录账号，并勾选它能卖的产品与卡类型（不勾 = 不限）</td></tr>
+          <tr><td>5</td><td>代理自己登录</td><td>只能看到 CDK 页与「自己名下的客户」；出卡自动归属自己并扣余额</td></tr>
+        </tbody>
+      </table>
+      <p class="lead"><b>注意：</b>管理员代代理出的卡属于「赠送」，<b>不扣</b>代理余额；只有代理自己登录出的卡才扣。</p>
+
+      <h3>③ 客户端（软件）接入流程</h3>
+      <table class="offline-table">
+        <thead><tr><th>步骤</th><th>调用</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td><code>POST /api/v1/auth/register</code></td><td>(可选) 注册客户账号；不注册也能激活，但拿不到客户中心能力</td></tr>
+          <tr><td>2</td><td><code>POST /api/v1/cdks/inspect</code></td><td>(可选) 预检卡密：看产品、模块、时长、是否可用，不核销</td></tr>
+          <tr><td>3</td><td><code>POST /api/v1/licenses/activate</code></td><td>用 CDK 激活，<b>必须联网一次</b>；可用 <code>module_ids</code> 只开通部分模块。返回 <code>license_file</code>（离线许可证）+ <code>license_key</code>（本地保存）</td></tr>
+          <tr><td>4</td><td>本地验签</td><td>每次启动用内置公钥验签 <code>license_file</code>，完全离线（详见下方「离线验证使用说明」）</td></tr>
+          <tr><td>5</td><td><code>POST /api/v1/licenses/heartbeat</code></td><td>按 <code>heartbeat_interval_hours</code>（默认 24 小时）续期，拿新的 <code>license_file</code></td></tr>
+          <tr><td>6</td><td><code>POST /api/v1/licenses/consume</code></td><td>次数卡每使用一次扣一次（需联网）</td></tr>
+          <tr><td>7</td><td><code>GET /api/v1/vars</code></td><td>(可选) 读远程变量（公告/图片/JSON 配置），需登录</td></tr>
+        </tbody>
+      </table>
+
+      <h3>④ 授权状态与客户端应对</h3>
+      <table class="offline-table">
+        <thead><tr><th>状态</th><th>含义</th><th>客户端应做</th></tr></thead>
+        <tbody>
+          <tr><td><code>active</code></td><td>有效期内</td><td>正常放行</td></tr>
+          <tr><td><code>expired</code></td><td>到期</td><td>提示续费</td></tr>
+          <tr><td><code>suspended</code></td><td>被暂停</td><td>提示联系服务商</td></tr>
+          <tr><td><code>revoked</code></td><td>被吊销</td><td>停止使用（后台可恢复）</td></tr>
+          <tr><td>离线许可证 <code>exp</code> 到期</td><td>太久没联网（授权可能仍有效）</td><td>提示「请联网验证」，别当成到期</td></tr>
+        </tbody>
+      </table>
+
+      <h3>⑤ 接口兼容性约定</h3>
+      <ul class="offline-list">
+        <li><b>字段改名兼容</b>：v2.0 起「渠道」统一改名「代理」，但请求里仍传旧的 <code>channel_id</code> / <code>channel_name</code> / <code>channel_code</code> 依然可用（内部映射到 <code>agent_*</code>）；两者同时出现时以新字段为准。</li>
+        <li><b>响应成功/失败恒为固定包裹</b>：成功 <code>{ ok: true, data }</code>，失败 <code>{ ok: false, error: { code, message, details? } }</code>，可据此统一处理。</li>
+        <li><b>空请求体合法</b>：无参数的 POST 可以不传 body（等价于 <code>{}</code>）；若传了表单编码（<code>a=1&amp;b=2</code>）会明确提示需要 JSON。</li>
+        <li><b>新增字段只加不改</b>：后续版本只在响应里追加字段，不重命名已发布字段；确需改名时保留旧字段一段时间。</li>
+        <li><b>数据库自动迁移</b>：升级镜像时结构逐版本自动升级，且升级前自动快照，见 README「数据库版本与兼容升级」。</li>
+      </ul>
+    </div>
+  </section>
 
   <section class="group" id="offline">
     <h2>离线验证使用说明</h2>

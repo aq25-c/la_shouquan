@@ -93,9 +93,38 @@ export type Ctx = {
 export type Handler = (ctx: Ctx) => Promise<Reply | void> | Reply | void;
 
 /** 读取 query 参数（字符串） */
+/**
+ * 旧字段名回退：v2.0 把 channel → agent 全量改名后，仍在传 channel_id 的老调用
+ * 依然能工作（新字段缺失时才回退，不影响新调用）。
+ */
+const LEGACY_FIELDS: Record<string, string> = {
+  agent_id: "channel_id",
+  agent_name: "channel_name",
+  agent_code: "channel_code",
+  agent_ids: "channel_ids",
+};
+
+function legacyFieldOf(name: string): string | null {
+  return LEGACY_FIELDS[name] ?? null;
+}
+
+/** 读请求体字段：新字段缺失时回退到旧字段名 */
+function bodyField(ctx: Ctx, name: string): unknown {
+  const direct = ctx.body[name];
+  if (direct !== undefined && direct !== null) return direct;
+  const legacy = legacyFieldOf(name);
+  return legacy ? ctx.body[legacy] : direct;
+}
+
 export function q(ctx: Ctx, name: string): string | null {
   const v = ctx.query.get(name);
-  return v === null || v === "" ? null : v;
+  if (v !== null && v !== "") return v;
+  const legacy = legacyFieldOf(name);
+  if (legacy) {
+    const lv = ctx.query.get(legacy);
+    if (lv !== null && lv !== "") return lv;
+  }
+  return null;
 }
 
 export function qInt(ctx: Ctx, name: string, fallback: number): number {
@@ -106,7 +135,7 @@ export function qInt(ctx: Ctx, name: string, fallback: number): number {
 }
 
 export function bodyStr(ctx: Ctx, name: string, opts: { required?: boolean; max?: number; trim?: boolean } = {}): string | null {
-  const raw = ctx.body[name];
+  const raw = bodyField(ctx, name);
   if (raw === undefined || raw === null) {
     if (opts.required) throw badRequest(`缺少参数 ${name}`, "MISSING_FIELD", { field: name });
     return null;
@@ -127,7 +156,7 @@ export function bodyInt(
   name: string,
   opts: { required?: boolean; min?: number; max?: number } = {},
 ): number | null {
-  const raw = ctx.body[name];
+  const raw = bodyField(ctx, name);
   if (raw === undefined || raw === null || raw === "") {
     if (opts.required) throw badRequest(`缺少参数 ${name}`, "MISSING_FIELD", { field: name });
     return null;
@@ -143,7 +172,7 @@ export function bodyInt(
 }
 
 export function bodyStrArray(ctx: Ctx, name: string, max = 200): string[] | null {
-  const raw = ctx.body[name];
+  const raw = bodyField(ctx, name);
   if (raw === undefined || raw === null) return null;
   if (!Array.isArray(raw)) throw badRequest(`参数 ${name} 必须是数组`, "INVALID_FIELD", { field: name });
   const out = raw

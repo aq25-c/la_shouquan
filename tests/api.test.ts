@@ -2010,3 +2010,57 @@ test("CDK 修改与删除：未激活可改可删（模块至少一个），已�
   const usedDetail = await api("GET", `/admin/api/cdks/${usedId}`, undefined, adminToken);
   assert.equal(usedDetail.json.data.activated, true);
 });
+
+/* ==================== 字段改名后的兼容性 ==================== */
+
+test("接口兼容：旧的 channel_id 作为 agent_id 仍可正常使用", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "legacy-agent", name: "旧字段代理" }, adminToken);
+  assert.equal(ag.status, 201);
+  const agentId = ag.json.data.agent.id;
+
+  // ① 请求体用旧字段名提交
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, seats: 1, channel_id: agentId },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  const code = gen.json.data.codes[0];
+
+  // ② 归属确实记到了该代理（新字段名查）
+  const byNew = await api("GET", `/admin/api/cdks?agent_id=${agentId}`, undefined, adminToken);
+  assert.ok(
+    byNew.json.data.items.some((c: Json) => c.code === code),
+    "旧请求字段应能正确归属到代理",
+  );
+
+  // ③ 查询参数用旧字段名也生效
+  const byLegacy = await api("GET", `/admin/api/cdks?channel_id=${agentId}`, undefined, adminToken);
+  assert.equal(byLegacy.status, 200);
+  assert.ok(byLegacy.json.data.items.some((c: Json) => c.code === code), "旧查询字段应被识别");
+
+  // ④ 新字段名优先级更高（两个都传时以 agent_id 为准）
+  const other = await api("POST", "/admin/api/agents", { code: "legacy-agent-2", name: "另一个代理" }, adminToken);
+  const otherId = other.json.data.agent.id;
+  const gen2 = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    {
+      product_id: productId,
+      module_ids: [moduleIds[0]],
+      days: 30,
+      count: 1,
+      seats: 1,
+      agent_id: otherId,
+      channel_id: agentId,
+    },
+    adminToken,
+  );
+  assert.equal(gen2.status, 201);
+  const byOther = await api("GET", `/admin/api/cdks?agent_id=${otherId}`, undefined, adminToken);
+  assert.ok(
+    byOther.json.data.items.some((c: Json) => c.code === gen2.json.data.codes[0]),
+    "同时传两个字段时应以新字段 agent_id 为准",
+  );
+});
