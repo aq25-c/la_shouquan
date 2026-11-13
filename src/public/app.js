@@ -932,6 +932,7 @@ async function renderCdks(root) {
           <button class="btn btn-primary" data-generate type="button">生成并导出</button>
           <span class="muted small">CDK 数量较多时会自动以 CSV 提供下载</span>
         </div>
+        <div class="note" data-estimate style="margin-top:10px">选好产品 / 卡类型 / 数量后，这里会显示本次费用</div>
       </div>
     </div>
 
@@ -993,6 +994,55 @@ async function renderCdks(root) {
   productSelect.onchange = () => {
     $("[data-modules]", root).innerHTML = moduleCheckboxes(productSelect.value);
   };
+
+  // 实时金额预估：代理生成时显示本次费用与余额，管理员为赠送不扣费
+  const estimateBox = $("[data-estimate]", root);
+  const refreshEstimate = async () => {
+    if (!estimateBox) return;
+    const termType = $('[name="term_type"]', root)?.value ?? "day";
+    const termValue = Number($('[name="term_value"]', root)?.value ?? 0);
+    const count = Number($('[name="count"]', root)?.value ?? 0);
+    if (!termValue || !count) {
+      estimateBox.className = "note";
+      estimateBox.textContent = "请填写数量与张数";
+      return;
+    }
+    try {
+      const est = await apiPost("/admin/api/cdks/estimate", {
+        product_id: productSelect.value,
+        module_ids: $$("[data-modules] input:checked", root).map((i) => i.value),
+        term_type: termType,
+        term_value: termValue,
+        count,
+      });
+      const yuan = (v) => `¥${(Number(v) / 100).toFixed(2)}`;
+      if (!est.payable) {
+        estimateBox.className = "note";
+        estimateBox.textContent = "管理员生成：属于赠送，不扣代理商余额";
+        return;
+      }
+      if (!est.priced) {
+        estimateBox.className = "note warn";
+        estimateBox.textContent = "⚠ 该产品 / 卡类型尚未配置价格，无法生成";
+        return;
+      }
+      estimateBox.className = est.sufficient ? "note" : "note warn";
+      estimateBox.textContent =
+        `本次需 ${yuan(est.total_price)}（单价 ${yuan(est.unit_price)} × ${est.term_value} × ${est.count} 张）` +
+        (est.balance !== null ? ` · 当前余额 ${yuan(est.balance)}${est.sufficient ? "" : "（不足）"}` : "");
+    } catch {
+      estimateBox.className = "note";
+      estimateBox.textContent = "估价失败，请检查填写";
+    }
+  };
+  ["term_type", "term_value", "count"].forEach((n) => {
+    const el = $(`[name="${n}"]`, root);
+    if (el) {
+      el.addEventListener("input", refreshEstimate);
+      el.addEventListener("change", refreshEstimate);
+    }
+  });
+  refreshEstimate();
 
   $("[data-generate]", root).onclick = async () => {
     const moduleIds = $$("[data-modules] input:checked", root).map((i) => i.value);

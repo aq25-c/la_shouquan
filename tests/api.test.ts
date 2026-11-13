@@ -1169,24 +1169,9 @@ test("非次数型授权调用消耗接口被拒", async () => {
 
 /* ==================== 代理额度 ==================== */
 
-test("代理额度：余额不足无法生成，充值后按量扣减", async () => {
-  const ch = await api("POST", "/admin/api/channels", { code: "credit-test", name: "额度测试渠道" }, adminToken);
-  assert.equal(ch.status, 201);
+test("管理员出卡不扣代理额度（属赠送）", async () => {
+  const ch = await api("POST", "/admin/api/channels", { code: "gift-test", name: "赠送测试" }, adminToken);
   const cid = ch.json.data.channel.id;
-  assert.equal(ch.json.data.channel.credit, 0, "新渠道余额为 0");
-
-  const denied = await api(
-    "POST",
-    "/admin/api/cdks/generate",
-    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 5, channel_id: cid },
-    adminToken,
-  );
-  assert.equal(denied.status, 409);
-  assert.equal(denied.json.error.code, "CREDIT_INSUFFICIENT");
-  assert.equal(denied.json.error.details.needed, 5);
-
-  const topup = await api("POST", `/admin/api/channels/${cid}/credit`, { amount: 10 }, adminToken);
-  assert.equal(topup.json.data.channel.credit, 10);
 
   const gen = await api(
     "POST",
@@ -1194,10 +1179,11 @@ test("代理额度：余额不足无法生成，充值后按量扣减", async ()
     { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 5, channel_id: cid },
     adminToken,
   );
-  assert.equal(gen.status, 201);
+  assert.equal(gen.status, 201, "余额为 0 时管理员仍可出卡");
 
   const detail = await api("GET", `/admin/api/channels/${cid}`, undefined, adminToken);
-  assert.equal(detail.json.data.channel.credit, 5, "生成 5 张后余额应从 10 扣到 5");
+  assert.equal(detail.json.data.channel.balance, 0, "管理员出卡不应扣金额");
+  assert.equal(detail.json.data.channel.credit, 0, "也不应扣张数");
 });
 
 test("代理登录后生成卡密受自己渠道余额限制", async () => {

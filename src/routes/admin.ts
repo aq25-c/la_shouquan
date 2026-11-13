@@ -950,16 +950,9 @@ export function registerAdminRoutes(): void {
             { balance: paid.balance, needed: amount },
           );
         }
-      } else if (channelId) {
-        // 管理员代生成：沿用卡密张数额度（不走金额结算）
-        const consumed = consumeCredit(channelId, count);
-        if (!consumed.ok) {
-          throw conflict(
-            `该渠道卡密余额不足（当前 ${consumed.credit} 张，本次需要 ${count} 张）`,
-            "CREDIT_INSUFFICIENT",
-            { credit: consumed.credit, needed: count },
-          );
-        }
+      } else {
+        // 管理员代生成：属于管理赠送，不扣代理商任何额度（不扣金额、不扣张数）
+        // 代理自行生成时才按价格从余额扣费（见上面的分支）
       }
       return createCdkBatch({
         productId,
@@ -1675,6 +1668,36 @@ export function registerAdminRoutes(): void {
       detail: patchData,
     });
     return ok({ config: updated });
+  });
+
+  /** 生成前的实时估价：不扣费、不核销，仅供前端显示「本次需 ¥X / 当前余额 ¥Y」 */
+  post(`${P}/cdks/estimate`, (ctx) => {
+    const staffCtx = requireStaff(ctx);
+    const productId = needStr(ctx, "product_id", 64);
+    const moduleIds = bodyStrArray(ctx, "module_ids") ?? [];
+    const termType = (bodyStr(ctx, "term_type", 20) ?? "day") as TermType;
+    const termValue = needInt(ctx, "term_value", { min: 1, max: 100000 });
+    const count = bodyInt(ctx, "count", { min: 1, max: 5000 }) ?? 1;
+
+    const unit = resolveUnitPrice(productId, moduleIds, termType);
+    const total = unit === null ? null : totalPrice(unit, termValue, count);
+
+    // 只有代理需要付费；管理员生成属于赠送，不显示金额
+    const payable = staffCtx.isAgent;
+    const channel = payable && staffCtx.channelId ? findChannelById(staffCtx.channelId) : null;
+    const balance = channel ? channel.balance : null;
+
+    return ok({
+      payable,
+      unit_price: unit,
+      total_price: total,
+      term_type: termType,
+      term_value: termValue,
+      count,
+      balance,
+      sufficient: !payable || (total !== null && balance !== null && balance >= total),
+      priced: unit !== null,
+    });
   });
 
   /** API 文档：路由骨架来自真实路由表，描述来自 api-spec.ts */

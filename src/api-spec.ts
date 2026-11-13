@@ -159,8 +159,13 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "DELETE /admin/api/modules/:id": { title: "删除模块", auth: "admin", desc: "不影响已签发授权。" },
 
   /* ---------------- 管理 · CDK ---------------- */
-  "POST /admin/api/cdks/generate": {
-    title: "批量生成 CDK",
+  "POST /admin/api/cdks/estimate": {
+    title: "生成前估价",
+    auth: "admin",
+    params: "`product_id`✅、`term_value`✅、`count`、`term_type?`、`module_ids[]?`",
+    desc: "不扣费、不核销。返回本次应付金额、单价与代理余额；管理员生成时 `payable=false`（属赠送不扣费）。",
+  },
+  "POST /admin/api/cdks/generate": {    title: "批量生成 CDK",
     auth: "admin",
     params: "`product_id`✅、`days`✅、`count`✅、`module_ids?`、`seats?`、`note?`、`redeem_before?`、`channel_id?`、`unit_price?`",
     desc: "生成批次卡密，返回码列表与 CSV；`unit_price` 单位为**分**。",
