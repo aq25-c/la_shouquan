@@ -473,3 +473,18 @@ td.right, th.right { text-align: right; }
   .stat-value { font-size: 20px; }
 }
 
+
+/* 错误码标签云：自动换行，避免长列表撑破容器 */
+.err-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.err-list code {
+  white-space: nowrap;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 12px;
+}

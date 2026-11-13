@@ -2359,8 +2359,12 @@ async function renderApiDocs(root) {
         </div>
         <div class="form-grid" style="margin-top:12px">
           ${docs.conventions
-            .map(
-              (c) => `<div class="field"><span>${esc(c.title)}</span><div class="muted small">${inlineCode(c.text)}</div></div>`,
+            .map((c) =>
+              c.codes?.length
+                ? `<div class="field"><span>${esc(c.title)}</span><div class="err-list">${c.codes
+                    .map((x) => `<code>${esc(x)}</code>`)
+                    .join("")}</div></div>`
+                : `<div class="field"><span>${esc(c.title)}</span><div class="muted small">${inlineCode(c.text ?? "")}</div></div>`,
             )
             .join("")}
         </div>

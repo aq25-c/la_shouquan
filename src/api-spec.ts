@@ -259,7 +259,7 @@ export type ApiDocs = {
   total: number;
   missing: string[];
   groups: ApiDocGroup[];
-  conventions: { title: string; text: string }[];
+  conventions: { title: string; text?: string; codes?: string[] }[];
 };
 
 export function buildApiDocs(): ApiDocs {
@@ -306,7 +306,28 @@ export function buildApiDocs(): ApiDocs {
       { title: "时间与金额", text: "时间为 ISO-8601 UTC 字符串；金额单位统一为「分」（整数）。" },
       { title: "分页", text: "`?page=1&page_size=20`，`page_size` 上限 200。" },
       { title: "心跳与到期同步", text: "客户端每次心跳都会拿到最新 `expires_at` 与重新签名的 `license_file`，因此后台改到期后最迟一个心跳周期生效。" },
-      { title: "错误码", text: "`401 UNAUTHORIZED`、`403 LICENSE_*` / `TRIAL_*`、`404 CDK_NOT_FOUND`/`INVALID_LICENSE_KEY`/`DEVICE_NOT_BOUND`、`409 SEAT_LIMIT`/`CODE_TAKEN`/`EMAIL_TAKEN`/`AGENT_IN_USE`、`429 RATE_LIMITED`。" },
+      {
+        title: "错误码",
+        codes: [
+          "401 UNAUTHORIZED",
+          "403 FORBIDDEN",
+          "403 LICENSE_EXPIRED",
+          "403 LICENSE_REVOKED",
+          "403 LICENSE_SUSPENDED",
+          "403 TRIAL_ALREADY_USED",
+          "403 TRIAL_NOT_ALLOWED",
+          "404 CDK_NOT_FOUND",
+          "404 INVALID_LICENSE_KEY",
+          "404 DEVICE_NOT_BOUND",
+          "409 SEAT_LIMIT",
+          "409 CODE_TAKEN",
+          "409 EMAIL_TAKEN",
+          "409 AGENT_IN_USE",
+          "409 BALANCE_INSUFFICIENT",
+          "409 TERM_CONFLICT",
+          "429 RATE_LIMITED",
+        ],
+      },
     ],
   };
 }
@@ -361,7 +382,13 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
     .join("");
 
   const conventionsHtml = docs.conventions
-    .map((c) => `<div class="conv-item"><h3>${escHtml(c.title)}</h3><p>${inlineCode(c.text)}</p></div>`)
+    .map((c) =>
+      c.codes?.length
+        ? `<div class="conv-item"><h3>${escHtml(c.title)}</h3><div class="err-list">${c.codes
+            .map((x) => `<code>${escHtml(x)}</code>`)
+            .join("")}</div></div>`
+        : `<div class="conv-item"><h3>${escHtml(c.title)}</h3><p>${inlineCode(c.text ?? "")}</p></div>`,
+    )
     .join("");
 
   return `<!doctype html>
@@ -386,7 +413,9 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
   .conventions { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; margin-bottom:22px; }
   .conv-item { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
   .conv-item h3 { margin:0 0 6px; font-size:13px; color:var(--primary); }
-  .conv-item p { margin:0; font-size:12.5px; color:var(--muted); }
+  .conv-item p { margin:0; font-size:12.5px; color:var(--muted); overflow-wrap:anywhere; }
+  .err-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:2px; }
+  .err-list code { white-space:nowrap; background:var(--bg); border:1px solid var(--border); padding:2px 7px; border-radius:6px; font-size:12px; }
   .group { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-bottom:16px; overflow:hidden; }
   .group h2 { margin:0; padding:13px 16px; font-size:14px; border-bottom:1px solid var(--border); background:#fafbfc; display:flex; align-items:center; gap:8px; }
   .count { font-size:12px; font-weight:400; color:var(--muted); background:#f1f3f6; padding:1px 8px; border-radius:999px; }
