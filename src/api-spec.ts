@@ -59,6 +59,13 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     desc: "校验原密码后改密。改完该账号的**其它会话全部失效**，同时返回一个新的 `token` 给当前设备，避免改完自己被踢下线。",
     notes: "401 INVALID_CREDENTIALS（原密码不对）、400 WEAK_PASSWORD / SAME_PASSWORD。",
   },
+  "GET /admin/api/licenses/:id/logs": {
+    title: "授权操作日志（按客户 + 软件合并）",
+    auth: "admin",
+    params: "路径参数 `id` 为任一授权 id",
+    desc: "返回该授权**同一客户 + 同一软件**下所有授权的操作记录（时间倒序）：激活、加时、冻结/恢复、绑定与解绑设备、重新签发等。用途是「设备与解绑历史」里的操作日志页签，同一客户多条授权看到的是同一份。",
+    notes: "单条记录字段：`at`、`action`、`actor_label`、`detail`（JSON 字符串，含 device_id / days / by 等）、`target_id`（属于哪条授权）。",
+  },
   "GET /api/v1/me/overview": {
     title: "授权总览（客户门户用）",
     auth: "customer",

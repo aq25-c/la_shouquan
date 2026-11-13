@@ -47,7 +47,7 @@ import type { StaffRole, TermType } from "../permissions.ts";
 import { buildLicenseFile, licenseView } from "../issuer.ts";
 import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
-import { audit, listAudit, listAuditByTarget } from "../store/audit.ts";
+import { audit, listAudit, listAuditByTarget, listAuditByTargets } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
 import { checkCustomerPurgeable, customerPurgeSnapshot, purgeCustomer } from "../store/purge.ts";
 import {
@@ -134,6 +134,9 @@ import {
   listBatches,
   listCdks,
   listDevices,
+  listDevicesForGroup,
+  licenseGroupIds,
+  licenseGroup,
   listLicenses,
   listLicensesByCustomer,
   listLicenseModules,
@@ -1698,7 +1701,10 @@ export function registerAdminRoutes(): void {
     const customer = findCustomerById(license.customer_id);
     return ok({
       license: { ...licenseView(license), module_ids: parseJson<string[]>(license.module_ids, []) },
-      devices: listDevices(id),
+      // 设备按「同一客户 + 同一软件」共享：试用卡和 CDK 卡看到的是同一批设备
+      devices: listDevicesForGroup(license.customer_id, license.product_id),
+      group_license_ids: licenseGroupIds(license.customer_id, license.product_id),
+      group: licenseGroup(license.customer_id, license.product_id),
       module_codes: moduleCodesFor(moduleIdsOf(license)),
       // 前端按名称展示模块（不再只显示代码或数量）
       modules: moduleIdsOf(license).map((mid) => {
@@ -1713,6 +1719,20 @@ export function registerAdminRoutes(): void {
         };
       }),
       customer: customer ? { ...customer, password_hash: undefined } : null,
+    });
+  });
+
+  /** 授权的操作日志（绑定/解绑/加时/冻结…），按「同一客户 + 同一软件」合并展示 */
+  get(`${P}/licenses/:id/logs`, (ctx) => {
+    requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const license = findLicenseById(id);
+    if (!license) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    const ids = licenseGroupIds(license.customer_id, license.product_id);
+    return ok({
+      items: listAuditByTargets(ids, 200),
+      license_ids: ids,
+      scope: "customer_product",
     });
   });
 

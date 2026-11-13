@@ -74,6 +74,7 @@ import {
   findLicenseById,
   findLicenseByKeyHash,
   listDevices,
+  listDevicesForGroup,
   listLicensesByCustomer,
   markCdkUsed,
   moduleIdsOf,
@@ -374,7 +375,8 @@ export function registerClientRoutes(): void {
         active_devices: row.active_devices,
         product: { code: row.product_code, name: row.product_name },
         modules,
-        devices: listDevices(row.id)
+        // 设备按「同一客户 + 同一软件」共享：试用卡与 CDK 卡显示同一批设备
+        devices: listDevicesForGroup(row.customer_id, row.product_id)
           .filter((d) => d.status === "active")
           .map((d) => ({
             device_id: d.device_id,
@@ -980,6 +982,16 @@ export function registerClientRoutes(): void {
         });
       }
       upsertDevice({ licenseId: license.id, deviceId, deviceName, platform, ip: ctx.ip });
+      // 首次绑定也进日志：客户端自助加设备是「谁在什么时候加了哪台机」的关键记录
+      audit({
+        actorType: "customer",
+        actorId: license.customer_id,
+        action: "license.bind_device",
+        targetType: "license",
+        targetId: license.id,
+        ip: ctx.ip,
+        detail: { device_id: deviceId, device_name: deviceName || null, platform: platform || null, by: "client" },
+      });
     } else {
       touchDevice(existing.id, ctx.ip);
     }

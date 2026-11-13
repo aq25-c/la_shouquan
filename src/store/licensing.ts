@@ -339,6 +339,36 @@ function withSharedSeats<T extends { customer_id: string; product_id: string; st
   return rows;
 }
 
+/** 同一客户同一软件（产品）下的所有授权 —— 设备与日志按这个范围共享 */
+export function licenseGroup(
+  customerId: string,
+  productId: string,
+): { id: string; license_no: string; kind: string }[] {
+  return db()
+    .prepare("SELECT id, license_no, kind FROM licenses WHERE customer_id = ? AND product_id = ? ORDER BY created_at ASC")
+    .all(customerId, productId) as unknown as { id: string; license_no: string; kind: string }[];
+}
+
+export function licenseGroupIds(customerId: string, productId: string): string[] {
+  return licenseGroup(customerId, productId).map((r) => r.id);
+}
+
+/** 一组授权下的全部设备（在用优先），带所属授权单号 */
+export function listDevicesForGroup(
+  customerId: string,
+  productId: string,
+): (DeviceRow & { license_no: string })[] {
+  return db()
+    .prepare(
+      `SELECT d.*, l.license_no
+         FROM devices d
+         JOIN licenses l ON l.id = d.license_id
+        WHERE l.customer_id = ? AND l.product_id = ?
+        ORDER BY CASE d.status WHEN 'active' THEN 0 ELSE 1 END, d.last_seen_at DESC`,
+    )
+    .all(customerId, productId) as unknown as (DeviceRow & { license_no: string })[];
+}
+
 export function findLicenseById(id: string): LicenseListItem | null {
   sweepExpiredDevices();
   const now = nowIso();

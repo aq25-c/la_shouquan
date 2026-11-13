@@ -80,3 +80,12 @@ export function listAuditByTarget(targetId: string, limit = 100): AuditRow[] {
     .prepare("SELECT * FROM audit_logs WHERE target_id = ? ORDER BY at DESC, rowid DESC LIMIT ?")
     .all(targetId, limit) as unknown as AuditRow[];
 }
+
+/** 一组对象的审计记录（同一客户同一软件下的多条授权共用一份日志） */
+export function listAuditByTargets(targetIds: string[], limit = 100): AuditRow[] {
+  if (!targetIds.length) return [];
+  const marks = targetIds.map(() => "?").join(", ");
+  return db()
+    .prepare(`SELECT * FROM audit_logs WHERE target_id IN (${marks}) ORDER BY at DESC, rowid DESC LIMIT ?`)
+    .all(...targetIds, limit) as unknown as AuditRow[];
+}

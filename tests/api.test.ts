@@ -2810,3 +2810,58 @@ test("客户自助改密码：校验原密码，改完其它会话失效", async
   });
   assert.equal(newLogin.status, 200);
 });
+
+
+test("设备与操作日志按「客户 + 软件」共享：试用卡与 CDK 卡看到同一批", async () => {
+  const email = "groupdev@test.local";
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email,
+    password: "GroupPass12345",
+    name: "共享设备",
+  });
+  assert.equal(reg.status, 201);
+  const customerId = reg.json.data.customer.id;
+
+  const mk = (days: number, seats: number) =>
+    api(
+      "POST",
+      "/admin/api/licenses",
+      { customer_id: customerId, product_id: productId, module_ids: [moduleIds[0]], days, seats },
+      adminToken,
+    );
+
+  const a = await mk(30, 5);
+  const b = await mk(30, 5);
+  assert.equal(a.status, 201);
+  assert.equal(b.status, 201);
+  const licA = a.json.data.license.id;
+  const licB = b.json.data.license.id;
+
+  // 设备绑在 A 上
+  const bind = await api(
+    "POST",
+    `/admin/api/licenses/${licA}/devices`,
+    { device_id: "group-dev-01" },
+    adminToken,
+  );
+  assert.equal(bind.status, 200);
+
+  // 看 B 的详情，也应该有这台设备（并标明挂在 A 上）
+  const detailB = await api("GET", `/admin/api/licenses/${licB}`, undefined, adminToken);
+  assert.equal(detailB.status, 200);
+  const devs = detailB.json.data.devices;
+  const hit = devs.find((d) => d.device_id === "group-dev-01");
+  assert.ok(hit, "另一条授权里也应看到这台设备");
+  assert.equal(hit.license_id, licA);
+  assert.equal(detailB.json.data.group.length, 2, "同一客户同产品应有 2 条授权");
+
+  // 给 A 加时，日志在 B 上也能查到
+  const ext = await api("POST", `/admin/api/licenses/${licA}/extend`, { days: 30 }, adminToken);
+  assert.equal(ext.status, 200);
+
+  const logsB = await api("GET", `/admin/api/licenses/${licB}/logs`, undefined, adminToken);
+  assert.equal(logsB.status, 200);
+  const actions = logsB.json.data.items.map((i) => i.action);
+  assert.ok(actions.includes("license.bind_device"), "日志里应有绑定设备");
+  assert.ok(actions.includes("license.extend"), "日志里应有加时");
+});
