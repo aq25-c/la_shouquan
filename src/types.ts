@@ -11,8 +11,8 @@ export type AdminRow = {
   last_login_at: string | null;
   /** v4：JSON { menus: string[], features: string[] } */
   permissions: string;
-  /** v4：代理关联的渠道（role = agent 时有值） */
-  channel_id: string | null;
+  /** v4：代理关联的代理（role = agent 时有值） */
+  agent_id: string | null;
   /** v5：代理可售范围 JSON { product_ids[], module_ids[], term_types[] } */
   agent_profile: string;
 };
@@ -75,8 +75,8 @@ export type CdkBatchRow = {
   note: string | null;
   created_by: string | null;
   created_at: string;
-  /** v2：归属渠道（可空，表示直销/自营） */
-  channel_id: string | null;
+  /** v2：归属代理（可空，表示直销/自营） */
+  agent_id: string | null;
   /** v2：结算单价（单位：分） */
   unit_price: number;
   /** v4：计费类型（hour/day/month/year/count）与数量 */
@@ -84,8 +84,8 @@ export type CdkBatchRow = {
   term_value: number | null;
 };
 
-/** 渠道 / 分销商 */
-export type ChannelRow = {
+/** 代理 / 分销商 */
+export type AgentRow = {
   id: string;
   code: string;
   name: string;
@@ -144,8 +144,8 @@ export type LicenseRow = {
   last_heartbeat_at: string | null;
   revoked_at: string | null;
   revoked_reason: string | null;
-  /** v2：来源渠道（可空，表示直销） */
-  channel_id: string | null;
+  /** v2：来源代理（可空，表示直销） */
+  agent_id: string | null;
   /** v2：结算单价（单位：分），激活时从 CDK 批次继承 */
   unit_price: number;
   /** v3：授权类型（paid = 正式 / trial = 试用） */

@@ -37,13 +37,13 @@ export function requireAdmin(ctx: Ctx): AdminRow {
   return admin;
 }
 
-/** 员工/代理的完整身份：角色 + 目录权限 + 功能权限 + 所属渠道 */
+/** 员工/代理的完整身份：角色 + 目录权限 + 功能权限 + 所属代理 */
 export type StaffContext = {
   admin: AdminRow;
   role: StaffRole;
   permissions: Permissions;
-  /** 代理关联的渠道；非代理为 null */
-  channelId: string | null;
+  /** 代理关联的代理；非代理为 null */
+  agentId: string | null;
   isOwner: boolean;
   isAgent: boolean;
 };
@@ -55,7 +55,7 @@ export function requireStaff(ctx: Ctx): StaffContext {
     admin,
     role,
     permissions: parsePermissions(admin.permissions, role),
-    channelId: admin.channel_id ?? null,
+    agentId: admin.agent_id ?? null,
     isOwner: role === "owner",
     isAgent: role === "agent",
   };

@@ -88,7 +88,7 @@ const state = {
   view: "overview",
   products: [],
   modules: [],
-  channels: [],
+  agents: [],
   pages: {},
   /** 当前登录账号的权限（后端下发） */
   permissions: { menus: [], features: [] },
@@ -113,7 +113,7 @@ function applyMenuPermissions() {
 
 /** 第一个有权限的页面（代理只有卡密页） */
 function firstAllowedView() {
-  const order = ["overview", "cdks", "licenses", "customers", "products", "channels", "staff", "audit", "params", "apiDocs", "settings"];
+  const order = ["overview", "cdks", "licenses", "customers", "products", "agents", "staff", "audit", "params", "apiDocs", "settings"];
   return order.find((v) => hasMenu(v)) ?? "overview";
 }
 
@@ -298,7 +298,7 @@ const VIEWS = {
   overview: { title: "概览", subtitle: "授权与 CDK 全局概况", render: renderOverview },
   products: { title: "产品与模块", subtitle: "产品、功能模块维护（CDK 绑定目标）", render: renderProducts },
   cdks: { title: "CDK", subtitle: "批量生成、导出与作废", render: renderCdks },
-  channels: { title: "代理", subtitle: "分销代理、CDK 归属与营收统计", render: renderChannels },
+  agents: { title: "代理", subtitle: "分销代理、CDK 归属与营收统计", render: renderAgents },
   licenses: { title: "授权", subtitle: "到期时间、席位、设备与吊销", render: renderLicenses },
   customers: { title: "客户", subtitle: "注册客户与账号状态", render: renderCustomers },
   audit: { title: "审计日志", subtitle: "所有关键操作留痕", render: renderAudit },
@@ -335,10 +335,10 @@ async function ensureCatalog(force = false) {
   const [mods, chans] = await Promise.all([
     apiGet("/admin/api/modules"),
     // 代理无权读代理列表，这里容错，避免拖垮整个页面
-    apiGet("/admin/api/channels").catch(() => ({ items: [] })),
+    apiGet("/admin/api/agents").catch(() => ({ items: [] })),
   ]);
   state.modules = mods.items;
-  state.channels = chans.items;
+  state.agents = chans.items;
 }
 
 const productName = (id) => state.products.find((p) => p.id === id)?.name ?? id;
@@ -715,9 +715,9 @@ async function moduleManager(productId) {
 const money = (cents) => `¥${(Number(cents ?? 0) / 100).toFixed(2)}`;
 const percent = (ratio) => `${(Number(ratio ?? 0) * 100).toFixed(1)}%`;
 
-function channelOptions(selected = "") {
+function agentOptions(selected = "") {
   const parts = [`<option value="">无（直销）</option>`];
-  for (const c of state.channels) {
+  for (const c of state.agents) {
     if (c.status !== "active" && c.id !== selected) continue;
     parts.push(
       `<option value="${esc(c.id)}" ${c.id === selected ? "selected" : ""}>${esc(c.name)}（${esc(c.code)}）</option>`,
@@ -727,10 +727,10 @@ function channelOptions(selected = "") {
 }
 
 /** 代理单独定价：默认带出全局价，留空表示沿用全局，填了即为覆盖价 */
-async function channelPriceForm(channelId) {
+async function agentPriceForm(agentId) {
   const [globalPrices, ownPrices] = await Promise.all([
     apiGet("/admin/api/prices"),
-    apiGet(`/admin/api/prices?channel_id=${encodeURIComponent(channelId)}`),
+    apiGet(`/admin/api/prices?agent_id=${encodeURIComponent(agentId)}`),
   ]);
   const own = new Map(ownPrices.items.map((p) => [`${p.product_id}|${p.module_id}|${p.term_type}`, p.unit_price]));
 
@@ -770,7 +770,7 @@ async function channelPriceForm(channelId) {
         try {
           for (const i of inputs) {
             await apiPost("/admin/api/prices", {
-              channel_id: channelId,
+              agent_id: agentId,
               product_id: i.dataset.p,
               module_id: i.dataset.m || null,
               term_type: i.dataset.t,
@@ -787,14 +787,14 @@ async function channelPriceForm(channelId) {
   });
 }
 
-async function renderChannels(root) {
+async function renderAgents(root) {
   await ensureCatalog();
-  const filters = state.channelFilters ?? (state.channelFilters = { q: "", status: "" });
+  const filters = state.agentFilters ?? (state.agentFilters = { q: "", status: "" });
   const query = new URLSearchParams();
   if (filters.q) query.set("q", filters.q);
   if (filters.status) query.set("status", filters.status);
 
-  const res = await apiGet(`/admin/api/channels?${query}`);
+  const res = await apiGet(`/admin/api/agents?${query}`);
   const items = res.items;
   const s = res.summary;
 
@@ -802,8 +802,8 @@ async function renderChannels(root) {
     <div class="stat-grid">
       <div class="stat accent">
         <div class="stat-label">代理数</div>
-        <div class="stat-value">${s.channels}</div>
-        <div class="stat-hint">启用中 ${s.channels_active} 个</div>
+        <div class="stat-value">${s.agents}</div>
+        <div class="stat-hint">启用中 ${s.agents_active} 个</div>
       </div>
       <div class="stat">
         <div class="stat-label">归属代理的授权</div>
@@ -874,35 +874,35 @@ async function renderChannels(root) {
       </div>
     </div>`;
 
-  $("[data-new]", root).onclick = () => channelForm();
+  $("[data-new]", root).onclick = () => agentForm();
   $$("[data-pricing]", root).forEach((btn) => {
-    btn.onclick = () => channelPriceForm(btn.dataset.pricing);
+    btn.onclick = () => agentPriceForm(btn.dataset.pricing);
   });
   $("[data-f-status]", root).onchange = (e) => {
     filters.status = e.target.value;
-    navigate("channels", true);
+    navigate("agents", true);
   };
   $("[data-f-q]", root).onkeydown = (e) => {
     if (e.key === "Enter") {
       filters.q = e.target.value.trim();
-      navigate("channels", true);
+      navigate("agents", true);
     }
   };
   $$("[data-credit]", root).forEach((btn) => {
-    btn.onclick = () => channelCreditForm(state.channels.find((c) => c.id === btn.dataset.credit));
+    btn.onclick = () => agentCreditForm(state.agents.find((c) => c.id === btn.dataset.credit));
   });
   $$("[data-edit]", root).forEach((btn) => {
-    btn.onclick = () => channelForm(state.channels.find((c) => c.id === btn.dataset.edit));
+    btn.onclick = () => agentForm(state.agents.find((c) => c.id === btn.dataset.edit));
   });
   $$("[data-toggle]", root).forEach((btn) => {
     btn.onclick = async () => {
-      const c = state.channels.find((x) => x.id === btn.dataset.toggle);
+      const c = state.agents.find((x) => x.id === btn.dataset.toggle);
       try {
-        await apiPatch(`/admin/api/channels/${c.id}`, {
+        await apiPatch(`/admin/api/agents/${c.id}`, {
           status: c.status === "active" ? "disabled" : "active",
         });
         toast("已更新", "ok");
-        navigate("channels", true);
+        navigate("agents", true);
       } catch (err) {
         toast(err.message, "error");
       }
@@ -910,12 +910,12 @@ async function renderChannels(root) {
   });
   $$("[data-del]", root).forEach((btn) => {
     btn.onclick = async () => {
-      const c = state.channels.find((x) => x.id === btn.dataset.del);
+      const c = state.agents.find((x) => x.id === btn.dataset.del);
       if (!(await confirmDialog(`删除代理「${c.name}」？已有 CDK 或授权的代理不能删除，只能停用。`, { danger: true, okText: "删除" }))) return;
       try {
-        await api("DELETE", `/admin/api/channels/${c.id}`);
+        await api("DELETE", `/admin/api/agents/${c.id}`);
         toast("已删除", "ok");
-        navigate("channels", true);
+        navigate("agents", true);
       } catch (err) {
         toast(err.message, "error");
       }
@@ -923,12 +923,12 @@ async function renderChannels(root) {
   });
 }
 
-function channelCreditForm(channel) {
-  if (!channel) return;
+function agentCreditForm(agent) {
+  if (!agent) return;
   openModal({
-    title: `充值 / 扣减：${channel.name}`,
+    title: `充值 / 扣减：${agent.name}`,
     body: `
-      <div class="note">当前卡密余额：<strong>${channel.credit ?? 0} 张</strong>。代理生成卡密时按数量扣减，余额不足则无法生成。</div>
+      <div class="note">当前卡密余额：<strong>${agent.credit ?? 0} 张</strong>。代理生成卡密时按数量扣减，余额不足则无法生成。</div>
       <div class="form-grid">
         <label class="field"><span>数量（正数=充值，负数=扣减）</span><input name="amount" type="number" value="100" /></label>
       </div>`,
@@ -942,10 +942,10 @@ function channelCreditForm(channel) {
           return;
         }
         try {
-          const res = await apiPost(`/admin/api/channels/${channel.id}/credit`, { amount });
+          const res = await apiPost(`/admin/api/agents/${agent.id}/credit`, { amount });
           close();
-          toast(`已更新，当前余额 ${res.channel.credit} 张`, "ok");
-          navigate("channels", true);
+          toast(`已更新，当前余额 ${res.agent.credit} 张`, "ok");
+          navigate("agents", true);
         } catch (err) {
           toast(err.message, "error");
         }
@@ -954,19 +954,19 @@ function channelCreditForm(channel) {
   });
 }
 
-function channelForm(channel) {
-  const isNew = !channel;
+function agentForm(agent) {
+  const isNew = !agent;
   openModal({
-    title: isNew ? "新建代理" : `编辑代理：${channel.name}`,
+    title: isNew ? "新建代理" : `编辑代理：${agent.name}`,
     body: `
       <div class="form-grid">
         <label class="field"><span>代理编码（小写字母 / 数字 / - / _）</span>
-          <input name="code" value="${esc(channel?.code ?? "")}" ${isNew ? "" : "disabled"} placeholder="taobao" /></label>
-        <label class="field"><span>代理名称</span><input name="name" value="${esc(channel?.name ?? "")}" placeholder="淘宝旗舰店" /></label>
-        <label class="field"><span>联系人</span><input name="contact" value="${esc(channel?.contact ?? "")}" /></label>
-        <label class="field"><span>电话</span><input name="phone" value="${esc(channel?.phone ?? "")}" /></label>
-        <label class="field"><span>邮箱</span><input name="email" value="${esc(channel?.email ?? "")}" /></label>
-        <label class="field full"><span>备注</span><textarea name="note">${esc(channel?.note ?? "")}</textarea></label>
+          <input name="code" value="${esc(agent?.code ?? "")}" ${isNew ? "" : "disabled"} placeholder="taobao" /></label>
+        <label class="field"><span>代理名称</span><input name="name" value="${esc(agent?.name ?? "")}" placeholder="淘宝旗舰店" /></label>
+        <label class="field"><span>联系人</span><input name="contact" value="${esc(agent?.contact ?? "")}" /></label>
+        <label class="field"><span>电话</span><input name="phone" value="${esc(agent?.phone ?? "")}" /></label>
+        <label class="field"><span>邮箱</span><input name="email" value="${esc(agent?.email ?? "")}" /></label>
+        <label class="field full"><span>备注</span><textarea name="note">${esc(agent?.note ?? "")}</textarea></label>
       </div>`,
     footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">保存</button>`,
     onMount(modal, close) {
@@ -990,13 +990,13 @@ function channelForm(channel) {
               toast("请填写代理编码", "error");
               return;
             }
-            await apiPost("/admin/api/channels", { ...payload, code });
+            await apiPost("/admin/api/agents", { ...payload, code });
           } else {
-            await apiPatch(`/admin/api/channels/${channel.id}`, payload);
+            await apiPatch(`/admin/api/agents/${agent.id}`, payload);
           }
           close();
           toast("已保存", "ok");
-          navigate("channels");
+          navigate("agents");
         } catch (err) {
           toast(err.message, "error");
         }
@@ -1011,13 +1011,13 @@ async function renderCdks(root) {
   await ensureCatalog();
   const pageKey = "cdks";
   const page = state.pages[pageKey] ?? 1;
-  const filters = state.cdkFilters ?? (state.cdkFilters = { product_id: "", status: "", q: "", batch_id: "", channel_id: "" });
+  const filters = state.cdkFilters ?? (state.cdkFilters = { product_id: "", status: "", q: "", batch_id: "", agent_id: "" });
   const query = new URLSearchParams({ page: String(page), page_size: "20" });
   if (filters.product_id) query.set("product_id", filters.product_id);
   if (filters.status) query.set("status", filters.status);
   if (filters.q) query.set("q", filters.q);
   if (filters.batch_id) query.set("batch_id", filters.batch_id);
-  if (filters.channel_id) query.set("channel_id", filters.channel_id);
+  if (filters.agent_id) query.set("agent_id", filters.agent_id);
 
   const [list, batches] = await Promise.all([
     apiGet(`/admin/api/cdks?${query}`),
@@ -1042,7 +1042,7 @@ async function renderCdks(root) {
           <label class="field"><span>席位数（可绑定设备数）</span><input name="seats" type="number" min="1" max="100" value="1" /></label>
           <label class="field"><span>生成数量</span><input name="count" type="number" min="1" max="5000" value="10" /></label>
           <label class="field"><span>兑换截止时间（可选）</span><input name="redeem_before" type="datetime-local" /></label>
-          <label class="field"><span>归属代理（可选）</span><select name="channel_id">${channelOptions()}</select></label>
+          <label class="field"><span>归属代理（可选）</span><select name="agent_id">${agentOptions()}</select></label>
           <label class="field"><span>结算单价（元）</span><input name="unit_price" type="number" min="0" step="0.01" value="0" /></label>
           <label class="field"><span>批次备注</span><input name="note" placeholder="例如 2025Q1 代理批次" /></label>
           <div class="field full"><span>包含模块</span>
@@ -1071,10 +1071,10 @@ async function renderCdks(root) {
             <option value="">全部批次</option>
             ${batches.items.map((b) => `<option value="${esc(b.id)}" ${filters.batch_id === b.id ? "selected" : ""}>${fmtDay(b.created_at)} · ${esc(b.product_code)} · ${b.count} 个</option>`).join("")}
           </select>
-          <select data-f-channel>
+          <select data-f-agent>
             <option value="">全部代理</option>
-            <option value="__none__" ${filters.channel_id === "__none__" ? "selected" : ""}>无代理（直销）</option>
-            ${state.channels.map((c) => `<option value="${esc(c.id)}" ${filters.channel_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+            <option value="__none__" ${filters.agent_id === "__none__" ? "selected" : ""}>无代理（直销）</option>
+            ${state.agents.map((c) => `<option value="${esc(c.id)}" ${filters.agent_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
           </select>
           <input data-f-q placeholder="搜索 CDK / 备注 / 客户邮箱" value="${esc(filters.q)}" />
           <button class="btn btn-sm" data-export type="button">导出 CSV</button>
@@ -1092,7 +1092,7 @@ async function renderCdks(root) {
                         (c) => `<tr>
                           <td class="mono"><button class="btn btn-ghost btn-sm" data-copy="${esc(c.code)}" type="button" title="点击复制">${esc(c.code)}</button></td>
                           <td>${esc(c.product_code)}</td>
-                          <td>${c.channel_code ? `<span class="badge badge-info">${esc(c.channel_name ?? c.channel_code)}</span>` : '<span class="muted small">直销</span>'}</td>
+                          <td>${c.agent_code ? `<span class="badge badge-info">${esc(c.agent_name ?? c.agent_code)}</span>` : '<span class="muted small">直销</span>'}</td>
                           <td>${c.days} 天</td>
                           <td>${c.seats}</td>
                           <td>${statusBadge(CDK_STATUS, c.status)}</td>
@@ -1167,7 +1167,7 @@ async function renderCdks(root) {
 
   $("[data-generate]", root).onclick = async () => {
     const moduleIds = $$("[data-modules] input:checked", root).map((i) => i.value);
-    const channelSelect = $('[name="channel_id"]', root);
+    const agentSelect = $('[name="agent_id"]', root);
     const payload = {
       product_id: productSelect.value,
       module_ids: moduleIds,
@@ -1178,7 +1178,7 @@ async function renderCdks(root) {
       count: Number($('[name="count"]', root).value),
       note: $('[name="note"]', root).value.trim(),
       // 代理可选；单价按「元」录入，提交时换算成「分」
-      channel_id: channelSelect?.value || undefined,
+      agent_id: agentSelect?.value || undefined,
       unit_price: Math.round(Number($('[name="unit_price"]', root).value || 0) * 100),
     };
     const redeemBefore = $('[name="redeem_before"]', root).value;
@@ -1212,8 +1212,8 @@ async function renderCdks(root) {
     state.pages[pageKey] = 1;
     navigate("cdks", true);
   };
-  $("[data-f-channel]", root).onchange = (e) => {
-    filters.channel_id = e.target.value;
+  $("[data-f-agent]", root).onchange = (e) => {
+    filters.agent_id = e.target.value;
     state.pages[pageKey] = 1;
     navigate("cdks", true);
   };
@@ -2232,7 +2232,7 @@ async function renderStaff(root) {
                           }</td>
                           <td class="small">${s.role === "owner" ? "全部" : `${s.permissions.menus.length} 个页面`}</td>
                           <td class="small">${s.role === "owner" ? "全部" : `${s.permissions.features.length} 项功能`}</td>
-                          <td>${esc(s.channel_name ?? "—")}</td>
+                          <td>${esc(s.agent_name ?? "—")}</td>
                           <td>${s.status === "active" ? '<span class="badge badge-ok">正常</span>' : '<span class="badge badge-warn">已停用</span>'}</td>
                           <td class="right">${
                             isOwner && s.role !== "owner"
@@ -2292,15 +2292,15 @@ async function staffForm(staff, opt) {
             <option value="staff" selected>员工（按目录权限 + 软件功能授权访问）</option>
           </select></label>
         <div class="field full"><span></span><div class="muted small">代理商账号请到「代理」页创建与配置（余额、可售范围、单独定价）。</div></div>
-        <label class="field" data-channel-wrap><span>所属代理（代理必填，余额随卡密扣减）</span>
-          <select name="channel_id"></select></label>
-        <div class="field full" data-agent-wrap style="margin-top:6px">
+        <label class="field" data-agent-wrap><span>所属代理（代理必填，余额随卡密扣减）</span>
+          <select name="agent_id"></select></label>
+        <div class="field full" data-scope-wrap style="margin-top:6px">
           <span>可售产品（不勾 = 全部产品）</span>
           <div class="checkbox-list" data-agent-products>
             ${state.products.map((p) => `<label><input type="checkbox" value="${esc(p.id)}" ${(staff?.agent_profile?.product_ids ?? []).includes(p.id) ? "checked" : ""} /><span>${esc(p.name)}</span></label>`).join("") || '<span class="empty">还没有产品</span>'}
           </div>
         </div>
-        <div class="field full" data-agent-wrap>
+        <div class="field full" data-scope-wrap>
           <span>可售卡类型（不勾 = 全部类型）</span>
           <div class="checkbox-list" data-agent-terms>
             ${[["hour", "按小时"], ["day", "按天"], ["month", "按月"], ["year", "按年"], ["count", "按次数"]]
@@ -2321,21 +2321,21 @@ async function staffForm(staff, opt) {
       </div>`,
     footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">保存</button>`,
     onMount(modal, close) {
-      const chSel = $('[name="channel_id"]', modal);
+      const chSel = $('[name="agent_id"]', modal);
       chSel.innerHTML =
         '<option value="">未绑定</option>' +
-        state.channels
+        state.agents
           .map(
             (c) =>
-              `<option value="${esc(c.id)}" ${staff?.channel_id === c.id ? "selected" : ""}>${esc(c.name)}（余额 ${c.credit ?? 0} 张）</option>`,
+              `<option value="${esc(c.id)}" ${staff?.agent_id === c.id ? "selected" : ""}>${esc(c.name)}（余额 ${c.credit ?? 0} 张）</option>`,
           )
           .join("");
 
       const roleSel = $('[name="role"]', modal);
       const syncRole = () => {
         const isAgent = roleSel.value === "agent";
-        $$("[data-channel-wrap]", modal).forEach((el) => (el.hidden = !isAgent));
         $$("[data-agent-wrap]", modal).forEach((el) => (el.hidden = !isAgent));
+        $$("[data-scope-wrap]", modal).forEach((el) => (el.hidden = !isAgent));
         $("[data-perm-wrap]", modal).hidden = isAgent;
       };
       syncRole();
@@ -2348,7 +2348,7 @@ async function staffForm(staff, opt) {
         const pw = $('[name="password"]', modal).value;
         if (pw) payload.password = pw;
         if (roleVal === "agent") {
-          payload.channel_id = chSel.value;
+          payload.agent_id = chSel.value;
           payload.product_ids = $$("[data-agent-products] input:checked", modal).map((i) => i.value);
           payload.term_types = $$("[data-agent-terms] input:checked", modal).map((i) => i.value);
         } else {

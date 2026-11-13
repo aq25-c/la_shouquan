@@ -464,8 +464,8 @@ export function registerClientRoutes(): void {
         days: cdk.days,
         keyHash: sha256hex(licenseKey),
         note: `CDK ${cdk.code}`,
-        // v2：渠道与单价从 CDK 批次继承下来，供后台按渠道统计营收
-        channelId: cdk.channel_id,
+        // v2：代理与单价从 CDK 批次继承下来，供后台按代理统计营收
+        agentId: cdk.agent_id,
         unitPrice: cdk.unit_price,
         // v4：计费类型从 CDK 继承（天/月/年/小时/次数）
         termType: (cdk.term_type ?? "day") as "hour" | "day" | "month" | "year" | "count",

@@ -62,19 +62,19 @@ import {
 } from "../store/prices.ts";
 import { normalizeTerm } from "../permissions.ts";
 import {
-  channelReferences,
-  channelSummary,
+  agentReferences,
+  agentSummary,
   consumeCredit,
-  createChannel,
-  deleteChannel,
-  findChannelByCode,
-  findChannelById,
-  listChannels,
+  createAgent,
+  deleteAgent,
+  findAgentByCode,
+  findAgentById,
+  listAgents,
   consumeBalance,
   rechargeBalance,
-  rechargeChannel,
-  updateChannel,
-} from "../store/channels.ts";
+  rechargeAgent,
+  updateAgent,
+} from "../store/agents.ts";
 import {
   createAdmin,
   createCustomer,
@@ -156,8 +156,8 @@ function adminView(admin: AdminRow) {
     last_login_at: admin.last_login_at,
     /** 目录权限（可见页面）与功能权限（可执行操作） */
     permissions: perms,
-    channel_id: admin.channel_id ?? null,
-    channel_name: admin.channel_id ? (findChannelById(admin.channel_id)?.name ?? null) : null,
+    agent_id: admin.agent_id ?? null,
+    agent_name: admin.agent_id ? (findAgentById(admin.agent_id)?.name ?? null) : null,
     /** 代理可售范围（非代理为 null） */
     agent_profile: role === "agent" ? parseAgentProfile(admin.agent_profile) : null,
   };
@@ -288,7 +288,7 @@ export function registerAdminRoutes(): void {
     requireAdmin(ctx);
     return ok({
       stats: stats(),
-      channels: channelSummary(),
+      agents: agentSummary(),
       expiring: expiringLicenses(14, 12),
       recent_licenses: listLicenses({ page: 1, pageSize: 8 }).items,
       config: publicConfig(),
@@ -331,14 +331,14 @@ export function registerAdminRoutes(): void {
     if (password.length < 8) throw badRequest("密码至少 8 位", "WEAK_PASSWORD");
     if (findAdminByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
 
-    let channelId: string | null = null;
+    let agentId: string | null = null;
     let agentProfile = "{}";
     if (roleInput === "agent") {
-      const channelInput = bodyStr(ctx, "channel_id", 64);
-      if (!channelInput) throw badRequest("代理必须绑定一个渠道", "MISSING_FIELD", { field: "channel_id" });
-      const channel = findChannelById(channelInput);
-      if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
-      channelId = channel.id;
+      const agentInput = bodyStr(ctx, "agent_id", 64);
+      if (!agentInput) throw badRequest("代理必须绑定一个代理", "MISSING_FIELD", { field: "agent_id" });
+      const agent = findAgentById(agentInput);
+      if (!agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+      agentId = agent.id;
       // 可售范围：产品 / 模块 / 卡类型（空数组表示不限制）
       agentProfile = serializeAgentProfile({
         product_ids: bodyStrArray(ctx, "product_ids") ?? [],
@@ -362,7 +362,7 @@ export function registerAdminRoutes(): void {
       name,
       role: roleInput,
       permissions,
-      channelId,
+      agentId,
       agentProfile,
     });
 
@@ -374,7 +374,7 @@ export function registerAdminRoutes(): void {
       targetType: "staff",
       targetId: newStaff.id,
       ip: ctx.ip,
-      detail: { email, role: roleInput, channel_id: channelId },
+      detail: { email, role: roleInput, agent_id: agentId },
     });
     return created({ staff: adminView(newStaff) });
   });
@@ -407,11 +407,11 @@ export function registerAdminRoutes(): void {
     }
 
     if (target.role === "agent") {
-      const channelInput = bodyStr(ctx, "channel_id", 64);
-      if (channelInput) {
-        const channel = findChannelById(channelInput);
-        if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
-        patchData.channel_id = channel.id;
+      const agentInput = bodyStr(ctx, "agent_id", 64);
+      if (agentInput) {
+        const agent = findAgentById(agentInput);
+        if (!agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+        patchData.agent_id = agent.id;
       }
       const productIds = bodyStrArray(ctx, "product_ids");
       const moduleIds = bodyStrArray(ctx, "module_ids");
@@ -476,17 +476,17 @@ export function registerAdminRoutes(): void {
     return ok({ deleted: true });
   });
 
-  /* ---------------------------- 渠道 / 分销 ---------------------------- */
+  /* ---------------------------- 代理 / 分销 ---------------------------- */
 
-  get(`${P}/channels`, (ctx) => {
+  get(`${P}/agents`, (ctx) => {
     requireAdmin(ctx);
     return ok({
-      items: listChannels({ q: q(ctx, "q"), status: q(ctx, "status") }),
-      summary: channelSummary(),
+      items: listAgents({ q: q(ctx, "q"), status: q(ctx, "status") }),
+      summary: agentSummary(),
     });
   });
 
-  post(`${P}/channels`, (ctx) => {
+  post(`${P}/agents`, (ctx) => {
     const admin = requireAdmin(ctx);
     const code = needStr(ctx, "code", 64).toLowerCase();
     const name = needStr(ctx, "name", 120);
@@ -495,34 +495,34 @@ export function registerAdminRoutes(): void {
     const email = bodyStr(ctx, "email", { max: 190 });
     const note = bodyStr(ctx, "note", { max: 1000 });
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(code)) {
-      throw badRequest("渠道编码只能是小写字母、数字、- 和 _（1~64 位）", "INVALID_CODE");
+      throw badRequest("代理编码只能是小写字母、数字、- 和 _（1~64 位）", "INVALID_CODE");
     }
-    if (findChannelByCode(code)) throw conflict("渠道编码已存在", "CODE_TAKEN");
-    const channel = createChannel({ code, name, contact, phone, email, note });
+    if (findAgentByCode(code)) throw conflict("代理编码已存在", "CODE_TAKEN");
+    const agent = createAgent({ code, name, contact, phone, email, note });
     audit({
       actorType: "admin",
       actorId: admin.id,
       actorLabel: admin.email,
-      action: "channel.create",
-      targetType: "channel",
-      targetId: channel.id,
+      action: "agent.create",
+      targetType: "agent",
+      targetId: agent.id,
       ip: ctx.ip,
       detail: { code, name },
     });
-    return created({ channel });
+    return created({ agent });
   });
 
-  get(`${P}/channels/:id`, (ctx) => {
+  get(`${P}/agents/:id`, (ctx) => {
     requireAdmin(ctx);
-    const channel = findChannelById(slash(ctx, "id"));
-    if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
-    return ok({ channel });
+    const agent = findAgentById(slash(ctx, "id"));
+    if (!agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+    return ok({ agent });
   });
 
-  patch(`${P}/channels/:id`, (ctx) => {
+  patch(`${P}/agents/:id`, (ctx) => {
     const admin = requireAdmin(ctx);
     const id = slash(ctx, "id");
-    if (!findChannelById(id)) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+    if (!findAgentById(id)) throw notFound("代理不存在", "AGENT_NOT_FOUND");
 
     const patchData: Record<string, string> = {};
     const name = bodyStr(ctx, "name", { max: 120 });
@@ -543,65 +543,65 @@ export function registerAdminRoutes(): void {
       patchData.status = status;
     }
 
-    const channel = updateChannel(id, patchData);
+    const agent = updateAgent(id, patchData);
     audit({
       actorType: "admin",
       actorId: admin.id,
       actorLabel: admin.email,
-      action: "channel.update",
-      targetType: "channel",
+      action: "agent.update",
+      targetType: "agent",
       targetId: id,
       ip: ctx.ip,
       detail: patchData,
     });
-    return ok({ channel });
+    return ok({ agent });
   });
 
-  del(`${P}/channels/:id`, (ctx) => {
+  del(`${P}/agents/:id`, (ctx) => {
     const admin = requireAdmin(ctx);
     const id = slash(ctx, "id");
-    const channel = findChannelById(id);
-    if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
-    const refs = channelReferences(id);
+    const agent = findAgentById(id);
+    if (!agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+    const refs = agentReferences(id);
     if (refs.batches > 0 || refs.licenses > 0) {
-      throw conflict("该渠道已有 CDK 批次或授权，不能删除（建议改为停用）", "CHANNEL_IN_USE", refs);
+      throw conflict("该代理已有 CDK 批次或授权，不能删除（建议改为停用）", "AGENT_IN_USE", refs);
     }
-    deleteChannel(id);
+    deleteAgent(id);
     audit({
       actorType: "admin",
       actorId: admin.id,
       actorLabel: admin.email,
-      action: "channel.delete",
-      targetType: "channel",
+      action: "agent.delete",
+      targetType: "agent",
       targetId: id,
       ip: ctx.ip,
-      detail: { code: channel.code },
+      detail: { code: agent.code },
     });
     return ok({ deleted: true });
   });
 
-  /** 给渠道（代理）充值卡密余额；amount 可为负用于人工修正 */
-  post(`${P}/channels/:id/credit`, (ctx) => {
+  /** 给代理（代理）充值卡密余额；amount 可为负用于人工修正 */
+  post(`${P}/agents/:id/credit`, (ctx) => {
     const admin = requireAdmin(ctx);
     const id = slash(ctx, "id");
-    const channel = findChannelById(id);
-    if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+    const agent = findAgentById(id);
+    if (!agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
     const amount = needInt(ctx, "amount", { min: -1_000_000, max: 1_000_000 });
     if (amount === 0) throw badRequest("充值/扣减数量不能为 0", "INVALID_FIELD");
 
-    const updated = rechargeChannel(id, amount);
+    const updated = rechargeAgent(id, amount);
     audit({
       actorType: "admin",
       actorId: admin.id,
       actorLabel: admin.email,
-      action: "channel.recharge",
-      targetType: "channel",
+      action: "agent.recharge",
+      targetType: "agent",
       targetId: id,
       ip: ctx.ip,
       detail: { amount, credit_after: updated?.credit ?? null },
     });
     return ok({
-      channel: updated
+      agent: updated
         ? {
             id: updated.id,
             code: updated.code,
@@ -616,9 +616,9 @@ export function registerAdminRoutes(): void {
 
   get(`${P}/prices`, (ctx) => {
     const staffCtx = requireStaff(ctx);
-    // 代理只能看自己的覆盖价；管理员可用 ?channel_id= 查指定代理（留空=全局默认价）
-    const channelId = staffCtx.isAgent ? staffCtx.channelId : q(ctx, "channel_id");
-    return ok({ items: listPrices(q(ctx, "product_id"), channelId) });
+    // 代理只能看自己的覆盖价；管理员可用 ?agent_id= 查指定代理（留空=全局默认价）
+    const agentId = staffCtx.isAgent ? staffCtx.agentId : q(ctx, "agent_id");
+    return ok({ items: listPrices(q(ctx, "product_id"), agentId) });
   });
 
   /** 设价：module_id 留空 = 该产品的默认价（对所有模块生效），填了则覆盖该模块 */
@@ -639,14 +639,14 @@ export function registerAdminRoutes(): void {
     }
     const unitPrice = needInt(ctx, "unit_price", { min: 0, max: 100_000_000 });
 
-    // channel_id 留空 = 全局默认价；填了 = 该代理的覆盖价
-    const channelIdInput = bodyStr(ctx, "channel_id", 64);
-    if (channelIdInput && !findChannelById(channelIdInput)) {
-      throw notFound("代理不存在", "CHANNEL_NOT_FOUND");
+    // agent_id 留空 = 全局默认价；填了 = 该代理的覆盖价
+    const agentIdInput = bodyStr(ctx, "agent_id", 64);
+    if (agentIdInput && !findAgentById(agentIdInput)) {
+      throw notFound("代理不存在", "AGENT_NOT_FOUND");
     }
 
     const price = upsertPrice({
-      channelId: channelIdInput ?? null,
+      agentId: agentIdInput ?? null,
       productId,
       moduleId: moduleId ?? null,
       termType,
@@ -660,7 +660,7 @@ export function registerAdminRoutes(): void {
       targetType: "price",
       targetId: price.id,
       ip: ctx.ip,
-      detail: { channel_id: channelIdInput ?? "", product_id: productId, module_id: moduleId, term_type: termType, unit_price: unitPrice },
+      detail: { agent_id: agentIdInput ?? "", product_id: productId, module_id: moduleId, term_type: termType, unit_price: unitPrice },
     });
     return ok({ price });
   });
@@ -684,11 +684,11 @@ export function registerAdminRoutes(): void {
 
   /* ---------------------------- 代理余额 ---------------------------- */
 
-  /** 单渠道充值/扣减余额（单位：分） */
-  post(`${P}/channels/:id/balance`, (ctx) => {
+  /** 单代理充值/扣减余额（单位：分） */
+  post(`${P}/agents/:id/balance`, (ctx) => {
     const admin = requireAdmin(ctx);
     const id = slash(ctx, "id");
-    if (!findChannelById(id)) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+    if (!findAgentById(id)) throw notFound("代理不存在", "AGENT_NOT_FOUND");
     const amount = needInt(ctx, "amount", { min: -100_000_000, max: 100_000_000 });
     if (amount === 0) throw badRequest("金额不能为 0", "INVALID_FIELD");
 
@@ -697,25 +697,25 @@ export function registerAdminRoutes(): void {
       actorType: "admin",
       actorId: admin.id,
       actorLabel: admin.email,
-      action: "channel.recharge_balance",
-      targetType: "channel",
+      action: "agent.recharge_balance",
+      targetType: "agent",
       targetId: id,
       ip: ctx.ip,
       detail: { amount, balance_after: updated?.balance ?? null },
     });
     return ok({
-      channel: updated
+      agent: updated
         ? { id: updated.id, code: updated.code, name: updated.name, balance: updated.balance }
         : null,
     });
   });
 
-  /** 一键批量充值：不传 channel_ids 则作用于全部渠道（统一配置） */
-  post(`${P}/channels/batch-balance`, (ctx) => {
+  /** 一键批量充值：不传 agent_ids 则作用于全部代理（统一配置） */
+  post(`${P}/agents/batch-balance`, (ctx) => {
     const admin = requireAdmin(ctx);
     const amount = needInt(ctx, "amount", { min: 1, max: 100_000_000 });
-    const ids = bodyStrArray(ctx, "channel_ids");
-    const targets = ids && ids.length ? ids : listChannels().map((c) => c.id);
+    const ids = bodyStrArray(ctx, "agent_ids");
+    const targets = ids && ids.length ? ids : listAgents().map((c) => c.id);
 
     let updated = 0;
     for (const id of targets) {
@@ -725,8 +725,8 @@ export function registerAdminRoutes(): void {
       actorType: "admin",
       actorId: admin.id,
       actorLabel: admin.email,
-      action: "channel.batch_recharge",
-      targetType: "channel",
+      action: "agent.batch_recharge",
+      targetType: "agent",
       targetId: "*",
       ip: ctx.ip,
       detail: { amount, updated },
@@ -972,26 +972,26 @@ export function registerAdminRoutes(): void {
     const note = bodyStr(ctx, "note", { max: 500 });
     const redeemBefore = isoOrNull(ctx, "redeem_before");
 
-    // v2：渠道与结算单价（单价单位：分）
-    const channelInput = bodyStr(ctx, "channel_id", 64);
+    // v2：代理与结算单价（单价单位：分）
+    const agentInput = bodyStr(ctx, "agent_id", 64);
     const unitPrice = bodyInt(ctx, "unit_price", { min: 0, max: 100_000_000 }) ?? 0;
 
-    // v4：代理只能给自己的渠道生成，且受"卡密余额"限制
+    // v4：代理只能给自己的代理生成，且受"卡密余额"限制
     const staffCtx = requireStaff(ctx);
-    let channelId: string | null = null;
+    let agentId: string | null = null;
     if (staffCtx.isAgent) {
-      if (!staffCtx.channelId) throw forbidden("代理账号未绑定渠道", "AGENT_NO_CHANNEL");
-      channelId = staffCtx.channelId;
-    } else if (channelInput) {
-      const channel = findChannelById(channelInput);
-      if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
-      channelId = channel.id;
+      if (!staffCtx.agentId) throw forbidden("代理账号未绑定代理", "AGENT_NOT_BOUND");
+      agentId = staffCtx.agentId;
+    } else if (agentInput) {
+      const agent = findAgentById(agentInput);
+      if (!agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+      agentId = agent.id;
     }
 
     const result = withTx(() => {
       // 代理生成：校验可售范围 → 按价格扣账户余额（金额）
       if (staffCtx.isAgent) {
-        if (!channelId) throw forbidden("代理账号未绑定渠道", "AGENT_NO_CHANNEL");
+        if (!agentId) throw forbidden("代理账号未绑定代理", "AGENT_NOT_BOUND");
         const profile = parseAgentProfile(staffCtx.admin.agent_profile);
         const termInfo = normalizeTerm(termTypeInput ?? null, termValueInput ?? null, days);
         const scope = checkAgentScope(profile, {
@@ -1001,7 +1001,7 @@ export function registerAdminRoutes(): void {
         });
         if (!scope.ok) throw forbidden(scope.message, scope.code);
 
-        const unit = resolveUnitPrice(productId, moduleIds, termInfo.termType, channelId);
+        const unit = resolveUnitPrice(productId, moduleIds, termInfo.termType, agentId);
         if (unit === null) {
           throw conflict("该产品 / 卡类型尚未配置价格，请联系管理员", "PRICE_NOT_CONFIGURED", {
             product_id: productId,
@@ -1009,7 +1009,7 @@ export function registerAdminRoutes(): void {
           });
         }
         const amount = totalPrice(unit, termInfo.termValue, count);
-        const paid = consumeBalance(channelId, amount);
+        const paid = consumeBalance(agentId, amount);
         if (!paid.ok) {
           throw conflict(
             `账户余额不足（当前 ¥${(paid.balance / 100).toFixed(2)}，本次需要 ¥${(amount / 100).toFixed(2)}）`,
@@ -1030,7 +1030,7 @@ export function registerAdminRoutes(): void {
         note,
         expiresAt: redeemBefore,
         createdBy: admin.id,
-        channelId,
+        agentId,
         unitPrice,
         termType: (termTypeInput ?? "day") as TermType,
         termValue: termValueInput ?? undefined,
@@ -1051,7 +1051,7 @@ export function registerAdminRoutes(): void {
         days,
         seats,
         modules: moduleIds.length,
-        channel_id: channelId,
+        agent_id: agentId,
         unit_price: unitPrice,
       },
     });
@@ -1073,8 +1073,8 @@ export function registerAdminRoutes(): void {
       batchId: q(ctx, "batch_id"),
       status: q(ctx, "status"),
       q: q(ctx, "q"),
-      // 代理只能看到自己渠道的卡密
-      channelId: staffCtx.isAgent ? staffCtx.channelId : q(ctx, "channel_id"),
+      // 代理只能看到自己代理的卡密
+      agentId: staffCtx.isAgent ? staffCtx.agentId : q(ctx, "agent_id"),
       page,
       pageSize,
     });
@@ -1306,7 +1306,7 @@ export function registerAdminRoutes(): void {
       status: q(ctx, "status"),
       productId: q(ctx, "product_id"),
       customerId: q(ctx, "customer_id"),
-      channelId: q(ctx, "channel_id"),
+      agentId: q(ctx, "agent_id"),
       kind: q(ctx, "kind"),
       expiringWithinDays: expiring === null ? null : Number.parseInt(expiring, 10),
       page,
@@ -1538,14 +1538,14 @@ export function registerAdminRoutes(): void {
     const seats = bodyInt(ctx, "seats", { min: 1, max: 100 }) ?? 1;
     const note = bodyStr(ctx, "note", { max: 500 });
 
-    // v2：可选归属渠道与结算单价（单价单位：分）
-    const channelInput = bodyStr(ctx, "channel_id", 64);
+    // v2：可选归属代理与结算单价（单价单位：分）
+    const agentInput = bodyStr(ctx, "agent_id", 64);
     const unitPrice = bodyInt(ctx, "unit_price", { min: 0, max: 100_000_000 }) ?? 0;
-    let channelId: string | null = null;
-    if (channelInput) {
-      const channel = findChannelById(channelInput);
-      if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
-      channelId = channel.id;
+    let agentId: string | null = null;
+    if (agentInput) {
+      const agent = findAgentById(agentInput);
+      if (!agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+      agentId = agent.id;
     }
 
     const licenseKey = generateLicenseKey();
@@ -1560,7 +1560,7 @@ export function registerAdminRoutes(): void {
         days,
         keyHash: sha256hex(licenseKey),
         note: note ?? "后台手动开通",
-        channelId,
+        agentId,
         unitPrice,
         termType: (termTypeInput ?? "day") as TermType,
         termValue: termValueInput ?? undefined,
@@ -1580,7 +1580,7 @@ export function registerAdminRoutes(): void {
         customer: customer.email,
         days,
         seats,
-        channel_id: channelId,
+        agent_id: agentId,
         unit_price: unitPrice,
       },
     });
@@ -1746,13 +1746,13 @@ export function registerAdminRoutes(): void {
     const termValue = needInt(ctx, "term_value", { min: 1, max: 100000 });
     const count = bodyInt(ctx, "count", { min: 1, max: 5000 }) ?? 1;
 
-    const unit = resolveUnitPrice(productId, moduleIds, termType, staffCtx.channelId);
+    const unit = resolveUnitPrice(productId, moduleIds, termType, staffCtx.agentId);
     const total = unit === null ? null : totalPrice(unit, termValue, count);
 
     // 只有代理需要付费；管理员生成属于赠送，不显示金额
     const payable = staffCtx.isAgent;
-    const channel = payable && staffCtx.channelId ? findChannelById(staffCtx.channelId) : null;
-    const balance = channel ? channel.balance : null;
+    const agent = payable && staffCtx.agentId ? findAgentById(staffCtx.agentId) : null;
+    const balance = agent ? agent.balance : null;
 
     return ok({
       payable,

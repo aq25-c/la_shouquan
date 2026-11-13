@@ -37,9 +37,9 @@ let licenseId = "";
 let licenseFile = "";
 let publicKeyPem = "";
 let customerToken = "";
-/* 渠道 / 分销 */
-let channelId = "";
-let channelCdkCodes: string[] = [];
+/* 代理 / 分销 */
+let agentId = "";
+let agentCdkCodes: string[] = [];
 /* 客户/试用 */
 let adminCreatedCustomerId = "";
 let trialLicenseId = "";
@@ -533,48 +533,48 @@ test("参数校验与错误结构", async () => {
   assert.equal(unknownPath.json.error.code, "NOT_FOUND");
 });
 
-/* ==================== 渠道 / 分销 ==================== */
+/* ==================== 代理 / 分销 ==================== */
 
-test("渠道：创建、编码校验与列表统计", async () => {
+test("代理：创建、编码校验与列表统计", async () => {
   const created = await api(
     "POST",
-    "/admin/api/channels",
-    { code: "TAOBAO", name: "淘宝旗舰店", contact: "张三", phone: "13800000000", note: "年框渠道" },
+    "/admin/api/agents",
+    { code: "TAOBAO", name: "淘宝旗舰店", contact: "张三", phone: "13800000000", note: "年框代理" },
     adminToken,
   );
   assert.equal(created.status, 201);
-  channelId = created.json.data.channel.id;
-  assert.equal(created.json.data.channel.code, "taobao", "渠道编码应自动转小写");
-  assert.equal(created.json.data.channel.status, "active");
+  agentId = created.json.data.agent.id;
+  assert.equal(created.json.data.agent.code, "taobao", "代理编码应自动转小写");
+  assert.equal(created.json.data.agent.status, "active");
 
-  const dup = await api("POST", "/admin/api/channels", { code: "taobao", name: "重复" }, adminToken);
+  const dup = await api("POST", "/admin/api/agents", { code: "taobao", name: "重复" }, adminToken);
   assert.equal(dup.status, 409);
   assert.equal(dup.json.error.code, "CODE_TAKEN");
 
-  const bad = await api("POST", "/admin/api/channels", { code: "BAD CODE!", name: "非法" }, adminToken);
+  const bad = await api("POST", "/admin/api/agents", { code: "BAD CODE!", name: "非法" }, adminToken);
   assert.equal(bad.status, 400);
   assert.equal(bad.json.error.code, "INVALID_CODE");
 
-  const list = await api("GET", "/admin/api/channels", undefined, adminToken);
+  const list = await api("GET", "/admin/api/agents", undefined, adminToken);
   assert.equal(list.status, 200);
-  assert.ok(list.json.data.items.some((c: Json) => c.id === channelId));
-  assert.ok(list.json.data.summary.channels >= 1);
+  assert.ok(list.json.data.items.some((c: Json) => c.id === agentId));
+  assert.ok(list.json.data.summary.agents >= 1);
 
-  const detail = await api("GET", `/admin/api/channels/${channelId}`, undefined, adminToken);
+  const detail = await api("GET", `/admin/api/agents/${agentId}`, undefined, adminToken);
   assert.equal(detail.status, 200);
-  assert.equal(detail.json.data.channel.code, "taobao");
-  assert.equal(detail.json.data.channel.cdk_total, 0, "新渠道还没有 CDK");
+  assert.equal(detail.json.data.agent.code, "taobao");
+  assert.equal(detail.json.data.agent.cdk_total, 0, "新代理还没有 CDK");
 
-  const missing = await api("GET", "/admin/api/channels/chn_not_exist", undefined, adminToken);
+  const missing = await api("GET", "/admin/api/agents/chn_not_exist", undefined, adminToken);
   assert.equal(missing.status, 404);
-  assert.equal(missing.json.error.code, "CHANNEL_NOT_FOUND");
+  assert.equal(missing.json.error.code, "AGENT_NOT_FOUND");
 });
 
-test("渠道：CDK 批次归属渠道并携带结算单价", async () => {
-  // v4：渠道生成卡密要扣卡密余额，先充值
-  const recharge = await api("POST", `/admin/api/channels/${channelId}/credit`, { amount: 100 }, adminToken);
+test("代理：CDK 批次归属代理并携带结算单价", async () => {
+  // v4：代理生成卡密要扣卡密余额，先充值
+  const recharge = await api("POST", `/admin/api/agents/${agentId}/credit`, { amount: 100 }, adminToken);
   assert.equal(recharge.status, 200);
-  assert.equal(recharge.json.data.channel.credit, 100);
+  assert.equal(recharge.json.data.agent.credit, 100);
 
   const gen = await api(
     "POST",
@@ -585,60 +585,60 @@ test("渠道：CDK 批次归属渠道并携带结算单价", async () => {
       days: 365,
       seats: 1,
       count: 2,
-      note: "渠道批次",
-      channel_id: channelId,
+      note: "代理批次",
+      agent_id: agentId,
       unit_price: 19900, // 199.00 元
     },
     adminToken,
   );
   assert.equal(gen.status, 201);
-  assert.equal(gen.json.data.batch.channel_id, channelId);
+  assert.equal(gen.json.data.batch.agent_id, agentId);
   assert.equal(gen.json.data.batch.unit_price, 19900);
-  channelCdkCodes = gen.json.data.codes;
+  agentCdkCodes = gen.json.data.codes;
 
-  const filtered = await api("GET", `/admin/api/cdks?channel_id=${channelId}`, undefined, adminToken);
+  const filtered = await api("GET", `/admin/api/cdks?agent_id=${agentId}`, undefined, adminToken);
   assert.equal(filtered.json.data.total, 2);
-  assert.equal(filtered.json.data.items[0].channel_code, "taobao");
+  assert.equal(filtered.json.data.items[0].agent_code, "taobao");
   assert.equal(filtered.json.data.items[0].unit_price, 19900);
 
-  const direct = await api("GET", "/admin/api/cdks?channel_id=__none__", undefined, adminToken);
+  const direct = await api("GET", "/admin/api/cdks?agent_id=__none__", undefined, adminToken);
   assert.ok(direct.json.data.items.length > 0, "之前生成的 CDK 都属于直销");
-  assert.ok(direct.json.data.items.every((c: Json) => c.channel_id === null));
+  assert.ok(direct.json.data.items.every((c: Json) => c.agent_id === null));
 
-  const badChannel = await api(
+  const badAgent = await api(
     "POST",
     "/admin/api/cdks/generate",
-    { product_id: productId, module_ids: [], days: 30, count: 1, channel_id: "chn_not_exist" },
+    { product_id: productId, module_ids: [], days: 30, count: 1, agent_id: "chn_not_exist" },
     adminToken,
   );
-  assert.equal(badChannel.status, 404);
-  assert.equal(badChannel.json.error.code, "CHANNEL_NOT_FOUND");
+  assert.equal(badAgent.status, 404);
+  assert.equal(badAgent.json.error.code, "AGENT_NOT_FOUND");
 });
 
-test("渠道：激活时继承渠道与单价，并按渠道聚合统计", async () => {
+test("代理：激活时继承代理与单价，并按代理聚合统计", async () => {
   const act = await api("POST", "/api/v1/licenses/activate", {
-    cdk: channelCdkCodes[0],
+    cdk: agentCdkCodes[0],
     device_id: "CHAN-DEV-1",
-    device_name: "渠道测试机",
-    email: "channel-buyer@test.local",
+    device_name: "代理测试机",
+    email: "agent-buyer@test.local",
     password: "ChanBuyer123",
-    name: "渠道客户",
+    name: "代理客户",
   });
   assert.equal(act.status, 201);
-  assert.equal(act.json.data.license.channel_id, channelId, "授权应继承 CDK 批次的渠道");
+  assert.equal(act.json.data.license.agent_id, agentId, "授权应继承 CDK 批次的代理");
   assert.equal(act.json.data.license.unit_price, 19900, "授权应继承单价");
 
-  const byChannel = await api("GET", `/admin/api/licenses?channel_id=${channelId}`, undefined, adminToken);
-  assert.equal(byChannel.status, 200);
-  assert.equal(byChannel.json.data.total, 1);
-  assert.equal(byChannel.json.data.items[0].channel_code, "taobao");
-  assert.equal(byChannel.json.data.items[0].channel_name, "淘宝旗舰店");
+  const byAgent = await api("GET", `/admin/api/licenses?agent_id=${agentId}`, undefined, adminToken);
+  assert.equal(byAgent.status, 200);
+  assert.equal(byAgent.json.data.total, 1);
+  assert.equal(byAgent.json.data.items[0].agent_code, "taobao");
+  assert.equal(byAgent.json.data.items[0].agent_name, "淘宝旗舰店");
 
-  const direct = await api("GET", "/admin/api/licenses?channel_id=__none__", undefined, adminToken);
-  assert.ok(direct.json.data.items.every((l: Json) => l.channel_id === null), "直销筛选不应包含渠道授权");
+  const direct = await api("GET", "/admin/api/licenses?agent_id=__none__", undefined, adminToken);
+  assert.ok(direct.json.data.items.every((l: Json) => l.agent_id === null), "直销筛选不应包含代理授权");
 
-  const chDetail = await api("GET", `/admin/api/channels/${channelId}`, undefined, adminToken);
-  const c = chDetail.json.data.channel;
+  const chDetail = await api("GET", `/admin/api/agents/${agentId}`, undefined, adminToken);
+  const c = chDetail.json.data.agent;
   assert.equal(c.cdk_total, 2);
   assert.equal(c.cdk_used, 1);
   assert.equal(c.cdk_unused, 1);
@@ -648,36 +648,36 @@ test("渠道：激活时继承渠道与单价，并按渠道聚合统计", async
   assert.ok(Math.abs(c.activation_rate - 0.5) < 1e-9, "激活率 = 已核销 / 已生成");
 
   const overview = await api("GET", "/admin/api/overview", undefined, adminToken);
-  assert.ok(overview.json.data.channels.attributed_licenses >= 1);
-  assert.ok(overview.json.data.channels.revenue_total >= 19900);
+  assert.ok(overview.json.data.agents.attributed_licenses >= 1);
+  assert.ok(overview.json.data.agents.revenue_total >= 19900);
 });
 
-test("渠道：被引用时禁止删除，可改为停用", async () => {
-  const del = await api("DELETE", `/admin/api/channels/${channelId}`, undefined, adminToken);
+test("代理：被引用时禁止删除，可改为停用", async () => {
+  const del = await api("DELETE", `/admin/api/agents/${agentId}`, undefined, adminToken);
   assert.equal(del.status, 409);
-  assert.equal(del.json.error.code, "CHANNEL_IN_USE");
+  assert.equal(del.json.error.code, "AGENT_IN_USE");
   assert.ok(del.json.error.details.batches >= 1);
   assert.ok(del.json.error.details.licenses >= 1);
 
   const patched = await api(
     "PATCH",
-    `/admin/api/channels/${channelId}`,
-    { status: "disabled", note: "渠道停用测试" },
+    `/admin/api/agents/${agentId}`,
+    { status: "disabled", note: "代理停用测试" },
     adminToken,
   );
   assert.equal(patched.status, 200);
-  assert.equal(patched.json.data.channel.status, "disabled");
-  assert.equal(patched.json.data.channel.note, "渠道停用测试");
+  assert.equal(patched.json.data.agent.status, "disabled");
+  assert.equal(patched.json.data.agent.note, "代理停用测试");
 
-  // 没被引用的渠道可以删除
-  const tmp = await api("POST", "/admin/api/channels", { code: "tmp-chan", name: "临时渠道" }, adminToken);
+  // 没被引用的代理可以删除
+  const tmp = await api("POST", "/admin/api/agents", { code: "tmp-chan", name: "临时代理" }, adminToken);
   assert.equal(tmp.status, 201);
-  const delTmp = await api("DELETE", `/admin/api/channels/${tmp.json.data.channel.id}`, undefined, adminToken);
+  const delTmp = await api("DELETE", `/admin/api/agents/${tmp.json.data.agent.id}`, undefined, adminToken);
   assert.equal(delTmp.status, 200);
   assert.equal(delTmp.json.data.deleted, true);
 });
 
-test("渠道：手动开通授权也可归属渠道与单价", async () => {
+test("代理：手动开通授权也可归属代理与单价", async () => {
   const manual = await api(
     "POST",
     "/admin/api/licenses",
@@ -687,24 +687,24 @@ test("渠道：手动开通授权也可归属渠道与单价", async () => {
       days: 30,
       seats: 1,
       module_ids: [moduleIds[0]],
-      channel_id: channelId,
+      agent_id: agentId,
       unit_price: 9900,
     },
     adminToken,
   );
   assert.equal(manual.status, 201);
-  assert.equal(manual.json.data.license.channel_id, channelId);
+  assert.equal(manual.json.data.license.agent_id, agentId);
   assert.equal(manual.json.data.license.unit_price, 9900);
 
-  const chDetail = await api("GET", `/admin/api/channels/${channelId}`, undefined, adminToken);
-  assert.equal(chDetail.json.data.channel.license_total, 2);
-  assert.equal(chDetail.json.data.channel.revenue_total, 19900 + 9900);
+  const chDetail = await api("GET", `/admin/api/agents/${agentId}`, undefined, adminToken);
+  assert.equal(chDetail.json.data.agent.license_total, 2);
+  assert.equal(chDetail.json.data.agent.revenue_total, 19900 + 9900);
 });
 
-test("渠道：审计日志记录了渠道操作", async () => {
+test("代理：审计日志记录了代理操作", async () => {
   const auditList = await api("GET", "/admin/api/audit?page_size=100", undefined, adminToken);
   const actions = auditList.json.data.items.map((i: Json) => i.action);
-  for (const expected of ["channel.create", "channel.update", "channel.delete", "cdk.generate", "license.create"]) {
+  for (const expected of ["agent.create", "agent.update", "agent.delete", "cdk.generate", "license.create"]) {
     assert.ok(actions.includes(expected), `审计日志应包含 ${expected}`);
   }
 });
@@ -996,16 +996,16 @@ test("员工账号：按菜单/功能权限受限", async () => {
   assert.equal(afterDisable.status, 401, "停用员工后其会话应立即失效");
 });
 
-test("代理账号：绑定渠道、权限固定、只能碰卡密", async () => {
+test("代理账号：绑定代理、权限固定、只能碰卡密", async () => {
   const created = await api(
     "POST",
     "/admin/api/staff",
-    { email: "agent-e2e@test.local", password: "AgentPass123", name: "代理甲", role: "agent", channel_id: channelId },
+    { email: "agent-e2e@test.local", password: "AgentPass123", name: "代理甲", role: "agent", agent_id: agentId },
     adminToken,
   );
   assert.equal(created.status, 201);
   assert.equal(created.json.data.staff.role, "agent");
-  assert.equal(created.json.data.staff.channel_id, channelId);
+  assert.equal(created.json.data.staff.agent_id, agentId);
   assert.deepEqual(created.json.data.staff.permissions.menus, ["cdks"], "代理只看卡密页");
 
   const login = await api("POST", "/admin/api/auth/login", {
@@ -1015,7 +1015,7 @@ test("代理账号：绑定渠道、权限固定、只能碰卡密", async () =>
   const agentToken = login.json.data.token;
 
   // 代理被限制在卡密相关接口
-  for (const p of ["/admin/api/licenses", "/admin/api/customers", "/admin/api/channels"]) {
+  for (const p of ["/admin/api/licenses", "/admin/api/customers", "/admin/api/agents"]) {
     const res = await api("GET", p, undefined, agentToken);
     assert.equal(res.status, 403, `${p} 应被代理拒绝`);
   }
@@ -1026,14 +1026,14 @@ test("代理账号：绑定渠道、权限固定、只能碰卡密", async () =>
 });
 
 test("员工/代理创建的参数校验", async () => {
-  const noChannel = await api(
+  const noAgent = await api(
     "POST",
     "/admin/api/staff",
     { email: "agent-noc@test.local", password: "AgentPass123", role: "agent" },
     adminToken,
   );
-  assert.equal(noChannel.status, 400);
-  assert.equal(noChannel.json.error.code, "MISSING_FIELD");
+  assert.equal(noAgent.status, 400);
+  assert.equal(noAgent.json.error.code, "MISSING_FIELD");
 
   const badRole = await api(
     "POST",
@@ -1170,30 +1170,30 @@ test("非次数型授权调用消耗接口被拒", async () => {
 /* ==================== 代理额度 ==================== */
 
 test("管理员出卡不扣代理额度（属赠送）", async () => {
-  const ch = await api("POST", "/admin/api/channels", { code: "gift-test", name: "赠送测试" }, adminToken);
-  const cid = ch.json.data.channel.id;
+  const ch = await api("POST", "/admin/api/agents", { code: "gift-test", name: "赠送测试" }, adminToken);
+  const cid = ch.json.data.agent.id;
 
   const gen = await api(
     "POST",
     "/admin/api/cdks/generate",
-    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 5, channel_id: cid },
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 5, agent_id: cid },
     adminToken,
   );
   assert.equal(gen.status, 201, "余额为 0 时管理员仍可出卡");
 
-  const detail = await api("GET", `/admin/api/channels/${cid}`, undefined, adminToken);
-  assert.equal(detail.json.data.channel.balance, 0, "管理员出卡不应扣金额");
-  assert.equal(detail.json.data.channel.credit, 0, "也不应扣张数");
+  const detail = await api("GET", `/admin/api/agents/${cid}`, undefined, adminToken);
+  assert.equal(detail.json.data.agent.balance, 0, "管理员出卡不应扣金额");
+  assert.equal(detail.json.data.agent.credit, 0, "也不应扣张数");
 });
 
-test("代理登录后生成卡密受自己渠道余额限制", async () => {
+test("代理登录后生成卡密受自己代理余额限制", async () => {
   // v5：代理按金额扣费，先配价并充值余额
   await api("POST", "/admin/api/prices", { product_id: productId, term_type: "day", unit_price: 50 }, adminToken);
-  await api("POST", `/admin/api/channels/${channelId}/balance`, { amount: 500000 }, adminToken);  // 用已充值的渠道建代理（此时余额 5）
+  await api("POST", `/admin/api/agents/${agentId}/balance`, { amount: 500000 }, adminToken);  // 用已充值的代理建代理（此时余额 5）
   const created = await api(
     "POST",
     "/admin/api/staff",
-    { email: "agent-credit@test.local", password: "AgentCredit123", role: "agent", channel_id: channelId },
+    { email: "agent-credit@test.local", password: "AgentCredit123", role: "agent", agent_id: agentId },
     adminToken,
   );
   assert.equal(created.status, 201);
@@ -1204,7 +1204,7 @@ test("代理登录后生成卡密受自己渠道余额限制", async () => {
   });
   const agentToken = login.json.data.token;
 
-  // 代理生成的卡密自动归属自己渠道
+  // 代理生成的卡密自动归属自己代理
   const gen = await api(
     "POST",
     "/admin/api/cdks/generate",
@@ -1212,14 +1212,14 @@ test("代理登录后生成卡密受自己渠道余额限制", async () => {
     agentToken,
   );
   assert.equal(gen.status, 201);
-  assert.equal(gen.json.data.batch.channel_id, channelId, "代理生成的卡密必须归属自己的渠道");
+  assert.equal(gen.json.data.batch.agent_id, agentId, "代理生成的卡密必须归属自己的代理");
 
-  // 代理只能看到自己渠道的卡密（即使传了 __none__ 也会被强制回自己渠道）
-  const list = await api("GET", "/admin/api/cdks?channel_id=__none__", undefined, agentToken);
-  assert.ok(list.json.data.items.length > 0, "代理应能看到自己渠道的卡密");
+  // 代理只能看到自己代理的卡密（即使传了 __none__ 也会被强制回自己代理）
+  const list = await api("GET", "/admin/api/cdks?agent_id=__none__", undefined, agentToken);
+  assert.ok(list.json.data.items.length > 0, "代理应能看到自己代理的卡密");
   assert.ok(
-    list.json.data.items.every((c: Json) => c.channel_id === channelId),
-    "代理不能看到其它渠道或直销的卡密",
+    list.json.data.items.every((c: Json) => c.agent_id === agentId),
+    "代理不能看到其它代理或直销的卡密",
   );
 });
 
@@ -1267,8 +1267,8 @@ test("代理按价格扣费：可售范围、价格缺失、余额不足、批�
   const prices = await api("GET", `/admin/api/prices?product_id=${productId}`, undefined, adminToken);
   assert.ok(prices.json.data.items.length >= 3);
 
-  const ch = await api("POST", "/admin/api/channels", { code: "agent-pay", name: "按价代理" }, adminToken);
-  const cid = ch.json.data.channel.id;
+  const ch = await api("POST", "/admin/api/agents", { code: "agent-pay", name: "按价代理" }, adminToken);
+  const cid = ch.json.data.agent.id;
 
   const agent = await api(
     "POST",
@@ -1277,7 +1277,7 @@ test("代理按价格扣费：可售范围、价格缺失、余额不足、批�
       email: "agent-pay@test.local",
       password: "AgentPay123",
       role: "agent",
-      channel_id: cid,
+      agent_id: cid,
       term_types: ["day", "month"],
     },
     adminToken,
@@ -1300,8 +1300,8 @@ test("代理按价格扣费：可售范围、价格缺失、余额不足、批�
   assert.equal(noBal.json.error.details.needed, 6000, "应使用模块覆盖价 200×30");
 
   // 充值 100 元
-  const topup = await api("POST", `/admin/api/channels/${cid}/balance`, { amount: 10000 }, adminToken);
-  assert.equal(topup.json.data.channel.balance, 10000);
+  const topup = await api("POST", `/admin/api/agents/${cid}/balance`, { amount: 10000 }, adminToken);
+  assert.equal(topup.json.data.agent.balance, 10000);
 
   // 生成成功并扣费
   const ok = await api(
@@ -1311,8 +1311,8 @@ test("代理按价格扣费：可售范围、价格缺失、余额不足、批�
     agentToken,
   );
   assert.equal(ok.status, 201);
-  const after = await api("GET", `/admin/api/channels/${cid}`, undefined, adminToken);
-  assert.equal(after.json.data.channel.balance, 4000, "10000 - 6000 = 4000");
+  const after = await api("GET", `/admin/api/agents/${cid}`, undefined, adminToken);
+  assert.equal(after.json.data.agent.balance, 4000, "10000 - 6000 = 4000");
 
   // 卡类型不在可售范围
   const badTerm = await api(
@@ -1336,11 +1336,11 @@ test("代理按价格扣费：可售范围、价格缺失、余额不足、批�
   assert.equal(noPrice.json.error.code, "PRICE_NOT_CONFIGURED");
 
   // 一键批量充值
-  const batch = await api("POST", "/admin/api/channels/batch-balance", { amount: 5000 }, adminToken);
+  const batch = await api("POST", "/admin/api/agents/batch-balance", { amount: 5000 }, adminToken);
   assert.equal(batch.status, 200);
-  assert.ok(batch.json.data.updated >= 2, "应对全部渠道生效");
-  const cidAfter = await api("GET", `/admin/api/channels/${cid}`, undefined, adminToken);
-  assert.equal(cidAfter.json.data.channel.balance, 9000, "4000 + 5000");
+  assert.ok(batch.json.data.updated >= 2, "应对全部代理生效");
+  const cidAfter = await api("GET", `/admin/api/agents/${cid}`, undefined, adminToken);
+  assert.equal(cidAfter.json.data.agent.balance, 9000, "4000 + 5000");
 });
 
 
@@ -1349,8 +1349,8 @@ test("代理按价格扣费：可售范围、价格缺失、余额不足、批�
 test("价格三层：代理覆盖优先、未配则回落全局；员工列表不含代理；产品试用配置", async () => {
   await api("POST", "/admin/api/prices", { product_id: productId, term_type: "day", unit_price: 100 }, adminToken);
 
-  const ch = await api("POST", "/admin/api/channels", { code: "tier-test", name: "分层定价代理" }, adminToken);
-  const cid = ch.json.data.channel.id;
+  const ch = await api("POST", "/admin/api/agents", { code: "tier-test", name: "分层定价代理" }, adminToken);
+  const cid = ch.json.data.agent.id;
 
   await api(
     "POST",
@@ -1359,7 +1359,7 @@ test("价格三层：代理覆盖优先、未配则回落全局；员工列表�
       email: "tier-agent@test.local",
       password: "TierAgent123",
       role: "agent",
-      channel_id: cid,
+      agent_id: cid,
       term_types: ["day"],
     },
     adminToken,
@@ -1382,7 +1382,7 @@ test("价格三层：代理覆盖优先、未配则回落全局；员工列表�
   await api(
     "POST",
     "/admin/api/prices",
-    { channel_id: cid, product_id: productId, term_type: "day", unit_price: 60 },
+    { agent_id: cid, product_id: productId, term_type: "day", unit_price: 60 },
     adminToken,
   );
   const estOwn = await api(

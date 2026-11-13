@@ -3,7 +3,7 @@
  *
  * - 目录权限（menus）：员工能看到的后台页面
  * - 软件功能授权（features）：员工能执行的操作
- * - 代理（role = agent）：只能看 CDK 页并生成卡密，且数据被限制在自己渠道
+ * - 代理（role = agent）：只能看 CDK 页并生成卡密，且数据被限制在自己代理
  */
 
 export type StaffRole = "owner" | "staff" | "agent";
@@ -15,7 +15,7 @@ export const MENUS = [
   { id: "overview", label: "概览" },
   { id: "products", label: "产品与模块" },
   { id: "cdks", label: "CDK" },
-  { id: "channels", label: "渠道 / 代理" },
+  { id: "agents", label: "代理 / 代理" },
   { id: "licenses", label: "授权" },
   { id: "customers", label: "客户" },
   { id: "audit", label: "审计日志" },
@@ -35,7 +35,7 @@ export const FEATURES = [
   { id: "license.create", label: "手动开通授权" },
   { id: "customer.manage", label: "新增与编辑客户" },
   { id: "customer.expiry", label: "调整客户到期" },
-  { id: "channel.manage", label: "渠道维护与充值" },
+  { id: "agent.manage", label: "代理维护与充值" },
   { id: "trial.config", label: "修改试用配置" },
   { id: "staff.manage", label: "员工与代理管理" },
   { id: "audit.view", label: "查看审计日志" },
@@ -174,7 +174,7 @@ const ADMIN_FEATURE_RULES: { pattern: RegExp; feature: string }[] = [
   { pattern: /^(POST|GET) \/admin\/api\/licenses\/[^/]+\/devices(\/.*)?$/, feature: "license.device" },
   { pattern: /^POST \/admin\/api\/licenses\/[^/]+\/(extend|revoke|rotate-key|reissue|reset-devices)$/, feature: "license.manage" },
   { pattern: /^PATCH \/admin\/api\/licenses\/[^/]+$/, feature: "license.manage" },
-  { pattern: /^(POST|PATCH|DELETE) \/admin\/api\/channels(\/.*)?$/, feature: "channel.manage" },
+  { pattern: /^(POST|PATCH|DELETE) \/admin\/api\/agents(\/.*)?$/, feature: "agent.manage" },
   { pattern: /^PATCH \/admin\/api\/settings\/trial$/, feature: "trial.config" },
   { pattern: /^(GET|POST|PATCH|DELETE) \/admin\/api\/staff(\/.*)?$/, feature: "staff.manage" },
   { pattern: /^(GET|POST) \/admin\/api\/admins$/, feature: "staff.manage" },

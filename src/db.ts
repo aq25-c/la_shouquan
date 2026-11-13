@@ -168,10 +168,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action, at DESC);
 `;
 
 /**
- * v2：渠道 / 分销管理
- *   - channels：渠道主数据
- *   - cdk_batches.channel_id / unit_price：批次归属渠道与结算单价（单位：分）
- *   - licenses.channel_id / unit_price：激活时从批次继承，用于按渠道统计营收
+ * v2：代理 / 分销管理
+ *   - channels：代理主数据
+ *   - cdk_batches.channel_id / unit_price：批次归属代理与结算单价（单位：分）
+ *   - licenses.channel_id / unit_price：激活时从批次继承，用于按代理统计营收
  */
 const SCHEMA_V2 = `
 CREATE TABLE IF NOT EXISTS channels (
@@ -214,7 +214,7 @@ CREATE INDEX IF NOT EXISTS idx_licenses_kind ON licenses(kind, created_at DESC);
  * v4：员工/代理权限体系 + 卡密计费类型 + 代理额度
  *   - admin_users.role: owner / staff（员工）/ agent（代理）
  *   - admin_users.permissions: JSON { menus[], features[] }
- *   - admin_users.channel_id: 代理关联的渠道
+ *   - admin_users.channel_id: 代理关联的代理
  *   - term_type: day / month / year / hour / count（term_value 为空时回落到 days）
  *   - licenses.max_usages / used_usages: 次数型授权的总额度与已用量
  *   - channels.credit: 代理的卡密余额（单位：张）
@@ -290,6 +290,32 @@ CREATE INDEX IF NOT EXISTS idx_prices_channel ON agent_prices(channel_id, produc
 ALTER TABLE products ADD COLUMN trial_config TEXT NOT NULL DEFAULT '';
 `;
 
+/**
+ * v7：概念统一——「代理」全部改名为「代理」
+ *   - 表 channels → channels
+ *   - 各表外键列 channel_id → channel_id
+ *   - 相关索引重建为新名字
+ * 注意：SQLite 的 RENAME 会自动同步索引/外键定义中的表名与列名，这里仅统一索引名称。
+ */
+const SCHEMA_V7 = `
+ALTER TABLE channels RENAME TO agents;
+ALTER TABLE cdk_batches RENAME COLUMN channel_id TO agent_id;
+ALTER TABLE licenses RENAME COLUMN channel_id TO agent_id;
+ALTER TABLE admin_users RENAME COLUMN channel_id TO agent_id;
+ALTER TABLE agent_prices RENAME COLUMN channel_id TO agent_id;
+
+DROP INDEX IF EXISTS idx_channels_status;
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status, created_at DESC);
+DROP INDEX IF EXISTS idx_cdk_batches_channel;
+CREATE INDEX IF NOT EXISTS idx_cdk_batches_agent ON cdk_batches(agent_id, created_at DESC);
+DROP INDEX IF EXISTS idx_licenses_channel;
+CREATE INDEX IF NOT EXISTS idx_licenses_agent ON licenses(agent_id, created_at DESC);
+DROP INDEX IF EXISTS idx_admin_channel;
+CREATE INDEX IF NOT EXISTS idx_admin_agent ON admin_users(agent_id);
+DROP INDEX IF EXISTS idx_prices_channel;
+CREATE INDEX IF NOT EXISTS idx_prices_agent ON agent_prices(agent_id, product_id);
+`;
+
 export function openDb(path: string): DatabaseSync {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
@@ -326,6 +352,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 4) runMigration(db, SCHEMA_V4, 4);
   if (version < 5) runMigration(db, SCHEMA_V5, 5);
   if (version < 6) runMigration(db, SCHEMA_V6, 6);
+  if (version < 7) runMigration(db, SCHEMA_V7, 7);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

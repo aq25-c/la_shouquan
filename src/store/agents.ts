@@ -1,10 +1,10 @@
-/** 渠道 / 分销：渠道主数据，以及按渠道聚合的销售统计。 */
+/** 代理 / 分销：代理主数据，以及按代理聚合的销售统计。 */
 import { db, scalar } from "../db.ts";
 import { DAY, newId, nowIso, nz } from "../util.ts";
-import type { ChannelRow } from "../types.ts";
+import type { AgentRow } from "../types.ts";
 
-/** 渠道 + 统计（金额单位统一为「分」） */
-export type ChannelListItem = ChannelRow & {
+/** 代理 + 统计（金额单位统一为「分」） */
+export type AgentListItem = AgentRow & {
   batch_count: number;
   cdk_total: number;
   cdk_used: number;
@@ -20,30 +20,30 @@ export type ChannelListItem = ChannelRow & {
   activation_rate: number;
 };
 
-/** 统计子查询：所有渠道共用同一套口径，口径变化只需改这里。 */
-function channelStatsSelect(): string {
+/** 统计子查询：所有代理共用同一套口径，口径变化只需改这里。 */
+function agentStatsSelect(): string {
   return `
-    (SELECT COUNT(*) FROM cdk_batches b WHERE b.channel_id = ch.id) AS batch_count,
+    (SELECT COUNT(*) FROM cdk_batches b WHERE b.agent_id = ch.id) AS batch_count,
     (SELECT COUNT(*) FROM cdks k JOIN cdk_batches b ON b.id = k.batch_id
-       WHERE b.channel_id = ch.id) AS cdk_total,
+       WHERE b.agent_id = ch.id) AS cdk_total,
     (SELECT COUNT(*) FROM cdks k JOIN cdk_batches b ON b.id = k.batch_id
-       WHERE b.channel_id = ch.id AND k.status = 'used') AS cdk_used,
+       WHERE b.agent_id = ch.id AND k.status = 'used') AS cdk_used,
     (SELECT COUNT(*) FROM cdks k JOIN cdk_batches b ON b.id = k.batch_id
-       WHERE b.channel_id = ch.id AND k.status = 'unused') AS cdk_unused,
-    (SELECT COUNT(*) FROM licenses l WHERE l.channel_id = ch.id) AS license_total,
+       WHERE b.agent_id = ch.id AND k.status = 'unused') AS cdk_unused,
+    (SELECT COUNT(*) FROM licenses l WHERE l.agent_id = ch.id) AS license_total,
     (SELECT COUNT(*) FROM licenses l
-       WHERE l.channel_id = ch.id AND l.status = 'active' AND l.expires_at > ?) AS license_active,
-    (SELECT COALESCE(SUM(l.unit_price), 0) FROM licenses l WHERE l.channel_id = ch.id) AS revenue_total,
+       WHERE l.agent_id = ch.id AND l.status = 'active' AND l.expires_at > ?) AS license_active,
+    (SELECT COALESCE(SUM(l.unit_price), 0) FROM licenses l WHERE l.agent_id = ch.id) AS revenue_total,
     (SELECT COALESCE(SUM(l.unit_price), 0) FROM licenses l
-       WHERE l.channel_id = ch.id AND l.created_at >= ?) AS revenue_30d,
+       WHERE l.agent_id = ch.id AND l.created_at >= ?) AS revenue_30d,
     (SELECT COUNT(*) FROM licenses l
-       WHERE l.channel_id = ch.id AND l.created_at >= ?) AS activated_30d,
+       WHERE l.agent_id = ch.id AND l.created_at >= ?) AS activated_30d,
     (SELECT COUNT(*) FROM audit_logs a JOIN licenses l ON l.id = a.target_id
-       WHERE a.action = 'license.extend' AND l.channel_id = ch.id) AS renew_count,
-    (SELECT MAX(l.created_at) FROM licenses l WHERE l.channel_id = ch.id) AS last_activated_at`;
+       WHERE a.action = 'license.extend' AND l.agent_id = ch.id) AS renew_count,
+    (SELECT MAX(l.created_at) FROM licenses l WHERE l.agent_id = ch.id) AS last_activated_at`;
 }
 
-function withDerived(row: ChannelListItem): ChannelListItem {
+function withDerived(row: AgentListItem): AgentListItem {
   const total = Number(row.cdk_total ?? 0);
   const used = Number(row.cdk_used ?? 0);
   return {
@@ -62,7 +62,7 @@ function withDerived(row: ChannelListItem): ChannelListItem {
   };
 }
 
-export function listChannels(opts: { q?: string | null; status?: string | null } = {}): ChannelListItem[] {
+export function listAgents(opts: { q?: string | null; status?: string | null } = {}): AgentListItem[] {
   const now = nowIso();
   const since = new Date(Date.now() - 30 * DAY).toISOString();
 
@@ -81,45 +81,45 @@ export function listChannels(opts: { q?: string | null; status?: string | null }
 
   const rows = db()
     .prepare(
-      `SELECT ch.*, ${channelStatsSelect()}
-       FROM channels ch
+      `SELECT ch.*, ${agentStatsSelect()}
+       FROM agents ch
        ${clause}
        ORDER BY ch.created_at DESC`,
     )
-    .all(now, since, since, ...params) as unknown as ChannelListItem[];
+    .all(now, since, since, ...params) as unknown as AgentListItem[];
 
   return rows.map(withDerived);
 }
 
-export function findChannelById(id: string): ChannelListItem | null {
+export function findAgentById(id: string): AgentListItem | null {
   const now = nowIso();
   const since = new Date(Date.now() - 30 * DAY).toISOString();
   const row = db()
-    .prepare(`SELECT ch.*, ${channelStatsSelect()} FROM channels ch WHERE ch.id = ?`)
-    .get(now, since, since, id) as unknown as ChannelListItem | undefined;
+    .prepare(`SELECT ch.*, ${agentStatsSelect()} FROM agents ch WHERE ch.id = ?`)
+    .get(now, since, since, id) as unknown as AgentListItem | undefined;
   return row ? withDerived(row) : null;
 }
 
-export function findChannelByCode(code: string): ChannelRow | null {
-  const row = db().prepare("SELECT * FROM channels WHERE code = ?").get(code.trim().toLowerCase()) as
-    | unknown as ChannelRow
+export function findAgentByCode(code: string): AgentRow | null {
+  const row = db().prepare("SELECT * FROM agents WHERE code = ?").get(code.trim().toLowerCase()) as
+    | unknown as AgentRow
     | undefined;
   return row ?? null;
 }
 
-export function createChannel(input: {
+export function createAgent(input: {
   code: string;
   name: string;
   contact?: string | null;
   phone?: string | null;
   email?: string | null;
   note?: string | null;
-}): ChannelRow {
+}): AgentRow {
   const id = newId("chn");
   const at = nowIso();
   db()
     .prepare(
-      `INSERT INTO channels (id, code, name, contact, phone, email, note, status, created_at, updated_at)
+      `INSERT INTO agents (id, code, name, contact, phone, email, note, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
     )
     .run(
@@ -133,14 +133,14 @@ export function createChannel(input: {
       at,
       at,
     );
-  const row = db().prepare("SELECT * FROM channels WHERE id = ?").get(id) as unknown as ChannelRow;
+  const row = db().prepare("SELECT * FROM agents WHERE id = ?").get(id) as unknown as AgentRow;
   return row;
 }
 
-export function updateChannel(
+export function updateAgent(
   id: string,
-  patch: Partial<Pick<ChannelRow, "name" | "contact" | "phone" | "email" | "note" | "status">>,
-): ChannelRow | null {
+  patch: Partial<Pick<AgentRow, "name" | "contact" | "phone" | "email" | "note" | "status">>,
+): AgentRow | null {
   const sets: string[] = [];
   const params: (string | null)[] = [];
   for (const [key, value] of Object.entries(patch)) {
@@ -151,31 +151,31 @@ export function updateChannel(
   if (sets.length) {
     sets.push("updated_at = ?");
     params.push(nowIso(), id);
-    db().prepare(`UPDATE channels SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+    db().prepare(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...params);
   }
-  const row = db().prepare("SELECT * FROM channels WHERE id = ?").get(id) as unknown as ChannelRow | undefined;
+  const row = db().prepare("SELECT * FROM agents WHERE id = ?").get(id) as unknown as AgentRow | undefined;
   return row ?? null;
 }
 
-/** 渠道被批次或授权引用时不允许删除（返回引用数量，便于提示改停用）。 */
-export function channelReferences(id: string): { batches: number; licenses: number } {
+/** 代理被批次或授权引用时不允许删除（返回引用数量，便于提示改停用）。 */
+export function agentReferences(id: string): { batches: number; licenses: number } {
   return {
-    batches: scalar("SELECT COUNT(*) FROM cdk_batches WHERE channel_id = ?", id),
-    licenses: scalar("SELECT COUNT(*) FROM licenses WHERE channel_id = ?", id),
+    batches: scalar("SELECT COUNT(*) FROM cdk_batches WHERE agent_id = ?", id),
+    licenses: scalar("SELECT COUNT(*) FROM licenses WHERE agent_id = ?", id),
   };
 }
 
-export function deleteChannel(id: string): boolean {
-  const res = db().prepare("DELETE FROM channels WHERE id = ?").run(id);
+export function deleteAgent(id: string): boolean {
+  const res = db().prepare("DELETE FROM agents WHERE id = ?").run(id);
   return Number(res.changes) > 0;
 }
 
 /* ---------------------------- 卡密余额（代理额度） ---------------------------- */
 
 /** 充值/扣减卡密余额（amount 可为负，用于人工修正） */
-export function rechargeChannel(id: string, amount: number): ChannelRow | null {
-  db().prepare("UPDATE channels SET credit = credit + ?, updated_at = ? WHERE id = ?").run(amount, nowIso(), id);
-  const row = db().prepare("SELECT * FROM channels WHERE id = ?").get(id) as unknown as ChannelRow | undefined;
+export function rechargeAgent(id: string, amount: number): AgentRow | null {
+  db().prepare("UPDATE agents SET credit = credit + ?, updated_at = ? WHERE id = ?").run(amount, nowIso(), id);
+  const row = db().prepare("SELECT * FROM agents WHERE id = ?").get(id) as unknown as AgentRow | undefined;
   return row ?? null;
 }
 
@@ -185,18 +185,18 @@ export function rechargeChannel(id: string, amount: number): ChannelRow | null {
  */
 export function consumeCredit(id: string, count: number): { ok: boolean; credit: number } {
   const res = db()
-    .prepare("UPDATE channels SET credit = credit - ?, updated_at = ? WHERE id = ? AND credit >= ?")
+    .prepare("UPDATE agents SET credit = credit - ?, updated_at = ? WHERE id = ? AND credit >= ?")
     .run(count, nowIso(), id, count);
-  const row = db().prepare("SELECT credit FROM channels WHERE id = ?").get(id) as { credit: number } | undefined;
+  const row = db().prepare("SELECT credit FROM agents WHERE id = ?").get(id) as { credit: number } | undefined;
   return { ok: Number(res.changes) > 0, credit: Number(row?.credit ?? 0) };
 }
 
 /* ---------------------------- 账户余额（按金额结算） ---------------------------- */
 
 /** 充值/扣减账户余额（单位：分） */
-export function rechargeBalance(id: string, amount: number): ChannelRow | null {
-  db().prepare("UPDATE channels SET balance = balance + ?, updated_at = ? WHERE id = ?").run(amount, nowIso(), id);
-  const row = db().prepare("SELECT * FROM channels WHERE id = ?").get(id) as unknown as ChannelRow | undefined;
+export function rechargeBalance(id: string, amount: number): AgentRow | null {
+  db().prepare("UPDATE agents SET balance = balance + ?, updated_at = ? WHERE id = ?").run(amount, nowIso(), id);
+  const row = db().prepare("SELECT * FROM agents WHERE id = ?").get(id) as unknown as AgentRow | undefined;
   return row ?? null;
 }
 
@@ -204,16 +204,16 @@ export function rechargeBalance(id: string, amount: number): ChannelRow | null {
 export function consumeBalance(id: string, amount: number): { ok: boolean; balance: number } {
   const value = Math.max(0, Math.trunc(amount));
   const res = db()
-    .prepare("UPDATE channels SET balance = balance - ?, updated_at = ? WHERE id = ? AND balance >= ?")
+    .prepare("UPDATE agents SET balance = balance - ?, updated_at = ? WHERE id = ? AND balance >= ?")
     .run(value, nowIso(), id, value);
-  const row = db().prepare("SELECT balance FROM channels WHERE id = ?").get(id) as { balance: number } | undefined;
+  const row = db().prepare("SELECT balance FROM agents WHERE id = ?").get(id) as { balance: number } | undefined;
   return { ok: Number(res.changes) > 0, balance: Number(row?.balance ?? 0) };
 }
 
-/** 概览页用的渠道汇总。 */
-export function channelSummary(): {
-  channels: number;
-  channels_active: number;
+/** 概览页用的代理汇总。 */
+export function agentSummary(): {
+  agents: number;
+  agents_active: number;
   attributed_licenses: number;
   unattributed_licenses: number;
   revenue_total: number;
@@ -221,10 +221,10 @@ export function channelSummary(): {
 } {
   const since = new Date(Date.now() - 30 * DAY).toISOString();
   return {
-    channels: scalar("SELECT COUNT(*) AS n FROM channels"),
-    channels_active: scalar("SELECT COUNT(*) AS n FROM channels WHERE status = 'active'"),
-    attributed_licenses: scalar("SELECT COUNT(*) AS n FROM licenses WHERE channel_id IS NOT NULL"),
-    unattributed_licenses: scalar("SELECT COUNT(*) AS n FROM licenses WHERE channel_id IS NULL"),
+    agents: scalar("SELECT COUNT(*) AS n FROM agents"),
+    agents_active: scalar("SELECT COUNT(*) AS n FROM agents WHERE status = 'active'"),
+    attributed_licenses: scalar("SELECT COUNT(*) AS n FROM licenses WHERE agent_id IS NOT NULL"),
+    unattributed_licenses: scalar("SELECT COUNT(*) AS n FROM licenses WHERE agent_id IS NULL"),
     revenue_total: scalar("SELECT COALESCE(SUM(unit_price), 0) AS n FROM licenses"),
     revenue_30d: scalar("SELECT COALESCE(SUM(unit_price), 0) AS n FROM licenses WHERE created_at >= ?", since),
   };

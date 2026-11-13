@@ -17,25 +17,25 @@ export type CdkListItem = CdkRow & {
   /** 激活后产生的授权到期时间与类型（未激活为 null） */
   license_expires_at: string | null;
   license_kind: string | null;
-  /** 以下字段来自所属 CDK 批次（v2 渠道 / 单价） */
-  channel_id: string | null;
+  /** 以下字段来自所属 CDK 批次（v2 代理 / 单价） */
+  agent_id: string | null;
   unit_price: number;
-  channel_code: string | null;
-  channel_name: string | null;
+  agent_code: string | null;
+  agent_name: string | null;
 };
 
 function cdkSelect(): string {
   return `SELECT k.*, p.code AS product_code, p.name AS product_name,
                  c.email AS customer_email, l.license_no AS license_no,
                  l.expires_at AS license_expires_at, l.kind AS license_kind,
-                 b.channel_id AS channel_id, b.unit_price AS unit_price,
-                 ch.code AS channel_code, ch.name AS channel_name
+                 b.agent_id AS agent_id, b.unit_price AS unit_price,
+                 ch.code AS agent_code, ch.name AS agent_name
           FROM cdks k
           JOIN products p ON p.id = k.product_id
           LEFT JOIN customers c ON c.id = k.customer_id
           LEFT JOIN licenses l ON l.id = k.license_id
           LEFT JOIN cdk_batches b ON b.id = k.batch_id
-          LEFT JOIN channels ch ON ch.id = b.channel_id`;
+          LEFT JOIN agents ch ON ch.id = b.agent_id`;
 }
 
 export function findCdkByCode(raw: string): CdkListItem | null {
@@ -58,8 +58,8 @@ export function createCdkBatch(input: {
   note: string | null;
   expiresAt: string | null;
   createdBy: string | null;
-  /** v2：归属渠道（null / 未传 = 直销） */
-  channelId?: string | null;
+  /** v2：归属代理（null / 未传 = 直销） */
+  agentId?: string | null;
   /** v2：结算单价，单位「分」 */
   unitPrice?: number;
   /** v4：计费类型（hour/day/month/year/count），未传按 day + days */
@@ -74,7 +74,7 @@ export function createCdkBatch(input: {
       .prepare(
         `INSERT INTO cdk_batches
            (id, product_id, count, days, seats, module_ids, note, created_by, created_at,
-            channel_id, unit_price, term_type, term_value)
+            agent_id, unit_price, term_type, term_value)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
@@ -87,7 +87,7 @@ export function createCdkBatch(input: {
         nz(input.note),
         nz(input.createdBy),
         at,
-        nz(input.channelId),
+        nz(input.agentId),
         Math.max(0, Math.trunc(input.unitPrice ?? 0)),
         term.termType,
         term.termValue,
@@ -135,8 +135,8 @@ export function listCdks(opts: {
   batchId?: string | null;
   status?: string | null;
   q?: string | null;
-  /** v2：按渠道筛选；传 "__none__" 表示只看无渠道（直销）的批次 */
-  channelId?: string | null;
+  /** v2：按代理筛选；传 "__none__" 表示只看无代理（直销）的批次 */
+  agentId?: string | null;
   page: number;
   pageSize: number;
 }): { items: CdkListItem[]; total: number } {
@@ -159,11 +159,11 @@ export function listCdks(opts: {
     where.push("(k.code LIKE ? ESCAPE '\\' OR k.note LIKE ? ESCAPE '\\' OR c.email LIKE ? ESCAPE '\\')");
     params.push(p, p, p);
   }
-  if (opts.channelId === "__none__") {
-    where.push("b.channel_id IS NULL");
-  } else if (opts.channelId) {
-    where.push("b.channel_id = ?");
-    params.push(opts.channelId);
+  if (opts.agentId === "__none__") {
+    where.push("b.agent_id IS NULL");
+  } else if (opts.agentId) {
+    where.push("b.agent_id = ?");
+    params.push(opts.agentId);
   }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const items = db()
@@ -222,9 +222,9 @@ export type LicenseListItem = LicenseRow & {
   customer_name: string | null;
   product_code: string;
   product_name: string;
-  /** v2：来源渠道（null = 直销） */
-  channel_code: string | null;
-  channel_name: string | null;
+  /** v2：来源代理（null = 直销） */
+  agent_code: string | null;
+  agent_name: string | null;
   active_devices: number;
   eff_status: EffectiveLicenseStatus;
 };
@@ -241,7 +241,7 @@ export function effectiveStatus(row: LicenseRow, refMs: number = Date.now()): Ef
 function licenseSelect(): string {
   return `SELECT l.*, c.email AS customer_email, c.name AS customer_name,
                  p.code AS product_code, p.name AS product_name,
-                 ch.code AS channel_code, ch.name AS channel_name,
+                 ch.code AS agent_code, ch.name AS agent_name,
                  (SELECT COUNT(*) FROM devices d WHERE d.license_id = l.id AND d.status = 'active') AS active_devices,
                  CASE
                    WHEN l.status = 'revoked' THEN 'revoked'
@@ -253,7 +253,7 @@ function licenseSelect(): string {
           FROM licenses l
           JOIN customers c ON c.id = l.customer_id
           JOIN products p ON p.id = l.product_id
-          LEFT JOIN channels ch ON ch.id = l.channel_id`;
+          LEFT JOIN agents ch ON ch.id = l.agent_id`;
 }
 
 export function findLicenseById(id: string): LicenseListItem | null {
@@ -284,8 +284,8 @@ export function listLicenses(opts: {
   status?: string | null;
   productId?: string | null;
   customerId?: string | null;
-  /** v2：按渠道筛选；传 "__none__" 表示只看无渠道（直销）的授权 */
-  channelId?: string | null;
+  /** v2：按代理筛选；传 "__none__" 表示只看无代理（直销）的授权 */
+  agentId?: string | null;
   /** v3：按授权类型筛选（paid / trial） */
   kind?: string | null;
   expiringWithinDays?: number | null;
@@ -312,11 +312,11 @@ export function listLicenses(opts: {
     outer.push("customer_id = ?");
     params.push(opts.customerId);
   }
-  if (opts.channelId === "__none__") {
-    outer.push("channel_id IS NULL");
-  } else if (opts.channelId) {
-    outer.push("channel_id = ?");
-    params.push(opts.channelId);
+  if (opts.agentId === "__none__") {
+    outer.push("agent_id IS NULL");
+  } else if (opts.agentId) {
+    outer.push("agent_id = ?");
+    params.push(opts.agentId);
   }
   if (opts.kind) {
     outer.push("kind = ?");
@@ -347,8 +347,8 @@ export function createLicense(input: {
   offlineGraceDays?: number;
   keyHash: string;
   note: string | null;
-  /** v2：来源渠道（通常从 CDK 批次继承） */
-  channelId?: string | null;
+  /** v2：来源代理（通常从 CDK 批次继承） */
+  agentId?: string | null;
   /** v2：结算单价，单位「分」 */
   unitPrice?: number;
   /** v3：授权类型，默认正式 */
@@ -371,7 +371,7 @@ export function createLicense(input: {
     .prepare(
       `INSERT INTO licenses
          (id, license_no, customer_id, product_id, cdk_id, module_ids, seats, status, starts_at, expires_at,
-          offline_grace_days, key_hash, note, created_at, updated_at, channel_id, unit_price, kind, source,
+          offline_grace_days, key_hash, note, created_at, updated_at, agent_id, unit_price, kind, source,
           term_type, term_value, max_usages, used_usages)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     )
@@ -390,7 +390,7 @@ export function createLicense(input: {
       nz(input.note),
       at,
       at,
-      nz(input.channelId),
+      nz(input.agentId),
       Math.max(0, Math.trunc(input.unitPrice ?? 0)),
       input.kind ?? "paid",
       input.source ?? "cdk",

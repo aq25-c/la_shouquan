@@ -172,7 +172,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
 
     // 员工/代理的权限：
     //   1) 登录校验（login 除外）
-    //   2) 代理只能访问卡密相关接口（数据隔离在 handler 里按 channel 过滤）
+    //   2) 代理只能访问卡密相关接口（数据隔离在 handler 里按 agent 过滤）
     //   3) 按路由表校验功能权限
     if (path.startsWith("/admin/api/") && !path.startsWith("/admin/api/auth/login")) {
       const staffCtx = requireStaff(ctx);

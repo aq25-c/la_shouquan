@@ -105,33 +105,33 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     auth: "admin",
     desc: "返回可配置的目录权限（menus）与软件功能（features）清单，以及代理的固定权限，供前端渲染勾选。",
   },
-  "GET /admin/api/staff": { title: "员工与代理列表", auth: "admin", desc: "含角色、目录权限、功能权限、所属渠道。" },
+  "GET /admin/api/staff": { title: "员工与代理列表", auth: "admin", desc: "含角色、目录权限、功能权限、所属代理。" },
   "POST /admin/api/staff": {
     title: "新增员工 / 代理",
     auth: "admin",
-    params: "`email`✅、`password`✅(≥8位)、`name?`、`role`(staff|agent)、`menus[]`、`features[]`、`channel_id?`",
-    desc: "role=staff 时按 menus/features 授权；role=agent 必须绑定 channel_id，权限固定为「只看卡密页」。仅超级管理员可调用。",
-    notes: "400 MISSING_FIELD（代理缺渠道）/ INVALID_FIELD（role 非法）/ WEAK_PASSWORD；409 EMAIL_TAKEN；403 FORBIDDEN_OWNER。",
+    params: "`email`✅、`password`✅(≥8位)、`name?`、`role`(staff|agent)、`menus[]`、`features[]`、`agent_id?`",
+    desc: "role=staff 时按 menus/features 授权；role=agent 必须绑定 agent_id，权限固定为「只看卡密页」。仅超级管理员可调用。",
+    notes: "400 MISSING_FIELD（代理缺代理）/ INVALID_FIELD（role 非法）/ WEAK_PASSWORD；409 EMAIL_TAKEN；403 FORBIDDEN_OWNER。",
   },
   "PATCH /admin/api/staff/:id": {
     title: "编辑员工 / 代理",
     auth: "admin",
-    params: "`name?`、`status?`、`password?`、`menus[]?`、`features[]?`、`channel_id?`",
+    params: "`name?`、`status?`、`password?`、`menus[]?`、`features[]?`、`agent_id?`",
     desc: "改权限/状态/密码；停用或改密后该账号的会话立即失效。仅超级管理员可调用。",
   },
   "DELETE /admin/api/staff/:id": { title: "删除员工 / 代理", auth: "admin", desc: "不能删除超级管理员与自己；删除后会话失效。" },
 
   /* ---------------- 管理 · 概览 ---------------- */
-  "GET /admin/api/overview": { title: "概览数据", auth: "admin", desc: "统计（授权/CDK/设备/心跳）+ 渠道汇总 + 14 天内到期 + 最近开通。" },
+  "GET /admin/api/overview": { title: "概览数据", auth: "admin", desc: "统计（授权/CDK/设备/心跳）+ 代理汇总 + 14 天内到期 + 最近开通。" },
 
-  /* ---------------- 管理 · 渠道 ---------------- */
-  "GET /admin/api/channels": { title: "渠道列表（含统计）", auth: "admin", params: "`q?`、`status?`", desc: "每个渠道带 CDK 生成/核销数、激活率、授权数、营收（累计与近30天）、续费次数；顶层另有 `summary`。" },
-  "POST /admin/api/channels": { title: "新增渠道", auth: "admin", params: "`code`（小写）、`name`、`contact?`、`phone?`、`email?`、`note?`", desc: "`code` 自动转小写，重复返回 409 CODE_TAKEN。" },
-  "POST /admin/api/channels/:id/credit": {
+  /* ---------------- 管理 · 代理 ---------------- */
+  "GET /admin/api/agents": { title: "代理列表（含统计）", auth: "admin", params: "`q?`、`status?`", desc: "每个代理带 CDK 生成/核销数、激活率、授权数、营收（累计与近30天）、续费次数；顶层另有 `summary`。" },
+  "POST /admin/api/agents": { title: "新增代理", auth: "admin", params: "`code`（小写）、`name`、`contact?`、`phone?`、`email?`、`note?`", desc: "`code` 自动转小写，重复返回 409 CODE_TAKEN。" },
+  "POST /admin/api/agents/:id/credit": {
     title: "充值卡密余额（张数）",
     auth: "admin",
     params: "`amount`✅（正=充值，负=扣减）",
-    desc: "调整渠道的**卡密张数额度**（管理员代生成时按张扣减）。代理自行生成请用 `/balance`（按金额）。",
+    desc: "调整代理的**卡密张数额度**（管理员代生成时按张扣减）。代理自行生成请用 `/balance`（按金额）。",
   },
   "GET /admin/api/prices": { title: "卡密价格列表", auth: "admin", params: "`product_id?`", desc: "按产品+模块+卡类型列出价格（单位：分/单位）；`module_id` 为空表示该产品的默认价。" },
   "POST /admin/api/prices": {
@@ -141,21 +141,21 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     desc: "幂等覆盖同产品/模块/卡类型的价格。解析顺序：模块覆盖价 → 产品默认价 → 未配置则拒绝出卡（PRICE_NOT_CONFIGURED）。",
   },
   "DELETE /admin/api/prices/:id": { title: "删除价格", auth: "admin" },
-  "POST /admin/api/channels/:id/balance": {
+  "POST /admin/api/agents/:id/balance": {
     title: "充值账户余额（金额）",
     auth: "admin",
     params: "`amount`✅（单位：分，正=充值，负=扣减）",
     desc: "代理生成卡密时按「单价 × 时长/次数 × 张数」从余额扣费，不足返回 409 BALANCE_INSUFFICIENT。",
   },
-  "POST /admin/api/channels/batch-balance": {
+  "POST /admin/api/agents/batch-balance": {
     title: "一键批量充值",
     auth: "admin",
-    params: "`amount`✅（分）、`channel_ids?`（不传=全部渠道）",
+    params: "`amount`✅（分）、`agent_ids?`（不传=全部代理）",
     desc: "给多个代理统一充值，返回 `{updated, amount}`。",
   },
-  "GET /admin/api/channels/:id": { title: "渠道详情", auth: "admin", desc: "单渠道 + 统计。" },
-  "PATCH /admin/api/channels/:id": { title: "编辑渠道", auth: "admin", params: "`name?`、`contact?`、`phone?`、`email?`、`note?`、`status?`", desc: "`status` 只能是 active / disabled。" },
-  "DELETE /admin/api/channels/:id": { title: "删除渠道", auth: "admin", desc: "已被 CDK 批次或授权引用时返回 409 CHANNEL_IN_USE，此时应改为停用。" },
+  "GET /admin/api/agents/:id": { title: "代理详情", auth: "admin", desc: "单代理 + 统计。" },
+  "PATCH /admin/api/agents/:id": { title: "编辑代理", auth: "admin", params: "`name?`、`contact?`、`phone?`、`email?`、`note?`、`status?`", desc: "`status` 只能是 active / disabled。" },
+  "DELETE /admin/api/agents/:id": { title: "删除代理", auth: "admin", desc: "已被 CDK 批次或授权引用时返回 409 AGENT_IN_USE，此时应改为停用。" },
 
   /* ---------------- 管理 · 产品与模块 ---------------- */
   "GET /admin/api/products": { title: "产品列表", auth: "admin", desc: "含模块数、授权数、有效授权数、未使用 CDK 数。" },
@@ -188,11 +188,11 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   },
   "POST /admin/api/cdks/generate": {    title: "批量生成 CDK",
     auth: "admin",
-    params: "`product_id`✅、`days`✅、`count`✅、`module_ids?`、`seats?`、`note?`、`redeem_before?`、`channel_id?`、`unit_price?`",
+    params: "`product_id`✅、`days`✅、`count`✅、`module_ids?`、`seats?`、`note?`、`redeem_before?`、`agent_id?`、`unit_price?`",
     desc: "生成批次卡密，返回码列表与 CSV；`unit_price` 单位为**分**。",
-    notes: "单个批次最多 5000 个；`module_ids` 必须属于该产品；`channel_id` 不存在返回 404 CHANNEL_NOT_FOUND。",
+    notes: "单个批次最多 5000 个；`module_ids` 必须属于该产品；`agent_id` 不存在返回 404 AGENT_NOT_FOUND。",
   },
-  "GET /admin/api/cdks": { title: "CDK 列表", auth: "admin", params: "`product_id?`、`batch_id?`、`status?`、`channel_id?`（`__none__`=直销）、`q?`、分页", desc: "含渠道、结算单价，以及激活后产生的 `license_expires_at` / `license_kind`。" },
+  "GET /admin/api/cdks": { title: "CDK 列表", auth: "admin", params: "`product_id?`、`batch_id?`、`status?`、`agent_id?`（`__none__`=直销）、`q?`、分页", desc: "含代理、结算单价，以及激活后产生的 `license_expires_at` / `license_kind`。" },
   "GET /admin/api/cdk-batches": { title: "CDK 批次", auth: "admin", params: "`product_id?`", desc: "批次列表，含已核销数量。" },
   "POST /admin/api/cdks/:id/revoke": { title: "作废 CDK", auth: "admin", params: "`reason?`", desc: "只有未使用的 CDK 可作废。" },
   "GET /admin/api/cdks/export": { title: "导出 CDK（CSV）", auth: "admin", params: "`batch_id?`、`product_id?`、`status?`", desc: "返回 text/csv（含 BOM，Excel 可直接打开）。" },
@@ -206,8 +206,8 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/customers/:id/adjust-expiry": { title: "按客户调整到期", auth: "admin", params: "`days?` 或 `expires_at?`、`license_ids?`", desc: "批量调整该客户名下授权的到期时间；`days` 正数延长/负数缩短，`license_ids` 省略则作用于全部未吊销授权。" },
 
   /* ---------------- 管理 · 授权 ---------------- */
-  "GET /admin/api/licenses": { title: "授权列表", auth: "admin", params: "`status?`、`kind?`(paid/trial)、`product_id?`、`customer_id?`、`channel_id?`、`expiring_within_days?`、`q?`、分页", desc: "含 `eff_status`（实时计算）、渠道与设备数。" },
-  "POST /admin/api/licenses": { title: "手动开通授权", auth: "admin", params: "`product_id`✅、`customer_id` 或 `customer_email`、`days`✅、`seats?`、`module_ids?`、`note?`、`channel_id?`、`unit_price?`", desc: "不走 CDK 直接开授权，返回 `license_key`（只显示一次）。" },
+  "GET /admin/api/licenses": { title: "授权列表", auth: "admin", params: "`status?`、`kind?`(paid/trial)、`product_id?`、`customer_id?`、`agent_id?`、`expiring_within_days?`、`q?`、分页", desc: "含 `eff_status`（实时计算）、代理与设备数。" },
+  "POST /admin/api/licenses": { title: "手动开通授权", auth: "admin", params: "`product_id`✅、`customer_id` 或 `customer_email`、`days`✅、`seats?`、`module_ids?`、`note?`、`agent_id?`、`unit_price?`", desc: "不走 CDK 直接开授权，返回 `license_key`（只显示一次）。" },
   "GET /admin/api/licenses/:id": { title: "授权详情", auth: "admin", desc: "授权 + 设备列表 + 模块编码 + 客户信息。" },
   "PATCH /admin/api/licenses/:id": { title: "编辑授权", auth: "admin", params: "`status?`、`expires_at?`、`starts_at?`、`seats?`、`module_ids?`、`offline_grace_days?`、`note?`", desc: "改到期时间后，客户端下次心跳即同步。" },
   "POST /admin/api/licenses/:id/extend": { title: "延长 / 缩短到期", auth: "admin", params: "`days`（可为负）、`from_now?`", desc: "试用延长也用这个接口；`from_now=true` 从当前时间起算。" },
@@ -243,7 +243,7 @@ const GROUP_RULES: { name: string; test: (m: string, p: string) => boolean }[] =
   { name: "管理 · 认证", test: (_m, p) => p.startsWith("/admin/api/auth") },
   { name: "管理 · 员工与代理", test: (_m, p) => p.includes("/staff") || p.includes("/admins") },
   { name: "管理 · 概览", test: (_m, p) => p === "/admin/api/overview" },
-  { name: "管理 · 渠道", test: (_m, p) => p.includes("/channels") || p.includes("/prices") },
+  { name: "管理 · 代理", test: (_m, p) => p.includes("/agents") || p.includes("/prices") },
   { name: "管理 · 产品与模块", test: (_m, p) => p.includes("/products") || p.includes("/modules") },
   { name: "管理 · CDK", test: (_m, p) => p.includes("/cdks") || p.includes("/cdk-batches") },
   { name: "管理 · 客户", test: (_m, p) => p.includes("/customers") },
@@ -306,7 +306,7 @@ export function buildApiDocs(): ApiDocs {
       { title: "时间与金额", text: "时间为 ISO-8601 UTC 字符串；金额单位统一为「分」（整数）。" },
       { title: "分页", text: "`?page=1&page_size=20`，`page_size` 上限 200。" },
       { title: "心跳与到期同步", text: "客户端每次心跳都会拿到最新 `expires_at` 与重新签名的 `license_file`，因此后台改到期后最迟一个心跳周期生效。" },
-      { title: "错误码", text: "`401 UNAUTHORIZED`、`403 LICENSE_*` / `TRIAL_*`、`404 CDK_NOT_FOUND`/`INVALID_LICENSE_KEY`/`DEVICE_NOT_BOUND`、`409 SEAT_LIMIT`/`CODE_TAKEN`/`EMAIL_TAKEN`/`CHANNEL_IN_USE`、`429 RATE_LIMITED`。" },
+      { title: "错误码", text: "`401 UNAUTHORIZED`、`403 LICENSE_*` / `TRIAL_*`、`404 CDK_NOT_FOUND`/`INVALID_LICENSE_KEY`/`DEVICE_NOT_BOUND`、`409 SEAT_LIMIT`/`CODE_TAKEN`/`EMAIL_TAKEN`/`AGENT_IN_USE`、`429 RATE_LIMITED`。" },
     ],
   };
 }
