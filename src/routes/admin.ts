@@ -34,7 +34,7 @@ import {
   del,
 } from "../http.ts";
 import type { Ctx } from "../http.ts";
-import { adminTtl, grantSession, requireAdmin, requireOwner, requireStaff } from "../auth.ts";
+import { adminTtl, grantSession, requireAdmin, requireFeature, requireOwner, requireStaff } from "../auth.ts";
 import { currentSession } from "../auth.ts";
 import {
   AGENT_PERMISSIONS,
@@ -83,6 +83,7 @@ import {
   findAdminById,
   findCustomerByEmail,
   findCustomerById,
+  customerBelongsToAgent,
   listAdmins,
   listCustomers,
   revokeSession,
@@ -1143,7 +1144,10 @@ export function registerAdminRoutes(): void {
 
   /** 后台手动新增客户（不依赖客户端注册） */
   post(`${P}/customers`, async (ctx) => {
-    const admin = requireAdmin(ctx);
+    const staffCtx = requireFeature(ctx, "customer.manage");
+    const admin = staffCtx.admin;
+    // 代理不直接建客户：客户由卡密激活产生，创建后无从归属
+    if (staffCtx.isAgent) throw forbidden("代理不能直接新增客户，客户请由卡密激活产生", "FORBIDDEN_AGENT_SCOPE");
     const emailInput = bodyStr(ctx, "email", 190);
     const password = bodyStr(ctx, "password", 200);
     const name = bodyStr(ctx, "name", { max: 120 });
@@ -1178,9 +1182,16 @@ export function registerAdminRoutes(): void {
   });
 
   get(`${P}/customers`, (ctx) => {
-    requireAdmin(ctx);
+    const staffCtx = requireFeature(ctx, "customer.manage");
     const { page, pageSize } = paging(ctx);
-    const result = listCustomers({ q: q(ctx, "q"), status: q(ctx, "status"), page, pageSize });
+    // 代理只能看到自己名下的客户
+    const result = listCustomers({
+      q: q(ctx, "q"),
+      status: q(ctx, "status"),
+      page,
+      pageSize,
+      agentId: staffCtx.isAgent ? staffCtx.agentId : null,
+    });
     return ok({
       items: result.items.map((row) => ({ ...row, password_hash: undefined })),
       total: result.total,
@@ -1190,10 +1201,13 @@ export function registerAdminRoutes(): void {
   });
 
   get(`${P}/customers/:id`, (ctx) => {
-    requireAdmin(ctx);
+    const staffCtx = requireFeature(ctx, "customer.manage");
     const id = slash(ctx, "id");
     const customer = findCustomerById(id);
     if (!customer) throw notFound("客户不存在", "CUSTOMER_NOT_FOUND");
+    if (staffCtx.isAgent && !customerBelongsToAgent(id, staffCtx.agentId ?? "")) {
+      throw forbidden("该客户不属于你的代理", "FORBIDDEN_AGENT_SCOPE");
+    }
     const licenses = listLicensesByCustomer(id).map((row) => ({
       ...licenseView(row),
       devices: listDevices(row.id),
@@ -1201,11 +1215,33 @@ export function registerAdminRoutes(): void {
     return ok({ customer: { ...customer, password_hash: undefined }, licenses });
   });
 
-  patch(`${P}/customers/:id`, (ctx) => {
-    const admin = requireAdmin(ctx);
+  patch(`${P}/customers/:id`, async (ctx) => {
+    const staffCtx = requireFeature(ctx, "customer.manage");
+    const admin = staffCtx.admin;
     const id = slash(ctx, "id");
     if (!findCustomerById(id)) throw notFound("客户不存在", "CUSTOMER_NOT_FOUND");
+    if (staffCtx.isAgent && !customerBelongsToAgent(id, staffCtx.agentId ?? "")) {
+      throw forbidden("该客户不属于你的代理", "FORBIDDEN_AGENT_SCOPE");
+    }
     const patchData: Record<string, string | null> = {};
+    // v8：允许修改登录邮箱与密码（代理也能改自己名下客户的登录信息）
+    const emailInput = bodyStr(ctx, "email", 190);
+    if (emailInput !== null) {
+      const normalized = normalizeEmail(emailInput);
+      if (!normalized) {
+        patchData.email = null;
+      } else {
+        if (!isEmail(normalized)) throw badRequest("邮箱格式不正确", "INVALID_FIELD");
+        const exists = findCustomerByEmail(normalized);
+        if (exists && exists.id !== id) throw conflict("该邮箱已被其它客户使用", "EMAIL_TAKEN");
+        patchData.email = normalized;
+      }
+    }
+    const passwordInput = bodyStr(ctx, "password", 200);
+    if (passwordInput) {
+      if (passwordInput.length < 8) throw conflict("密码至少 8 位", "WEAK_PASSWORD");
+      patchData.password_hash = await hashPassword(passwordInput);
+    }
     const name = bodyStr(ctx, "name", { max: 120 });
     if (name) patchData.name = name;
     const company = bodyStr(ctx, "company", { max: 190 });
@@ -1255,10 +1291,14 @@ export function registerAdminRoutes(): void {
 
   /** 按客户批量调整到期时间（可只调整指定授权） */
   post(`${P}/customers/:id/adjust-expiry`, (ctx) => {
-    const admin = requireAdmin(ctx);
+    const staffCtx = requireFeature(ctx, "customer.expiry");
+    const admin = staffCtx.admin;
     const id = slash(ctx, "id");
     const customer = findCustomerById(id);
     if (!customer) throw notFound("客户不存在", "CUSTOMER_NOT_FOUND");
+    if (staffCtx.isAgent && !customerBelongsToAgent(id, staffCtx.agentId ?? "")) {
+      throw forbidden("该客户不属于你的代理", "FORBIDDEN_AGENT_SCOPE");
+    }
 
     const days = bodyInt(ctx, "days", { min: -3650, max: 3650 });
     const expiresAt = isoOrNull(ctx, "expires_at");
@@ -1272,6 +1312,8 @@ export function registerAdminRoutes(): void {
         days: days ?? undefined,
         expiresAt: expiresAt ?? undefined,
         licenseIds: licenseIds ?? undefined,
+        // 代理：可缩短也能恢复，但不得超过 CDK 授予的上限；管理员不受限
+        capByMaxExpiry: staffCtx.isAgent,
       }),
     );
 

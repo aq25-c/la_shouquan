@@ -47,6 +47,10 @@ import {
   activeDeviceCount,
   consumeUsage,
   effectiveStatus,
+  findReusableLicense,
+  termCategory,
+  extendLicenseExpiry,
+  addLicenseUsages,
   findCdkByCode,
   findDevice,
   findLicenseById,
@@ -444,7 +448,7 @@ export function registerClientRoutes(): void {
       }
     }
 
-    const licenseKey = generateLicenseKey();
+    let licenseKey = generateLicenseKey();
     const outcome = withTx(() => {
       const customerId =
         plan.kind === "existing"
@@ -455,22 +459,54 @@ export function registerClientRoutes(): void {
               name: plan.name,
             }).id;
 
-      const license = createLicense({
-        customerId,
-        productId: cdk.product_id,
-        cdkId: cdk.id,
-        moduleIds: moduleIdsOf(cdk),
-        seats: cdk.seats,
-        days: cdk.days,
-        keyHash: sha256hex(licenseKey),
-        note: `CDK ${cdk.code}`,
-        // v2：代理与单价从 CDK 批次继承下来，供后台按代理统计营收
-        agentId: cdk.agent_id,
-        unitPrice: cdk.unit_price,
-        // v4：计费类型从 CDK 继承（天/月/年/小时/次数）
-        termType: (cdk.term_type ?? "day") as "hour" | "day" | "month" | "year" | "count",
-        termValue: cdk.term_value ?? cdk.days,
-      });
+      const newTermType = (cdk.term_type ?? "day") as "hour" | "day" | "month" | "year" | "count";
+      const newTermValue = cdk.term_value ?? cdk.days;
+
+      // v8：同客户同产品已有有效授权时「叠加续费」——
+      //   时长型：从原到期时间继续往上加；次数型：累加可用次数（已用不清零）
+      // 两类计费互斥：时长卡未到期不能叠加次数卡，次数卡未用完也不能叠加时长卡
+      const reusable = findReusableLicense(customerId, cdk.product_id);
+      const existingCategory = reusable ? termCategory(reusable.term_type ?? "day") : null;
+      if (reusable && existingCategory !== termCategory(newTermType)) {
+        throw conflict(
+          existingCategory === "count"
+            ? "当前授权是次数卡（尚未用完），不能叠加时长卡"
+            : "当前授权是时长卡（尚未到期），不能叠加次数卡",
+          "TERM_CONFLICT",
+          { existing_term_type: reusable.term_type ?? "day", new_term_type: newTermType },
+        );
+      }
+
+      let license: LicenseRow;
+      let merged = false;
+      if (reusable) {
+        // 叠加到现有授权，并重新签发密钥（旧密钥作废，客户端需保存新的）
+        licenseKey = generateLicenseKey();
+        rotateLicenseKey(reusable.id, sha256hex(licenseKey));
+        license =
+          termCategory(newTermType) === "time"
+            ? extendLicenseExpiry(reusable.id, newTermType, newTermValue)
+            : addLicenseUsages(reusable.id, newTermValue);
+        merged = true;
+      } else {
+        license = createLicense({
+          customerId,
+          productId: cdk.product_id,
+          cdkId: cdk.id,
+          moduleIds: moduleIdsOf(cdk),
+          seats: cdk.seats,
+          days: cdk.days,
+          keyHash: sha256hex(licenseKey),
+          note: `CDK ${cdk.code}`,
+          // v2：代理与单价从 CDK 批次继承下来，供后台按代理统计营收
+          agentId: cdk.agent_id,
+          unitPrice: cdk.unit_price,
+          // v4：计费类型从 CDK 继承（天/月/年/小时/次数）
+          termType: newTermType,
+          termValue: newTermValue,
+        });
+      }
+
       if (!markCdkUsed(cdk.id, customerId, license.id)) {
         throw conflict("该 CDK 刚刚已被使用，请更换", "CDK_ALREADY_USED");
       }
@@ -481,7 +517,7 @@ export function registerClientRoutes(): void {
         platform,
         ip: ctx.ip,
       });
-      return { customerId, license, deviceId: device.device_id };
+      return { customerId, license, deviceId: device.device_id, merged };
     });
 
     const issued = buildLicenseFile({
@@ -513,6 +549,8 @@ export function registerClientRoutes(): void {
       module_codes: issued.payload.mod,
       heartbeat_interval_hours: config.heartbeatIntervalHours,
       server_time: new Date().toISOString(),
+      /** true 表示本次是同类型卡的叠加续费（沿用原授权与设备，密钥已重新签发） */
+      merged: outcome.merged,
       ...(plan.kind === "new" && plan.email
         ? { session: sessionPayload(ctx, outcome.customerId) }
         : {}),

@@ -1006,7 +1006,7 @@ test("代理账号：绑定代理、权限固定、只能碰卡密", async () =>
   assert.equal(created.status, 201);
   assert.equal(created.json.data.staff.role, "agent");
   assert.equal(created.json.data.staff.agent_id, agentId);
-  assert.deepEqual(created.json.data.staff.permissions.menus, ["cdks"], "代理只看卡密页");
+  assert.deepEqual(created.json.data.staff.permissions.menus, ["cdks", "customers"], "代理可看卡密页与自己名下的客户");
 
   const login = await api("POST", "/admin/api/auth/login", {
     email: "agent-e2e@test.local",
@@ -1015,7 +1015,7 @@ test("代理账号：绑定代理、权限固定、只能碰卡密", async () =>
   const agentToken = login.json.data.token;
 
   // 代理被限制在卡密相关接口
-  for (const p of ["/admin/api/licenses", "/admin/api/customers", "/admin/api/agents"]) {
+  for (const p of ["/admin/api/licenses", "/admin/api/agents"]) {
     const res = await api("GET", p, undefined, agentToken);
     assert.equal(res.status, 403, `${p} 应被代理拒绝`);
   }
@@ -1493,4 +1493,144 @@ test("客户登录返回实际到期时间：试用给试用期、激活给卡�
   assert.equal(cl.term_type, "count");
   assert.equal(cl.usages.max, 10);
   assert.equal(cl.usages.remaining, 10, "次数卡应返回剩余次数");
+});
+
+/* ==================== 叠加续费 + 代理管客户 ==================== */
+
+test("同类型卡叠加、异类型互斥", async () => {
+  await api("POST", "/api/v1/auth/register", { email: "stack@test.local", password: "StackPass123" });
+
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 2, seats: 2 },
+    adminToken,
+  );
+  const [cdk1, cdk2] = gen.json.data.codes;
+
+  const act1 = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdk1,
+    device_id: "STACK-1",
+    email: "stack@test.local",
+    password: "StackPass123",
+  });
+  assert.equal(act1.status, 201);
+  assert.equal(act1.json.data.merged, false, "首次激活不算叠加");
+  const exp1 = Date.parse(act1.json.data.expires_at);
+
+  // 第二张 30 天卡：叠加到同一授权，到期从原到期日继续加
+  const act2 = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdk2,
+    device_id: "STACK-1",
+    email: "stack@test.local",
+    password: "StackPass123",
+  });
+  assert.equal(act2.status, 201);
+  assert.equal(act2.json.data.merged, true, "同类型卡应叠加");
+  assert.equal(act2.json.data.license.id, act1.json.data.license.id, "应叠加到同一授权");
+  const exp2 = Date.parse(act2.json.data.expires_at);
+  assert.ok(Math.abs(exp2 - exp1 - 30 * 86_400_000) < 10_000, "到期应再延长约 30 天");
+
+  // 时长卡未到期时叠加次数卡 → 互斥
+  const genCount = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "count", term_value: 5, count: 1, seats: 1 },
+    adminToken,
+  );
+  const bad = await api("POST", "/api/v1/licenses/activate", {
+    cdk: genCount.json.data.codes[0],
+    device_id: "STACK-1",
+    email: "stack@test.local",
+    password: "StackPass123",
+  });
+  assert.equal(bad.status, 409);
+  assert.equal(bad.json.error.code, "TERM_CONFLICT");
+});
+
+test("代理管自己名下客户：可见、可改资料、到期可缩短可恢复但不超上限", async () => {
+  const agentId = (
+    await api("POST", "/admin/api/agents", { code: "cust-agent", name: "客户代理" }, adminToken)
+  ).json.data.agent.id;
+  // 配价 + 充值，让代理能出卡
+  await api("POST", "/admin/api/prices", { product_id: productId, term_type: "day", unit_price: 10 }, adminToken);
+  await api("POST", `/admin/api/agents/${agentId}/balance`, { amount: 100000 }, adminToken);
+
+  const agentToken = (
+    await api(
+      "POST",
+      "/admin/api/staff",
+      { email: "cust-agent@test.local", password: "CustAgent123", role: "agent", agent_id: agentId },
+      adminToken,
+    ).catch(() => null)
+  )?.json?.data?.token;
+  const aToken =
+    agentToken ??
+    (await api("POST", "/admin/api/auth/login", { email: "cust-agent@test.local", password: "CustAgent123" })).json.data.token;
+
+  // 代理出卡
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 1, seats: 1 },
+    aToken,
+  );
+  assert.equal(gen.status, 201);
+
+  // 客户用它激活 → 归属该代理
+  await api("POST", "/api/v1/auth/register", { email: "agent-cust@test.local", password: "AgentCust123" });
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: gen.json.data.codes[0],
+    device_id: "AGENT-CUST-1",
+    email: "agent-cust@test.local",
+    password: "AgentCust123",
+  });
+  assert.equal(act.status, 201);
+  const capExpiry = Date.parse(act.json.data.expires_at);
+  const customerId = act.json.data.license.customer_id;
+
+  // 代理能看见自己名下客户
+  const list = await api("GET", "/admin/api/customers", undefined, aToken);
+  assert.equal(list.status, 200);
+  assert.ok(
+    list.json.data.items.some((c: Json) => c.id === customerId),
+    "代理应能看到自己名下客户",
+  );
+
+  // 代理不能新增客户
+  const denyCreate = await api("POST", "/admin/api/customers", { email: "x@test.local" }, aToken);
+  assert.equal(denyCreate.status, 403);
+
+  // 代理可改客户资料（姓名 + 邮箱）
+  const renamed = await api(
+    "PATCH",
+    `/admin/api/customers/${customerId}`,
+    { name: "代理改的名字", phone: "13800000000" },
+    aToken,
+  );
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.json.data.customer.name, "代理改的名字");
+
+  // 缩短可以
+  const shorter = await api(
+    "POST",
+    `/admin/api/customers/${customerId}/adjust-expiry`,
+    { days: -10 },
+    aToken,
+  );
+  assert.equal(shorter.status, 200);
+  const shortened = Date.parse(shorter.json.data.licenses[0].expires_at);
+  assert.ok(shortened < capExpiry, "应被缩短");
+
+  // 恢复：可以延长，但不得超过 CDK 授予的上限
+  const restore = await api(
+    "POST",
+    `/admin/api/customers/${customerId}/adjust-expiry`,
+    { days: 60 },
+    aToken,
+  );
+  assert.equal(restore.status, 200);
+  const restored = Date.parse(restore.json.data.licenses[0].expires_at);
+  assert.ok(restored <= capExpiry + 1000, "代理延长不得超过 CDK 激活时的实际到期时间");
+  assert.ok(Math.abs(restored - capExpiry) < 10_000, "恢复后应回到上限附近");
 });

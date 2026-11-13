@@ -260,6 +260,7 @@ function startSession(token, admin) {
   state.token = token;
   state.admin = admin;
   state.permissions = admin?.permissions ?? { menus: [], features: [] };
+  state.role = admin?.role ?? "owner";
   localStorage.setItem("lic_admin_token", token);
   $("#login-view").hidden = true;
   $("#app-view").hidden = false;
@@ -1848,7 +1849,7 @@ async function renderCustomers(root) {
             <option value="disabled" ${filters.status === "disabled" ? "selected" : ""}>已停用</option>
           </select>
           <input data-f-q placeholder="搜索邮箱 / 姓名 / 公司 / 电话" value="${esc(filters.q)}" />
-          <button class="btn btn-primary btn-sm" data-new-customer type="button">+ 新增客户</button>
+          <button class="btn btn-primary btn-sm" data-new-customer type="button" ${state.role === "agent" ? "hidden" : ""}>+ 新增客户</button>
         </div>
       </div>
       <div class="card-body tight">
@@ -1965,7 +1966,11 @@ async function customerExpiryForm(customerId) {
   openModal({
     title: `调整到期：${c.email ?? c.name ?? "客户"}`,
     body: `
-      <div class="note">该客户有 ${licenses.length} 个授权。调整后客户端下次心跳即可拿到新到期时间（心跳周期 ${state.config?.heartbeat_interval_hours ?? 24} 小时）。</div>
+      <div class="note">该客户有 ${licenses.length} 个授权。调整后客户端下次心跳即可拿到新到期时间（心跳周期 ${state.config?.heartbeat_interval_hours ?? 24} 小时）。${
+        state.role === "agent"
+          ? "代理可以缩短、也可以改回，但<b>不能超过 CDK 激活时的实际到期时间</b>（超出部分会被自动限制回原到期时间）。"
+          : ""
+      }</div>
       <div class="form-grid">
         <label class="field"><span>按天调整（正数延长 / 负数缩短）</span><input name="days" type="number" value="30" /></label>
         <label class="field"><span>或直接设定到期时间</span><input name="expires_at" type="datetime-local" /></label>
@@ -2024,7 +2029,7 @@ async function openCustomerDetail(id) {
     wide: true,
     body: `
       <div class="form-grid">
-        <label class="field"><span>邮箱</span><input value="${esc(c.email ?? "（无）")}" disabled /></label>
+        <label class="field"><span>登录邮箱（可修改，留空 = 不能登录）</span><input name="email" type="email" value="${esc(c.email ?? "")}" placeholder="buyer@example.com" /></label>
         <label class="field"><span>姓名</span><input name="name" value="${esc(c.name ?? "")}" /></label>
         <label class="field"><span>公司</span><input name="company" value="${esc(c.company ?? "")}" /></label>
         <label class="field"><span>电话</span><input name="phone" value="${esc(c.phone ?? "")}" /></label>
@@ -2071,6 +2076,7 @@ async function openCustomerDetail(id) {
       $("[data-save]", modal).onclick = async () => {
         try {
           await apiPatch(`/admin/api/customers/${id}`, {
+            email: $('[name="email"]', modal).value.trim(),
             name: $('[name="name"]', modal).value.trim(),
             company: $('[name="company"]', modal).value.trim(),
             phone: $('[name="phone"]', modal).value.trim(),

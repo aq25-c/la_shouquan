@@ -20,9 +20,9 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v7，新增列齐全", () => {
+test("数据库迁移到 v8，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 7);
+  assert.equal(version, 8);
 
   const admin = columns("admin_users");
   assert.ok(admin.includes("permissions"), "admin_users.permissions");
@@ -42,6 +42,7 @@ test("数据库迁移到 v7，新增列齐全", () => {
   for (const c of ["term_type", "term_value", "max_usages", "used_usages"]) {
     assert.ok(lic.includes(c), `licenses.${c}`);
   }
+  assert.ok(lic.includes("max_expires_at"), "licenses.max_expires_at");
   for (const t of ["cdks", "cdk_batches"]) {
     const cols = columns(t);
     assert.ok(cols.includes("term_type") && cols.includes("term_value"), `${t} 计费类型列`);
@@ -55,7 +56,7 @@ test("权限模型：owner / agent / staff", () => {
   assert.ok(perm.hasFeature(owner, "staff.manage"));
 
   const agent = perm.parsePermissions(null, "agent");
-  assert.deepEqual(agent.menus, ["cdks"], "代理只看 CDK 页");
+  assert.deepEqual(agent.menus, ["cdks", "customers"], "代理可看 CDK 与客户页");
   assert.ok(perm.hasFeature(agent, "cdk.generate"));
   assert.equal(perm.hasFeature(agent, "staff.manage"), false, "代理不能管理员工");
   assert.equal(perm.hasMenu(agent, "licenses"), false);

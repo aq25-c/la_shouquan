@@ -316,6 +316,16 @@ DROP INDEX IF EXISTS idx_prices_channel;
 CREATE INDEX IF NOT EXISTS idx_prices_agent ON agent_prices(agent_id, product_id);
 `;
 
+/**
+ * v8：授权到期上限
+ *   - licenses.max_expires_at：该授权允许的最大到期时间（= CDK 激活时算出的实际到期时间）
+ *     代理调整到期时间可以缩短、也可以恢复，但不能超过这个上限；管理员不受此限制。
+ */
+const SCHEMA_V8 = `
+ALTER TABLE licenses ADD COLUMN max_expires_at TEXT;
+UPDATE licenses SET max_expires_at = expires_at WHERE max_expires_at IS NULL;
+`;
+
 export function openDb(path: string): DatabaseSync {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
@@ -353,6 +363,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 5) runMigration(db, SCHEMA_V5, 5);
   if (version < 6) runMigration(db, SCHEMA_V6, 6);
   if (version < 7) runMigration(db, SCHEMA_V7, 7);
+  if (version < 8) runMigration(db, SCHEMA_V8, 8);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

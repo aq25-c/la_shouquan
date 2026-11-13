@@ -177,7 +177,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     if (path.startsWith("/admin/api/") && !path.startsWith("/admin/api/auth/login")) {
       const staffCtx = requireStaff(ctx);
       // 代理还需要读产品/模块列表来生成卡密（写操作仍被功能权限挡住）
-      if (staffCtx.isAgent && !/^\/admin\/api\/(cdks|cdk-batches|auth|products|modules)/.test(path)) {
+      if (staffCtx.isAgent && !/^\/admin\/api\/(cdks|cdk-batches|auth|products|modules|customers)/.test(path)) {
         throw forbidden("代理账号只能访问卡密相关接口", "FORBIDDEN_AGENT_SCOPE");
       }
       const requiredFeature = featureForAdminRoute(method, path);

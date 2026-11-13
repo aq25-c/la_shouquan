@@ -372,8 +372,8 @@ export function createLicense(input: {
       `INSERT INTO licenses
          (id, license_no, customer_id, product_id, cdk_id, module_ids, seats, status, starts_at, expires_at,
           offline_grace_days, key_hash, note, created_at, updated_at, agent_id, unit_price, kind, source,
-          term_type, term_value, max_usages, used_usages)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          term_type, term_value, max_usages, used_usages, max_expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
     )
     .run(
       id,
@@ -397,6 +397,7 @@ export function createLicense(input: {
       term.termType,
       term.termValue,
       maxUsages,
+      expiresAt, // v8：上限 = CDK 授予的实际到期时间
     );
   return db().prepare("SELECT * FROM licenses WHERE id = ?").get(id) as unknown as LicenseRow;
 }
@@ -474,7 +475,7 @@ export function extendLicense(id: string, days: number, fromNow = false): Licens
  */
 export function adjustCustomerExpiry(
   customerId: string,
-  opts: { days?: number; expiresAt?: string; licenseIds?: string[] },
+  opts: { days?: number; expiresAt?: string; licenseIds?: string[]; capByMaxExpiry?: boolean },
 ): { updated: number; items: LicenseRow[] } {
   const rows = db()
     .prepare("SELECT * FROM licenses WHERE customer_id = ? AND status != 'revoked'")
@@ -485,12 +486,27 @@ export function adjustCustomerExpiry(
 
   const items: LicenseRow[] = [];
   for (const row of targets) {
-    const updated = opts.expiresAt
+    let updated = opts.expiresAt
       ? updateLicense(row.id, { expires_at: opts.expiresAt })
       : typeof opts.days === "number"
         ? extendLicense(row.id, opts.days)
         : null;
-    if (updated) items.push(updated);
+    if (!updated) continue;
+    if (!updated.expires_at) {
+      items.push(updated);
+      continue;
+    }
+
+    const cap = updated.max_expires_at ?? row.max_expires_at ?? null;
+    const nextMs = toMs(updated.expires_at);
+    if (opts.capByMaxExpiry && cap && nextMs > toMs(cap)) {
+      // 代理：可以缩短、也可以恢复，但不得超过 CDK 授予的上限
+      updated = updateLicense(updated.id, { expires_at: cap }) ?? updated;
+    } else if (!opts.capByMaxExpiry && (!cap || nextMs > toMs(cap))) {
+      // 管理员：延长时同步抬高上限，之后代理仍可恢复到该值
+      db().prepare("UPDATE licenses SET max_expires_at = ? WHERE id = ?").run(updated.expires_at, updated.id);
+    }
+    items.push(updated);
   }
   return { updated: items.length, items };
 }
@@ -636,4 +652,51 @@ export function expiringLicenses(days: number, limit = 10): LicenseListItem[] {
 
 export function moduleIdsOf(row: { module_ids: string }): string[] {
   return parseJson<string[]>(row.module_ids, []);
+}
+
+/* ---------------------------- 计费大类与叠加续费 ---------------------------- */
+
+export type TermCategory = "time" | "count";
+
+/** 计费大类：时长型（hour/day/month/year）与次数型（count），两类互斥 */
+export function termCategory(termType: string): TermCategory {
+  return termType === "count" ? "count" : "time";
+}
+
+/** 找该客户在该产品下「仍在有效期内」的正式授权（用于续费叠加） */
+export function findReusableLicense(customerId: string, productId: string): LicenseRow | null {
+  const now = nowIso();
+  return (db()
+    .prepare(
+      `SELECT * FROM licenses
+       WHERE customer_id = ? AND product_id = ? AND status = 'active' AND kind = 'paid'
+         AND starts_at <= ? AND (expires_at IS NULL OR expires_at > ?)
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(customerId, productId, now, now) ?? null) as unknown as LicenseRow | null;
+}
+
+/** 时长型叠加：从「原到期时间」起算再加，而不是覆盖 */
+export function extendLicenseExpiry(licenseId: string, termType: TermType, termValue: number): LicenseRow {
+  const row = findLicenseById(licenseId);
+  if (!row) throw new Error("license not found");
+  const baseMs = Math.max(Date.now(), row.expires_at ? Date.parse(row.expires_at) : 0);
+  const nextMs = computeExpiry(termType, termValue, baseMs);
+  const nextIso = new Date(nextMs).toISOString();
+  db()
+    .prepare(
+      "UPDATE licenses SET expires_at = ?, term_type = ?, term_value = ?, max_expires_at = ?, updated_at = ? WHERE id = ?",
+    )
+    .run(nextIso, termType, termValue, nextIso, nowIso(), licenseId); // v8：叠加同时抬高上限
+  return findLicenseById(licenseId) as LicenseRow;
+}
+
+/** 次数型叠加：累加可用次数，已消耗次数保持不变 */
+export function addLicenseUsages(licenseId: string, count: number): LicenseRow {
+  db()
+    .prepare(
+      `UPDATE licenses SET max_usages = COALESCE(max_usages, 0) + ?, term_type = 'count', updated_at = ? WHERE id = ?`,
+    )
+    .run(Math.max(0, Math.trunc(count)), nowIso(), licenseId);
+  return findLicenseById(licenseId) as LicenseRow;
 }

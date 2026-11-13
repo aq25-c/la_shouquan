@@ -157,6 +157,8 @@ export type LicenseRow = {
   term_value: number | null;
   /** v4：次数型授权的总额度（非次数型为 null） */
   max_usages: number | null;
+  /** v8：该授权允许的最大到期时间（CDK 授予的实际到期时间），代理调整不得突破 */
+  max_expires_at: string | null;
   /** v4：次数型授权已消耗次数 */
   used_usages: number;
 };

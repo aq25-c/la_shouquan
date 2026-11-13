@@ -173,9 +173,15 @@ export function listCustomers(opts: {
   status?: string | null;
   page: number;
   pageSize: number;
+  /** v8：只看某个代理名下的客户（按授权归属判断） */
+  agentId?: string | null;
 }): { items: CustomerListItem[]; total: number } {
   const where: string[] = [];
   const params: (string | number)[] = [];
+  if (opts.agentId) {
+    where.push("EXISTS (SELECT 1 FROM licenses l WHERE l.customer_id = c.id AND l.agent_id = ?)");
+    params.push(opts.agentId);
+  }
   if (opts.q) {
     const p = `%${opts.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
     where.push("(c.email LIKE ? ESCAPE '\\' OR c.name LIKE ? ESCAPE '\\' OR c.company LIKE ? ESCAPE '\\' OR c.phone LIKE ? ESCAPE '\\')");
@@ -258,4 +264,12 @@ export function revokeSessionsFor(subjectType: string, subjectId: string): numbe
 export function purgeExpiredSessions(): number {
   const res = db().prepare("DELETE FROM sessions WHERE expires_at <= ?").run(nowIso());
   return Number(res.changes);
+}
+
+/** 客户是否归属该代理（按授权归属判断，不看客户自身字段） */
+export function customerBelongsToAgent(customerId: string, agentId: string): boolean {
+  const row = db()
+    .prepare("SELECT 1 AS ok FROM licenses WHERE customer_id = ? AND agent_id = ? LIMIT 1")
+    .get(customerId, agentId) as { ok: number } | undefined;
+  return Boolean(row);
 }
