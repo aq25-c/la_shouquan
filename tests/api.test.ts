@@ -2298,6 +2298,28 @@ test("接口兼容：旧的 channel_id 作为 agent_id 仍可正常使用", asyn
 
 /* ==================== 删除客户（v13） ==================== */
 
+test("静态资源：管理后台在根路径和 /admin/ 下都能打开", async () => {
+  for (const p of ["/", "/admin/", "/admin"]) {
+    const res = await fetch(base + p);
+    assert.equal(res.status, 200, `${p} 应返回 200`);
+    assert.match(res.headers.get("content-type") ?? "", /text\/html/, `${p} 应是 HTML`);
+    assert.match(await res.text(), /login-form/, `${p} 应返回后台页面`);
+  }
+  for (const p of ["/admin/app.js", "/admin/styles.css"]) {
+    const res = await fetch(base + p);
+    assert.equal(res.status, 200, `${p} 应能取到`);
+    const ct = res.headers.get("content-type") ?? "";
+    assert.ok(
+      p.endsWith(".js") ? ct.includes("javascript") : ct.includes("css"),
+      `${p} 的 MIME 必须是 ${p.endsWith(".js") ? "javascript" : "css"}，实际是 ${ct}`,
+    );
+  }
+  // /admin/api 不能被静态层兜底成 index.html
+  const apiMiss = await fetch(base + "/admin/api/not-exist");
+  assert.equal(apiMiss.status, 404);
+  assert.match(apiMiss.headers.get("content-type") ?? "", /json/, "API 404 应返回 JSON");
+});
+
 test("删除客户：有有效授权时拒绝，全部过期后硬删除并留完整快照", async () => {
   // 造一个独立客户，用一张 30 天卡激活
   const gen = await api(
@@ -2366,11 +2388,10 @@ test("删除客户：有有效授权时拒绝，全部过期后硬删除并留�
   const me = await api("GET", "/api/v1/auth/me", undefined, custToken);
   assert.equal(me.status, 401, "删除客户后其会话应失效");
 
-  // ⑤ CDK 不删行，改成作废
+  // ⑤ CDK 一并删掉，但码本身留在审计快照里
   const cdkAfter = await api("GET", `/admin/api/cdks?q=${cdk}`, undefined, adminToken);
   const row = cdkAfter.json.data.items.find((c: Json) => c.code === cdk);
-  assert.ok(row, "CDK 记录应保留");
-  assert.equal(row.status, "revoked", "CDK 应标记为作废");
+  assert.ok(!row, "CDK 应随客户一起删除");
 
   // ⑥ 审计日志里有完整快照
   const auditList = await api("GET", "/admin/api/audit?action=customer.delete&page_size=50", undefined, adminToken);

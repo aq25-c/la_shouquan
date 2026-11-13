@@ -2531,7 +2531,7 @@ async function openCustomerDetail(id) {
           const licCount = data.licenses.length;
           const devCount = data.licenses.reduce((n, l) => n + l.devices.length, 0);
           const ok = await confirmDialog(
-            `将永久删除该客户，以及名下 ${licCount} 个授权、${devCount} 台设备记录；相关 CDK 会标为作废但保留记录。删除后无法恢复，只能从审计日志里查快照。确定继续？`,
+            `将永久删除该客户，以及名下 ${licCount} 个授权、${devCount} 台设备记录和关联的 CDK；删除后无法恢复，只能从审计日志里查快照。确定继续？`,
             { danger: true, okText: "永久删除" },
           );
           if (!ok) return;

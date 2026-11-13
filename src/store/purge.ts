@@ -5,7 +5,7 @@
  *   - 只有「名下所有授权都已过期或已吊销」才允许删除；
  *     仍有有效期内的授权、或状态为 suspended 的授权，都会拦住。
  *   - 删除是硬删除：客户行、授权、设备、模块记录一并清掉。
- *   - CDK 不删行，改标 revoked 并断开引用——历史对账还在，但码不能再激活。
+ *   - CDK 一并删行：码、批次、激活时间都已进审计快照，事后仍可追溯。
  *   - 调用方必须在同一个事务里写入审计快照（见 admin 路由），否则不可恢复。
  */
 import { db, withTx } from "../db.ts";
@@ -154,7 +154,6 @@ export function purgeCustomer(customerId: string): {
     if (!customer) return null;
 
     const licenses = listLicensesByCustomer(customerId) as LicenseRow[];
-    const at = nowIso();
     let modules = 0;
     let devices = 0;
 
@@ -164,15 +163,8 @@ export function purgeCustomer(customerId: string): {
       modules += Number(res.changes);
     }
 
-    // 卡密不删行：标成作废并断开对已删对象的引用，历史还能查
-    const cdkRes = db()
-      .prepare(
-        `UPDATE cdks
-            SET status = 'revoked', customer_id = NULL, license_id = NULL,
-                revoked_at = ?, revoked_reason = '客户已删除'
-          WHERE customer_id = ?`,
-      )
-      .run(at, customerId);
+    // 卡密随客户一起删（码本身记在审计快照里，事后仍能查到是哪个码）
+    const cdkRes = db().prepare("DELETE FROM cdks WHERE customer_id = ?").run(customerId);
 
     const licRes = db().prepare("DELETE FROM licenses WHERE customer_id = ?").run(customerId);
     // 设备有 ON DELETE CASCADE，随授权一起消失

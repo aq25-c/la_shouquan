@@ -37,8 +37,21 @@ function readIfFile(path: string): Buffer | null {
   }
 }
 
+/** 管理后台同时挂在根路径和 /admin/ 下：把 /admin 前缀剥掉再查文件 */
+function stripAdminPrefix(pathname: string): string {
+  if (pathname === "/admin") return "/";
+  if (pathname.startsWith("/admin/")) return pathname.slice("/admin".length);
+  return pathname;
+}
+
 export function serveStatic(ctx: Ctx): Reply {
-  const pathname = ctx.path === "/" ? "/index.html" : ctx.path;
+  // /admin/api/* 归 API 路由，静态层不许兜底成 index.html
+  if (ctx.path.startsWith("/admin/api/")) {
+    return raw("404 Not Found", "text/plain; charset=utf-8", 404);
+  }
+
+  const clean = stripAdminPrefix(ctx.path);
+  const pathname = clean === "/" ? "/index.html" : clean;
   const resolved = safeResolve(pathname);
   if (!resolved) return raw("404 Not Found", "text/plain; charset=utf-8", 404);
 
