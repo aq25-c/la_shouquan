@@ -1418,3 +1418,79 @@ test("价格三层：代理覆盖优先、未配则回落全局；员工列表�
   assert.equal(trialSet.json.data.config.mode, "count");
   assert.equal(trialSet.json.data.config.value, 5);
 });
+
+/* ==================== 登录返回实际到期时间 ==================== */
+
+test("客户登录返回实际到期时间：试用给试用期、激活给卡密到期、次数卡给剩余次数", async () => {
+  // 1) 新注册客户：还没有任何授权
+  const trialReg = await api("POST", "/api/v1/auth/register", {
+    email: "login-trial@test.local",
+    password: "TrialLogin123",
+  });
+  assert.equal(trialReg.status, 201);
+  assert.equal(trialReg.json.data.active_license, null, "新客户还没有授权");
+  const tToken = trialReg.json.data.session.token;
+
+  await api("PATCH", "/admin/api/settings/trial", { enabled: true, mode: "day", value: 7 }, adminToken);
+  // 产品级配置优先于全局，这里显式改回按天，避免受前面用例影响
+  await api(
+    "PATCH",
+    `/admin/api/products/${productId}/trial`,
+    { enabled: true, mode: "day", value: 7 },
+    adminToken,
+  );
+  const started = await api("POST", "/api/v1/trial/start", { device_id: "LOGIN-TRIAL-1" }, tToken);
+  assert.equal(started.status, 201);
+
+  // 试用期内登录 → 直接返回试用到期时间
+  const trialLogin = await api("POST", "/api/v1/auth/login", {
+    email: "login-trial@test.local",
+    password: "TrialLogin123",
+  });
+  assert.equal(trialLogin.status, 200);
+  const al = trialLogin.json.data.active_license;
+  assert.ok(al, "试用期内登录应返回授权信息");
+  assert.equal(al.is_trial, true, "应标记为试用");
+  assert.equal(al.status, "active");
+  assert.ok(al.expires_at, "应返回试用到期时间");
+  assert.ok(al.days_left >= 0 && al.days_left <= 7, `剩余天数应在 0~7，实际 ${al.days_left}`);
+
+  // 2) 已通过卡密激活的客户 → 返回卡密到期时间
+  const buyerLogin = await api("POST", "/api/v1/auth/login", {
+    email: "buyer@test.local",
+    password: "buyerPass123",
+  });
+  const bl = buyerLogin.json.data.active_license;
+  assert.ok(bl, "已激活客户应返回授权");
+  assert.equal(bl.is_trial, false);
+  assert.ok(bl.expires_at, "应返回卡密授权到期时间");
+
+  // 3) 次数卡 → 返回剩余次数
+  await api("POST", "/api/v1/auth/register", {
+    email: "login-count@test.local",
+    password: "CountLogin123",
+  });
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "count", term_value: 10, count: 1, seats: 1 },
+    adminToken,
+  );
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: gen.json.data.codes[0],
+    device_id: "LOGIN-COUNT-1",
+    email: "login-count@test.local",
+    password: "CountLogin123",
+  });
+  assert.equal(act.status, 201);
+
+  const countLogin = await api("POST", "/api/v1/auth/login", {
+    email: "login-count@test.local",
+    password: "CountLogin123",
+  });
+  const cl = countLogin.json.data.active_license;
+  assert.ok(cl, "次数卡客户应返回授权");
+  assert.equal(cl.term_type, "count");
+  assert.equal(cl.usages.max, 10);
+  assert.equal(cl.usages.remaining, 10, "次数卡应返回剩余次数");
+});

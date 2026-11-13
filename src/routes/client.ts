@@ -88,6 +88,49 @@ function daysLeft(expiresAt: string): number {
   return ms <= 0 ? 0 : Math.floor(ms / 86_400_000);
 }
 
+/**
+ * 登录 / 鉴权时返回的授权快照：
+ *   - 试用期 → 给试用到期时间（is_trial = true）
+ *   - 已激活 → 给卡密授权到期时间
+ *   - 次数卡 → 额外给剩余次数 usages.remaining
+ */
+function licenseSnapshot(customerId: string) {
+  const now = Date.now();
+  const items = listLicensesByCustomer(customerId).map((row) => {
+    const status = effectiveStatus(row, now);
+    const isCount = row.term_type === "count";
+    const expiresMs = row.expires_at ? Date.parse(row.expires_at) : null;
+    const maxUsages = row.max_usages ?? 0;
+    const usedUsages = row.used_usages ?? 0;
+    return {
+      license_id: row.id,
+      license_no: row.license_no,
+      product_id: row.product_id,
+      product_code: row.product_code,
+      product_name: row.product_name,
+      kind: row.kind,
+      is_trial: row.kind === "trial",
+      status,
+      term_type: row.term_type,
+      term_value: row.term_value,
+      starts_at: row.starts_at,
+      expires_at: row.expires_at,
+      days_left: status === "active" && expiresMs ? Math.max(0, Math.ceil((expiresMs - now) / 86_400_000)) : 0,
+      usages: isCount
+        ? { max: maxUsages, used: usedUsages, remaining: Math.max(0, maxUsages - usedUsages) }
+        : null,
+    };
+  });
+
+  // 优先取「已激活的正式授权」，其次「试用中」，都没有则 null
+  const activeLicense =
+    items.find((item) => item.status === "active" && !item.is_trial) ??
+    items.find((item) => item.status === "active") ??
+    null;
+
+  return { licenses: items, active_license: activeLicense };
+}
+
 export function registerClientRoutes(): void {
   /* ---------------------------- 元信息 ---------------------------- */
 
@@ -147,6 +190,8 @@ export function registerClientRoutes(): void {
     return created({
       customer: customerView(customer),
       session: sessionPayload(ctx, customer.id),
+      licenses: [],
+      active_license: null,
     });
   });
 
@@ -177,17 +222,27 @@ export function registerClientRoutes(): void {
       action: "customer.login",
       ip: ctx.ip,
     });
-    return ok({ customer: customerView(customer), session: sessionPayload(ctx, customer.id) });
+    return ok({
+      customer: customerView(customer),
+      session: sessionPayload(ctx, customer.id),
+      ...licenseSnapshot(customer.id),
+    });
   });
 
   get("/api/v1/auth/me", (ctx) => {
     const customer = requireCustomer(ctx);
+    const snapshot = licenseSnapshot(customer.id);
+    const rows = listLicensesByCustomer(customer.id);
+    const devicesById = new Map(
+      rows.map((row) => [row.id, listDevices(row.id).filter((d) => d.status === "active")]),
+    );
     return ok({
       customer: customerView(customer),
-      licenses: listLicensesByCustomer(customer.id).map((row) => ({
-        ...licenseView(row),
-        devices: listDevices(row.id).filter((d) => d.status === "active"),
+      licenses: snapshot.licenses.map((item) => ({
+        ...item,
+        devices: devicesById.get(item.license_id) ?? [],
       })),
+      active_license: snapshot.active_license,
     });
   });
 

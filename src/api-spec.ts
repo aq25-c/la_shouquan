@@ -36,8 +36,18 @@ const ENTRIES: Record<string, ApiDocEntry> = {
 
   /* ---------------- 客户端 · 账号 ---------------- */
   "POST /api/v1/auth/register": { title: "客户注册", auth: "public", params: "`email`、`password`(≥8位)、`name?`", desc: "创建客户账号，返回客户信息与登录会话 token。" },
-  "POST /api/v1/auth/login": { title: "客户登录", auth: "public", params: "`email`、`password`", desc: "返回 `customer` 与 `session.token`（后续自助接口用）。" },
-  "GET /api/v1/auth/me": { title: "我的账号与授权", auth: "customer", desc: "返回当前客户信息 + 名下全部授权（含在用设备）。" },
+  "POST /api/v1/auth/login": {
+    title: "客户登录",
+    auth: "public",
+    params: "`email`、`password`",
+    desc: "返回 `customer`、`session.token`，以及授权快照 `licenses` / `active_license`：试用期返回试用到期时间（`is_trial=true`），激活后返回卡密授权到期时间，次数卡额外返回 `usages.remaining` 剩余次数。",
+    notes: "登录本身不校验授权是否到期，客户端可依据 `active_license.status`（active/expired/revoked/suspended）自行决定是否放行。",
+  },
+  "GET /api/v1/auth/me": {
+    title: "我的账号与授权",
+    auth: "customer",
+    desc: "返回客户信息、名下全部授权（含在用设备与 `days_left`、`usages.remaining`），以及优先展示用的 `active_license`。",
+  },
 
   /* ---------------- 客户端 · 授权 ---------------- */
   "POST /api/v1/cdks/inspect": { title: "CDK 预检", auth: "public", params: "`cdk`", desc: "查询卡密是否可用、天数、席位、模块，**不核销**。" },
