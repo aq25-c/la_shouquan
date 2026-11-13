@@ -140,6 +140,10 @@ function applyMenuPermissions() {
   $$("#nav .nav-item, .sidebar-foot .nav-item").forEach((btn) => {
     btn.hidden = !hasMenu(btn.dataset.view);
   });
+  // 代理端不需要「运营 / 管理」这种分组标题
+  $$("#nav .nav-label").forEach((el) => {
+    el.hidden = state.role === "agent";
+  });
 }
 
 /** 第一个有权限的页面（代理只有卡密页） */
@@ -435,7 +439,85 @@ function moduleCheckboxes(productId, checked = []) {
 
 /* ============================ 概览 ============================ */
 
+/** 代理首页：余额 / 卡密 / 客户到期，只看自己名下 */
+async function renderAgentHome(root) {
+  const d = await apiGet("/admin/api/agent-home");
+  const sub = $("#page-subtitle");
+  if (sub) sub.textContent = "我的余额、卡密与客户到期";
+  const cdk = d.cdk;
+  const cust = d.customers;
+
+  const rowsOf = (list, empty) =>
+    list.length
+      ? list
+          .map(
+            (r) => `<tr>
+              <td>${customerCell(r.customer_name, r.customer_email)}</td>
+              <td>${esc(r.product_name)} <span class="muted small mono">${esc(r.product_code)}</span></td>
+              <td class="nowrap">${fmtDay(r.expires_at)}</td>
+              <td>${
+                r.days_left === null
+                  ? "—"
+                  : r.days_left < 0
+                    ? `<span class="badge badge-danger">已过期 ${Math.abs(r.days_left)} 天</span>`
+                    : r.days_left <= 7
+                      ? `<span class="badge badge-warn">${r.days_left} 天</span>`
+                      : `<span class="muted">${r.days_left} 天</span>`
+              }</td>
+              <td class="mono small">${esc(r.license_no)}</td>
+            </tr>`,
+          )
+          .join("")
+      : emptyRow(5, empty);
+
+  root.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat accent"><div class="stat-label">账户余额</div>
+        <div class="stat-value">${money(d.agent?.balance ?? 0)}</div>
+        <div class="stat-hint">生成卡密时按定价扣这里</div></div>
+      <div class="stat"><div class="stat-label">卡密总数</div><div class="stat-value">${cdk.total}</div>
+        <div class="stat-hint">未用 ${cdk.unused} · 已用 ${cdk.used}${cdk.revoked ? ` · 作废 ${cdk.revoked}` : ""}</div></div>
+      <div class="stat${cust.in_7d > 0 ? " warn" : ""}"><div class="stat-label">名下客户</div>
+        <div class="stat-value">${cust.total}</div>
+        <div class="stat-hint">7 天内到期 ${cust.in_7d} 个${cust.expired ? ` · 已过期 ${cust.expired} 个` : ""}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>近期到期（已过期 + 7 天内）</h3>
+        <button class="btn btn-sm" data-go-cdk type="button">去生成卡密</button>
+      </div>
+      <div class="card-body tight">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>客户</th><th>产品</th><th>到期时间</th><th>剩余</th><th>授权单号</th></tr></thead>
+            <tbody>${rowsOf(d.expiring, "近期没有到期的客户，挺好")}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    ${
+      d.upcoming?.length
+        ? `<div class="card">
+            <div class="card-head"><h3>30 天内到期</h3><span class="muted small">提前打个电话续费</span></div>
+            <div class="card-body tight">
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>客户</th><th>产品</th><th>到期时间</th><th>剩余</th><th>授权单号</th></tr></thead>
+                  <tbody>${rowsOf(d.upcoming, "")}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>`
+        : ""
+    }`;
+
+  $("[data-go-cdk]", root).onclick = () => navigate("cdks");
+}
+
 async function renderOverview(root) {
+  if (state.role === "agent") return renderAgentHome(root);
   const data = await apiGet("/admin/api/overview");
   const s = data.stats;
   state.config = data.config;
@@ -1520,31 +1602,36 @@ async function renderCdks(root) {
     apiGet("/admin/api/cdk-batches"),
   ]);
 
+  const isAgent = state.role === "agent";
+  const TERM_LABEL = { hour: "按小时", day: "按天", month: "按月", year: "按年", count: "按次数" };
+  // 代理只能从「已定价的档位」里选；管理员仍可自由选计费方式
+  const TERM_OPTIONS = isAgent
+    ? `<option value="day">加载中…</option>`
+    : Object.entries(TERM_LABEL)
+        .map(([v, l]) => `<option value="${v}">${l}</option>`)
+        .join("");
+
   root.innerHTML = `
     <div class="card">
       <div class="card-head"><h3>批量生成 CDK</h3></div>
       <div class="card-body">
         <div class="form-grid">
           <label class="field"><span>产品</span><select name="product_id">${productOptions(state.products[0]?.id)}</select></label>
-          <label class="field"><span>计费方式</span>
+          <label class="field"><span>${isAgent ? "定价档位" : "计费方式"}</span>
             <select name="term_type">
-              <option value="day">按天</option>
-              <option value="month">按月</option>
-              <option value="year">按年</option>
-              <option value="hour">按小时</option>
-              <option value="count">按次数</option>
+              ${TERM_OPTIONS}
             </select></label>
-          <label class="field"><span>数量（天 / 月 / 年 / 时 / 次）</span><input name="term_value" type="number" min="1" max="100000" value="365" /></label>
+          <label class="field"><span data-term-label>数量（天 / 月 / 年 / 时 / 次）</span><input name="term_value" type="number" min="1" max="100000" value="365" /></label>
           <label class="field"><span>席位数（可绑定设备数）</span><input name="seats" type="number" min="1" max="100" value="1" /></label>
           <label class="field"><span>生成数量</span><input name="count" type="number" min="1" max="5000" value="10" /></label>
           <label class="field"><span>兑换截止时间（可选）</span><input name="redeem_before" type="datetime-local" /></label>
-          <label class="field"><span>归属代理（可选）</span><select name="agent_id">${agentOptions()}</select></label>
-          <label class="field"><span>结算单价（元）</span><input name="unit_price" type="number" min="0" step="0.01" value="0" /></label>
+          ${isAgent ? "" : `<label class="field"><span>归属代理（可选）</span><select name="agent_id">${agentOptions()}</select></label>`}
           <label class="field"><span>批次备注</span><input name="note" placeholder="例如 2025Q1 代理批次" /></label>
           <div class="field full"><span>包含模块</span>
             <div class="checkbox-list" data-modules>${moduleCheckboxes(state.products[0]?.id ?? "")}</div>
           </div>
         </div>
+        ${isAgent ? '<div class="note" data-tier-note>正在读取定价…</div>' : ""}
         <div class="form-actions">
           <button class="btn btn-primary" data-generate type="button">生成并导出</button>
           <span class="muted small">CDK 数量较多时会自动以 CSV 提供下载</span>
@@ -1614,58 +1701,153 @@ async function renderCdks(root) {
     </div>`;
 
   const productSelect = $('[name="product_id"]', root);
+  const termSelect = $('[name="term_type"]', root);
+  const estimateBox = $("[data-estimate]", root);
+  const yuan = (v) => `¥${(Number(v) / 100).toFixed(2)}`;
+  const TERM_UNIT = { hour: "小时", day: "天", month: "月", year: "年", count: "次" };
+
+  // 代理端：产品 / 模块变化时重新拉一次定价档位（每个档位的单价由定价表决定）
+  const loadTiers = async () => {
+    if (!isAgent || !termSelect) return;
+    const mods = $$("[data-modules] input", root).map((i) => i.value);
+    let tiers = [];
+    try {
+      const est = await apiPost("/admin/api/cdks/estimate", {
+        product_id: productSelect.value,
+        module_ids: mods,
+        term_type: "day",
+        term_value: 1,
+        count: 1,
+        seats: 1,
+      });
+      tiers = est.tiers ?? [];
+    } catch {
+      tiers = [];
+    }
+    const note = $("[data-tier-note]", root);
+    if (!tiers.length) {
+      termSelect.innerHTML = `<option value="">该产品还没定价</option>`;
+      if (note) note.innerHTML = "该产品还没有定价，请你联系上游开通价格后再生成。";
+      return;
+    }
+    if (note) {
+      note.innerHTML =
+        "<b>当前定价：</b>" +
+        tiers
+          .map(
+            (t) =>
+              `${TERM_LABEL[t.term_type] ?? t.term_type} <b>${yuan(t.unit_price)}/${TERM_UNIT[t.term_type] ?? "单位"}</b>` +
+              `<span class="muted">（席位比例 ${t.seat_ratio}%）</span>`,
+          )
+          .join(" · ");
+    }
+    const keep = termSelect.value;
+    termSelect.innerHTML = tiers
+      .map(
+        (t) =>
+          `<option value="${t.term_type}">${TERM_LABEL[t.term_type] ?? t.term_type} · ${yuan(t.unit_price)}/${TERM_UNIT[t.term_type] ?? "单位"}</option>`,
+      )
+      .join("");
+    if (tiers.some((t) => t.term_type === keep)) termSelect.value = keep;
+    // 数量单位跟着选中的档位走（天 / 月 / 年 / 小时 / 次）
+    const unit = { hour: "小时", day: "天", month: "月", year: "年", count: "次" }[termSelect.value] ?? "";
+    const lab = $("[data-term-label]", root);
+    if (lab && unit) lab.textContent = `数量（${unit}）`;
+  };
+
   productSelect.onchange = () => {
     $("[data-modules]", root).innerHTML = moduleCheckboxes(productSelect.value);
+    loadTiers().then(refreshEstimate);
   };
 
   // 实时金额预估：代理生成时显示本次费用与余额，管理员为赠送不扣费
-  const estimateBox = $("[data-estimate]", root);
   const refreshEstimate = async () => {
     if (!estimateBox) return;
-    const termType = $('[name="term_type"]', root)?.value ?? "day";
+    const termType = termSelect?.value ?? "day";
     const termValue = Number($('[name="term_value"]', root)?.value ?? 0);
     const count = Number($('[name="count"]', root)?.value ?? 0);
+    const seats = Number($('[name="seats"]', root)?.value ?? 1) || 1;
+    const mods = $$("[data-modules] input:checked", root).map((i) => i.value);
+
+    // 代理端按顺序引导：先选档位 → 填数量 → 勾模块 → 出价格
+    if (isAgent && !mods.length) {
+      estimateBox.className = "note warn";
+      estimateBox.textContent = "③ 请勾选模块（至少一个）后才能算出价格";
+      return;
+    }
     if (!termValue || !count) {
       estimateBox.className = "note";
-      estimateBox.textContent = "请填写数量与张数";
+      estimateBox.textContent = "② 填写数量和天数";
       return;
     }
     try {
       const est = await apiPost("/admin/api/cdks/estimate", {
         product_id: productSelect.value,
-        module_ids: $$("[data-modules] input:checked", root).map((i) => i.value),
+        module_ids: mods,
         term_type: termType,
         term_value: termValue,
         count,
+        seats,
       });
-      const yuan = (v) => `¥${(Number(v) / 100).toFixed(2)}`;
+
       if (!est.payable) {
         estimateBox.className = "note";
-        estimateBox.textContent = "管理员生成：属于赠送，不扣代理商余额";
+        estimateBox.textContent = "管理员生成：属于赠送，不扣代理余额";
         return;
       }
       if (!est.priced) {
         estimateBox.className = "note warn";
-        estimateBox.textContent = "⚠ 该产品 / 卡类型尚未配置价格，无法生成";
+        estimateBox.textContent = "⚠ 该产品 / 这个档位还没定价，无法生成，请联系管理员";
         return;
       }
-      estimateBox.className = est.sufficient ? "note" : "note warn";
-      estimateBox.textContent =
-        `本次需 ${yuan(est.total_price)}（单价 ${yuan(est.unit_price)} × ${est.term_value} × ${est.count} 张）` +
-        (est.balance !== null ? ` · 当前余额 ${yuan(est.balance)}${est.sufficient ? "" : "（不足）"}` : "");
+
+      const unit = TERM_UNIT[termType] ?? "单位";
+      const ratio = Number(est.seat_ratio ?? 0);
+      const ratioText =
+        ratio === 100
+          ? `席位比例 100%：${seats} 个席位按 ${seats} 倍计费`
+          : ratio === 0
+            ? "席位比例 0%：席位不影响价格"
+            : `席位比例 ${ratio}%：${seats} 个席位按 ${Number(est.seat_factor ?? 1).toFixed(2)} 倍计费`;
+
+      const calc = `单价 ${yuan(est.unit_price)}/${unit} × ${est.billable_units} ${unit} × ${est.count} 张`;
+
+      if (!est.sufficient) {
+        const gap = Number(est.shortfall ?? 0);
+        estimateBox.className = "note danger-note";
+        estimateBox.innerHTML =
+          `<div class="estimate-danger">余额不足，还差 ${yuan(gap)}</div>` +
+          `<div class="small">本次需 <b>${yuan(est.total_price)}</b>（${calc}）· 当前余额 ${yuan(est.balance ?? 0)}</div>` +
+          `<div class="small muted">${ratioText}</div>`;
+        return;
+      }
+
+      estimateBox.className = "note";
+      estimateBox.innerHTML =
+        `<div class="estimate-amount">本次需 ${yuan(est.total_price)}</div>` +
+        `<div class="small muted">${calc} · 当前余额 ${yuan(est.balance ?? 0)}</div>` +
+        `<div class="small muted">${ratioText}</div>`;
     } catch {
       estimateBox.className = "note";
       estimateBox.textContent = "估价失败，请检查填写";
     }
   };
-  ["term_type", "term_value", "count"].forEach((n) => {
+
+  ["term_type", "term_value", "count", "seats"].forEach((n) => {
     const el = $(`[name="${n}"]`, root);
     if (el) {
       el.addEventListener("input", refreshEstimate);
       el.addEventListener("change", refreshEstimate);
     }
   });
-  refreshEstimate();
+  $("[data-modules]", root).addEventListener("change", refreshEstimate);
+  termSelect?.addEventListener("change", () => {
+    const unit = { hour: "小时", day: "天", month: "月", year: "年", count: "次" }[termSelect.value] ?? "";
+    const lab = $("[data-term-label]", root);
+    if (lab && unit) lab.textContent = `数量（${unit}）`;
+  });
+  if (isAgent) loadTiers().then(refreshEstimate);
+  else refreshEstimate();
 
   $("[data-generate]", root).onclick = async () => {
     const moduleIds = $$("[data-modules] input:checked", root).map((i) => i.value);
@@ -1679,9 +1861,8 @@ async function renderCdks(root) {
       seats: Number($('[name="seats"]', root).value),
       count: Number($('[name="count"]', root).value),
       note: $('[name="note"]', root).value.trim(),
-      // 代理可选；单价按「元」录入，提交时换算成「分」
+      // 单价不传：后端一律按定价表算（输入框已取消）
       agent_id: agentSelect?.value || undefined,
-      unit_price: Math.round(Number($('[name="unit_price"]', root).value || 0) * 100),
     };
     const redeemBefore = $('[name="redeem_before"]', root).value;
     if (redeemBefore) payload.redeem_before = new Date(redeemBefore).toISOString();
@@ -3169,14 +3350,19 @@ async function renderParams(root) {
             </select></label>
           <label class="field"><span>单价（元 / 单位）</span>
             <input name="price_unit" type="number" step="0.01" min="0" value="1" /></label>
+          <label class="field"><span>每多 1 个席位加价 %（默认 100）</span>
+            <input name="price_seat_ratio" type="number" step="1" min="0" max="1000" value="100" /></label>
         </div>
         <div class="form-actions">
           <button class="btn btn-primary btn-sm" data-save-price type="button">保存价格</button>
-          <span class="muted small">代理生成卡密时按「单价 × 时长/次数 × 张数」从账户余额扣费</span>
+          <span class="muted small">代理生成卡密时按「单价 × 数量 × 席位系数 × 张数」从账户余额扣费</span>
+        </div>
+        <div class="note">
+          席位系数 = 1 + (席位数 − 1) × 比例。比例 100%：2 个席位按 2 倍算；比例 50%：2 个席位按 1.5 倍（7 天 → 10.5 天）；比例 0%：席位不影响价格。
         </div>
         <div class="table-wrap" style="margin-top:12px">
           <table>
-            <thead><tr><th>产品 / 模块</th><th>卡类型</th><th>单价</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>产品 / 模块</th><th>卡类型</th><th>单价</th><th>席位比例</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 pricesRes.items.length
@@ -3188,7 +3374,7 @@ async function renderParams(root) {
                     )
                       .map(
                         ([productName, rows]) => `
-                        <tr class="group-row"><td colspan="4"><strong>${esc(productName)}</strong>
+                        <tr class="group-row"><td colspan="5"><strong>${esc(productName)}</strong>
                           <span class="muted small">共 ${rows.length} 条</span></td></tr>
                         ${rows
                           .map(
@@ -3196,13 +3382,14 @@ async function renderParams(root) {
                               <td style="padding-left:26px">${p.module_name ? esc(p.module_name) : '<span class="muted small">产品默认价（全部模块）</span>'}</td>
                               <td>${termText(p.term_type)}</td>
                               <td>¥${(p.unit_price / 100).toFixed(2)} / ${termUnit(p.term_type)}</td>
+                              <td>${p.seat_ratio ?? 100}%<span class="muted small"> · 2 席位 ${(1 + (p.seat_ratio ?? 100) / 100).toFixed(2)} 倍</span></td>
                               <td class="right"><button class="btn btn-sm" data-del-price="${esc(p.id)}" type="button">删除</button></td>
                             </tr>`,
                           )
                           .join("")}`,
                       )
                       .join("")
-                  : emptyRow(4, "还没有配置价格——代理将无法生成卡密")
+                  : emptyRow(5, "还没有配置价格——代理将无法生成卡密")
               }
             </tbody>
           </table>
@@ -3217,8 +3404,13 @@ async function renderParams(root) {
     const moduleId = $('[name="price_module"]', root).value || null;
     const termType = $('[name="price_term"]', root).value;
     const yuan = Number($('[name="price_unit"]', root).value);
+    const seatRatio = Number($('[name="price_seat_ratio"]', root).value);
     if (!productId || !Number.isFinite(yuan) || yuan < 0) {
       toast("请选择产品并填写单价", "error");
+      return;
+    }
+    if (!Number.isFinite(seatRatio) || seatRatio < 0) {
+      toast("席位比例要填 0 或以上的数字", "error");
       return;
     }
     try {
@@ -3227,6 +3419,7 @@ async function renderParams(root) {
         module_id: moduleId,
         term_type: termType,
         unit_price: Math.round(yuan * 100),
+        seat_ratio: Math.round(seatRatio),
       });
       toast("价格已保存", "ok");
       navigate("params", true);

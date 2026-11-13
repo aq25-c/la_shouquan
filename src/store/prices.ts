@@ -14,6 +14,8 @@ export type PriceRow = {
   module_id: string;
   term_type: string;
   unit_price: number;
+  /** 每多 1 个席位加价百分比（0 = 席位不影响价格） */
+  seat_ratio: number;
   created_at: string;
   updated_at: string;
 };
@@ -57,6 +59,7 @@ export function upsertPrice(input: {
   moduleId: string | null;
   termType: string;
   unitPrice: number;
+  seatRatio?: number;
 }): PriceRow {
   const agentId = input.agentId ?? "";
   const moduleId = input.moduleId ?? "";
@@ -67,20 +70,32 @@ export function upsertPrice(input: {
     )
     .get(agentId, input.productId, moduleId, input.termType) as unknown as PriceRow | undefined;
 
+  const ratio = clampRatio(input.seatRatio ?? 100);
+
   if (existing) {
     db()
-      .prepare("UPDATE agent_prices SET unit_price = ?, updated_at = ? WHERE id = ?")
-      .run(Math.max(0, Math.trunc(input.unitPrice)), at, existing.id);
+      .prepare("UPDATE agent_prices SET unit_price = ?, seat_ratio = ?, updated_at = ? WHERE id = ?")
+      .run(Math.max(0, Math.trunc(input.unitPrice)), ratio, at, existing.id);
     return findPrice(existing.id) as PriceRow;
   }
 
   const id = newId("prc");
   db()
     .prepare(
-      `INSERT INTO agent_prices (id, agent_id, product_id, module_id, term_type, unit_price, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agent_prices (id, agent_id, product_id, module_id, term_type, unit_price, seat_ratio, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, agentId, input.productId, moduleId, input.termType, Math.max(0, Math.trunc(input.unitPrice)), at, at);
+    .run(
+      id,
+      agentId,
+      input.productId,
+      moduleId,
+      input.termType,
+      Math.max(0, Math.trunc(input.unitPrice)),
+      ratio,
+      at,
+      at,
+    );
   return findPrice(id) as PriceRow;
 }
 
@@ -95,22 +110,26 @@ export function deletePrice(id: string): boolean {
  *   2) 全局默认价（agent_id = ''）：模块价 → 产品默认价
  *   3) 都没配 → null（调用方应拒绝生成，避免免费出卡）
  */
-export function resolveUnitPrice(
+export function resolvePrice(
   productId: string,
   moduleIds: string[],
   termType: string,
   agentId?: string | null,
-): number | null {
+): { unit_price: number; seat_ratio: number } | null {
   const stmt = db().prepare(
-    "SELECT unit_price FROM agent_prices WHERE agent_id = ? AND product_id = ? AND module_id = ? AND term_type = ?",
+    "SELECT unit_price, seat_ratio FROM agent_prices WHERE agent_id = ? AND product_id = ? AND module_id = ? AND term_type = ?",
   );
-  const lookup = (owner: string): number | null => {
+  const lookup = (owner: string): { unit_price: number; seat_ratio: number } | null => {
     for (const moduleId of moduleIds) {
-      const hit = stmt.get(owner, productId, moduleId, termType) as { unit_price: number } | undefined;
-      if (hit) return Number(hit.unit_price);
+      const hit = stmt.get(owner, productId, moduleId, termType) as
+        | { unit_price: number; seat_ratio: number }
+        | undefined;
+      if (hit) return { unit_price: Number(hit.unit_price), seat_ratio: Number(hit.seat_ratio ?? 0) };
     }
-    const fallback = stmt.get(owner, productId, "", termType) as { unit_price: number } | undefined;
-    return fallback ? Number(fallback.unit_price) : null;
+    const fallback = stmt.get(owner, productId, "", termType) as
+      | { unit_price: number; seat_ratio: number }
+      | undefined;
+    return fallback ? { unit_price: Number(fallback.unit_price), seat_ratio: Number(fallback.seat_ratio ?? 0) } : null;
   };
 
   const own = agentId ? lookup(agentId) : null;
@@ -118,9 +137,52 @@ export function resolveUnitPrice(
   return lookup("");
 }
 
-/** 总价（分）= 单价 × 数量（天/月/年/时/次）× 张数 */
-export function totalPrice(unitPrice: number, termValue: number, count: number): number {
-  return Math.max(0, Math.trunc(unitPrice)) * Math.max(0, Math.trunc(termValue)) * Math.max(0, Math.trunc(count));
+/** 兼容旧调用：只取单价 */
+export function resolveUnitPrice(
+  productId: string,
+  moduleIds: string[],
+  termType: string,
+  agentId?: string | null,
+): number | null {
+  return resolvePrice(productId, moduleIds, termType, agentId)?.unit_price ?? null;
+}
+
+/** 该产品或模块下所有已配置的定价档位（代理视角：自己的覆盖价优先，回落全局价） */
+export function availableTiers(
+  productId: string,
+  moduleIds: string[],
+  agentId?: string | null,
+): { term_type: string; unit_price: number; seat_ratio: number }[] {
+  const out: { term_type: string; unit_price: number; seat_ratio: number }[] = [];
+  for (const termType of ["hour", "day", "month", "year", "count"]) {
+    const p = resolvePrice(productId, moduleIds, termType, agentId);
+    if (p) out.push({ term_type: termType, ...p });
+  }
+  return out;
+}
+
+/** 席位系数：1 席位 = 1；每多 1 席按比例加价（50% → 2 席位 1.5 倍） */
+export function seatFactor(seats: number, seatRatio = 100): number {
+  const n = Math.max(1, Math.trunc(seats || 1));
+  return 1 + (n - 1) * (clampRatio(seatRatio) / 100);
+}
+
+/** 计费数量 = 数量 × 席位系数（保留两位，7 天 × 1.5 = 10.5） */
+export function billableUnits(termValue: number, seats: number, seatRatio = 100): number {
+  const v = Math.max(0, Number(termValue) || 0) * seatFactor(seats, seatRatio);
+  return Math.round(v * 100) / 100;
+}
+
+/** 总价（分）= 单价 × 数量（天/月/年/时/次）× 席位系数 × 张数 */
+export function totalPrice(unitPrice: number, termValue: number, count: number, seats = 1, seatRatio = 100): number {
+  const units = billableUnits(termValue, seats, seatRatio);
+  return Math.round(Math.max(0, Math.trunc(unitPrice)) * units * Math.max(0, Math.trunc(count)));
+}
+
+function clampRatio(v: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(1000, Math.round(n));
 }
 
 /* ---------------------------- 代理可售范围 ---------------------------- */

@@ -48,8 +48,8 @@ export const OWNER_PERMISSIONS: Permissions = { menus: ALL_MENUS, features: ALL_
 
 /** 代理：只看自己的卡密页、只能生成卡密 */
 export const AGENT_PERMISSIONS: Permissions = {
-  // 代理：卡密 + 自己名下的客户
-  menus: ["cdks", "customers"],
+  // 代理：首页 + 卡密 + 自己名下的客户
+  menus: ["overview", "cdks", "customers"],
   features: ["cdk.generate", "cdk.revoke", "customer.manage", "customer.expiry"],
 };
 

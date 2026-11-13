@@ -577,7 +577,12 @@ function nextLicenseNo(): string {
 
 export function updateLicense(
   id: string,
-  patch: Partial<Pick<LicenseRow, "status" | "expires_at" | "starts_at" | "seats" | "module_ids" | "note" | "offline_grace_days">>,
+  patch: Partial<
+    Pick<
+      LicenseRow,
+      "status" | "expires_at" | "starts_at" | "seats" | "module_ids" | "note" | "offline_grace_days" | "agent_id" | "unit_price"
+    >
+  >,
 ): LicenseRow | null {
   const sets: string[] = [];
   const params: (string | number | null)[] = [];

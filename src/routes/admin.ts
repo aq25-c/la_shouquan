@@ -49,6 +49,9 @@ import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget, listAuditByTargets } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
+
+/** 每分钟每个 IP 的后台登录尝试上限（测试里可调高，避免整库用例被判成暴力破解） */
+const ADMIN_LOGIN_LIMIT = Math.max(1, Number(process.env.ADMIN_LOGIN_RATE_LIMIT ?? 10) || 10);
 import { checkCustomerPurgeable, customerPurgeSnapshot, purgeCustomer } from "../store/purge.ts";
 import {
   DEFAULT_ADMIN_PATH,
@@ -58,12 +61,16 @@ import {
   setAdminPath,
 } from "../store/entry.ts";
 import {
+  availableTiers,
+  billableUnits,
   checkAgentScope,
   deletePrice,
   findPrice,
   listPrices,
   parseAgentProfile,
+  resolvePrice,
   resolveUnitPrice,
+  seatFactor,
   serializeAgentProfile,
   totalPrice,
   upsertPrice,
@@ -72,6 +79,7 @@ import { REMOTE_VAR_KINDS, deleteVar, listVars, upsertVar, varView } from "../st
 import type { RemoteVarKind } from "../store/vars.ts";
 import { normalizeTerm } from "../permissions.ts";
 import {
+  agentHome,
   agentReferences,
   agentSummary,
   consumeCredit,
@@ -238,7 +246,7 @@ export function registerAdminRoutes(): void {
   /* ---------------------------- 登录 / 会话 ---------------------------- */
 
   post(`${P}/auth/login`, async (ctx) => {
-    if (!checkStrictLimit(`admin-login:${ctx.ip}`, 10)) throw tooMany("登录尝试过于频繁，请稍后再试");
+    if (!checkStrictLimit(`admin-login:${ctx.ip}`, ADMIN_LOGIN_LIMIT)) throw tooMany("登录尝试过于频繁，请稍后再试");
     const email = normalizeEmail(needStr(ctx, "email", 190));
     const password = needStr(ctx, "password", 200);
     const admin = findAdminByEmail(email);
@@ -324,6 +332,19 @@ export function registerAdminRoutes(): void {
       recent_licenses: listLicenses({ page: 1, pageSize: 8 }).items,
       config: publicConfig(),
     });
+  });
+
+  /**
+   * 代理首页：只返回「我自己名下」的数据。
+   * 管理员带 ?agent_id= 也可以查某个代理的首页。
+   */
+  get(`${P}/agent-home`, (ctx) => {
+    const staffCtx = requireStaff(ctx);
+    const agentId = staffCtx.isAgent ? staffCtx.agentId : (q(ctx, "agent_id") ?? null);
+    if (!agentId) throw forbidden("请指定代理", "AGENT_REQUIRED");
+    const data = agentHome(agentId);
+    if (!data.agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+    return ok(data);
   });
 
   /* ---------------------------- 员工与代理 ---------------------------- */
@@ -674,6 +695,8 @@ export function registerAdminRoutes(): void {
       throw badRequest("term_type 只能是 hour/day/month/year/count", "INVALID_FIELD");
     }
     const unitPrice = needInt(ctx, "unit_price", { min: 0, max: 100_000_000 });
+    // 每多 1 个席位加价百分比（0~1000，默认 0 表示席位不影响价格）
+    const seatRatio = bodyInt(ctx, "seat_ratio", { min: 0, max: 1000 }) ?? 0;
 
     // agent_id 留空 = 全局默认价；填了 = 该代理的覆盖价
     const agentIdInput = bodyStr(ctx, "agent_id", 64);
@@ -687,6 +710,7 @@ export function registerAdminRoutes(): void {
       moduleId: moduleId ?? null,
       termType,
       unitPrice,
+      seatRatio,
     });
     audit({
       actorType: "admin",
@@ -696,7 +720,14 @@ export function registerAdminRoutes(): void {
       targetType: "price",
       targetId: price.id,
       ip: ctx.ip,
-      detail: { agent_id: agentIdInput ?? "", product_id: productId, module_id: moduleId, term_type: termType, unit_price: unitPrice },
+      detail: {
+        agent_id: agentIdInput ?? "",
+        product_id: productId,
+        module_id: moduleId,
+        term_type: termType,
+        unit_price: unitPrice,
+        seat_ratio: seatRatio,
+      },
     });
     return ok({ price });
   });
@@ -1162,9 +1193,8 @@ export function registerAdminRoutes(): void {
     const note = bodyStr(ctx, "note", { max: 500 });
     const redeemBefore = isoOrNull(ctx, "redeem_before");
 
-    // v2：代理与结算单价（单价单位：分）
+    // v2：归属代理。结算单价不再由前端传（输入框已取消），一律取定价表
     const agentInput = bodyStr(ctx, "agent_id", 64);
-    const unitPrice = bodyInt(ctx, "unit_price", { min: 0, max: 100_000_000 }) ?? 0;
 
     // v4：代理只能给自己的代理生成，且受"卡密余额"限制
     const staffCtx = requireStaff(ctx);
@@ -1178,12 +1208,18 @@ export function registerAdminRoutes(): void {
       agentId = agent.id;
     }
 
+    const termInfo = normalizeTerm(termTypeInput ?? null, termValueInput ?? null, days);
+    // 结算单价一律取定价表（代理覆盖价 → 全局价），前端传什么都不认
+    const priced = resolvePrice(productId, moduleIds, termInfo.termType, agentId);
+    const unitPrice = priced?.unit_price ?? 0;
+    const seatRatio = priced?.seat_ratio ?? 100;
+    const amount = priced ? totalPrice(unitPrice, termInfo.termValue, count, seats, seatRatio) : 0;
+
     const result = withTx(() => {
       // 代理生成：校验可售范围 → 按价格扣账户余额（金额）
       if (staffCtx.isAgent) {
         if (!agentId) throw forbidden("代理账号未绑定代理", "AGENT_NOT_BOUND");
         const profile = parseAgentProfile(staffCtx.admin.agent_profile);
-        const termInfo = normalizeTerm(termTypeInput ?? null, termValueInput ?? null, days);
         const scope = checkAgentScope(profile, {
           productId,
           moduleIds,
@@ -1191,14 +1227,12 @@ export function registerAdminRoutes(): void {
         });
         if (!scope.ok) throw forbidden(scope.message, scope.code);
 
-        const unit = resolveUnitPrice(productId, moduleIds, termInfo.termType, agentId);
-        if (unit === null) {
+        if (!priced) {
           throw conflict("该产品 / 卡类型尚未配置价格，请联系管理员", "PRICE_NOT_CONFIGURED", {
             product_id: productId,
             term_type: termInfo.termType,
           });
         }
-        const amount = totalPrice(unit, termInfo.termValue, count);
         const paid = consumeBalance(agentId, amount);
         if (!paid.ok) {
           throw conflict(
@@ -1209,7 +1243,7 @@ export function registerAdminRoutes(): void {
         }
       } else {
         // 管理员代生成：属于管理赠送，不扣代理商任何额度（不扣金额、不扣张数）
-        // 代理自行生成时才按价格从余额扣费（见上面的分支）
+        // 仍按定价表记录结算单价，方便统计营收
       }
       return createCdkBatch({
         productId,
@@ -1243,6 +1277,8 @@ export function registerAdminRoutes(): void {
         modules: moduleIds.length,
         agent_id: agentId,
         unit_price: unitPrice,
+        seat_ratio: seatRatio,
+        amount,
       },
     });
 
@@ -2204,24 +2240,34 @@ export function registerAdminRoutes(): void {
     const termValue = needInt(ctx, "term_value", { min: 1, max: 100000 });
     const count = bodyInt(ctx, "count", { min: 1, max: 5000 }) ?? 1;
 
-    const unit = resolveUnitPrice(productId, moduleIds, termType, staffCtx.agentId);
-    const total = unit === null ? null : totalPrice(unit, termValue, count);
+    const seats = bodyInt(ctx, "seats", { min: 1, max: 100 }) ?? 1;
+    const agentId = staffCtx.isAgent ? staffCtx.agentId : null;
+    const price = resolvePrice(productId, moduleIds, termType, agentId);
+    const total = price ? totalPrice(price.unit_price, termValue, count, seats, price.seat_ratio) : null;
 
     // 只有代理需要付费；管理员生成属于赠送，不显示金额
     const payable = staffCtx.isAgent;
-    const agent = payable && staffCtx.agentId ? findAgentById(staffCtx.agentId) : null;
+    const agent = payable && agentId ? findAgentById(agentId) : null;
     const balance = agent ? agent.balance : null;
+    const units = price ? billableUnits(termValue, seats, price.seat_ratio) : null;
 
     return ok({
       payable,
-      unit_price: unit,
+      unit_price: price?.unit_price ?? null,
+      seat_ratio: price?.seat_ratio ?? 0,
+      seat_factor: price ? seatFactor(seats, price.seat_ratio) : null,
+      billable_units: units,
       total_price: total,
       term_type: termType,
       term_value: termValue,
+      seats,
       count,
       balance,
+      shortfall: payable && total !== null && balance !== null ? Math.max(0, total - balance) : 0,
       sufficient: !payable || (total !== null && balance !== null && balance >= total),
-      priced: unit !== null,
+      priced: price !== null,
+      // 代理端只用「定价档位」，把已配好的档位和价格一起给前端
+      tiers: availableTiers(productId, moduleIds, agentId),
     });
   });
 

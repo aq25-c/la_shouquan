@@ -767,6 +767,9 @@ export function registerClientRoutes(): void {
         if (cdk.seats > reusable.seats) {
           updateLicense(reusable.id, { seats: cdk.seats });
         }
+        // 归属跟随最后一次激活的卡：A 的卡激活过就归 A，后来用 B 的卡就转给 B
+        // （客户端/服务商侧看到的「客户归属」按授权上的 agent_id 算）
+        updateLicense(reusable.id, { agent_id: cdk.agent_id ?? null, unit_price: cdk.unit_price ?? 0 });
         if (isCountTerm) {
           license = addLicenseUsages(reusable.id, newTermValue);
         } else {

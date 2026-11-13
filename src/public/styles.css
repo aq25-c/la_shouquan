@@ -539,6 +539,17 @@ tr.group-row td { background: var(--surface-soft); font-size: 12.5px; }
 .badge-danger { background: var(--danger-soft); color: var(--danger); }
 .badge-info { background: var(--primary-soft); color: var(--primary-dark); }
 
+/* 生成卡密的价格预估 */
+.estimate-amount { font-size: 17px; font-weight: 700; color: var(--text); }
+.estimate-danger { font-size: 22px; font-weight: 800; color: var(--danger); letter-spacing: 0.2px; }
+.note.danger-note {
+  background: var(--danger-soft);
+  border-color: #fecaca;
+  color: var(--danger);
+}
+.note.danger-note .small { color: #b91c1c; }
+.note.danger-note .muted { color: #b91c1c; opacity: 0.85; }
+
 /* 卡片内的分段切换（设备 / 操作日志） */
 .seg {
   display: inline-flex;

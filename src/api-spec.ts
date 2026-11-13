@@ -59,6 +59,20 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     desc: "校验原密码后改密。改完该账号的**其它会话全部失效**，同时返回一个新的 `token` 给当前设备，避免改完自己被踢下线。",
     notes: "401 INVALID_CREDENTIALS（原密码不对）、400 WEAK_PASSWORD / SAME_PASSWORD。",
   },
+  "POST /admin/api/cdks/estimate": {
+    title: "生成前估价",
+    auth: "admin / agent",
+    params: "`product_id`✅、`module_ids`、`term_type`、`term_value`✅、`count`、`seats`",
+    desc: "返回本次要花多少钱：`unit_price`、`seat_ratio`、`seat_factor`、`billable_units`、`total_price`、`balance`、`shortfall`、`sufficient`，以及该产品已定价的档位 `tiers`（代理端只用这些档位）。管理员调用时 `payable=false`（赠送不扣费）。",
+    notes: "结算单价一律取定价表；请求里传 `unit_price` 会被忽略。",
+  },
+  "GET /admin/api/agent-home": {
+    title: "代理首页（余额 / 卡密 / 客户到期）",
+    auth: "agent / admin",
+    params: "代理账号不用传参；管理员可带 `?agent_id=` 查指定代理",
+    desc: "代理首页的全部数据：账户余额、卡密统计（总数 / 未用 / 已用 / 作废）、名下客户数、7 天内到期 / 30 天内到期 / 已过期，以及近期到期的客户清单（客户名、产品、到期日、剩余天数）。",
+    notes: "客户归属按授权上的 `agent_id` 统计，也就是「最后一次用自己的卡激活」的代理。",
+  },
   "GET /admin/api/licenses/:id/logs": {
     title: "授权操作日志（按客户 + 软件合并）",
     auth: "admin",
@@ -190,8 +204,9 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/prices": {
     title: "设置卡密价格",
     auth: "admin",
-    params: "`product_id`✅、`module_id?`（留空=产品默认价）、`term_type`✅、`unit_price`✅（分/单位）",
-    desc: "幂等覆盖同产品/模块/卡类型的价格。解析顺序：模块覆盖价 → 产品默认价 → 未配置则拒绝出卡（PRICE_NOT_CONFIGURED）。",
+    params:
+      "`product_id`✅、`module_id?`（留空=产品默认价）、`term_type`✅、`unit_price`✅（分/单位）、`seat_ratio?`（每多 1 个席位加价百分比，默认 100）",
+    desc: "幂等覆盖同产品/模块/卡类型的价格。解析顺序：模块覆盖价 → 产品默认价 → 未配置则拒绝出卡（PRICE_NOT_CONFIGURED）。计费公式：单价 × 数量 × 席位系数 × 张数，席位系数 = 1 + (席位数 − 1) × seat_ratio / 100（100% 时 2 席位 = 2 倍，50% 时 7 天 → 10.5 天）。",
   },
   "DELETE /admin/api/prices/:id": { title: "删除价格", auth: "admin" },
   "POST /admin/api/agents/:id/balance": {

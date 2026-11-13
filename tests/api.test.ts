@@ -14,6 +14,8 @@ process.env.DATA_DIR = dataDir;
 process.env.DB_PATH = join(dataDir, "test.db");
 process.env.KEYS_FILE = join(dataDir, "keys.json");
 process.env.ADMIN_EMAIL = "root@test.local";
+// 测试里几十个用例都要登录，放宽后台登录频率限制（生产默认仍是 10 次/分钟）
+process.env.ADMIN_LOGIN_RATE_LIMIT = "500";
 process.env.ADMIN_PASSWORD = "RootPassw0rd!";
 process.env.NODE_ENV = "test";
 process.env.RATE_LIMIT_PER_MIN = "0";
@@ -585,6 +587,17 @@ test("代理：CDK 批次归属代理并携带结算单价", async () => {
   assert.equal(recharge.status, 200);
   assert.equal(recharge.json.data.agent.credit, 100);
 
+  // 结算单价不再由前端传：先在定价表里给这个代理配 199 元/天
+  const priced = await api(
+    "POST",
+    "/admin/api/prices",
+    { product_id: productId, module_id: "", term_type: "day", unit_price: 19900, agent_id: agentId, seat_ratio: 100 },
+    adminToken,
+  );
+  assert.equal(priced.status, 200);
+  assert.equal(priced.json.data.price.seat_ratio, 100);
+  const agentPriceId = priced.json.data.price.id;
+
   const gen = await api(
     "POST",
     "/admin/api/cdks/generate",
@@ -596,13 +609,14 @@ test("代理：CDK 批次归属代理并携带结算单价", async () => {
       count: 2,
       note: "代理批次",
       agent_id: agentId,
-      unit_price: 19900, // 199.00 元
+      // 传了也不认：单价一律取定价表
+      unit_price: 1,
     },
     adminToken,
   );
   assert.equal(gen.status, 201);
   assert.equal(gen.json.data.batch.agent_id, agentId);
-  assert.equal(gen.json.data.batch.unit_price, 19900);
+  assert.equal(gen.json.data.batch.unit_price, 19900, "结算单价取定价表，忽略前端传值");
   agentCdkCodes = gen.json.data.codes;
 
   const filtered = await api("GET", `/admin/api/cdks?agent_id=${agentId}`, undefined, adminToken);
@@ -622,6 +636,9 @@ test("代理：CDK 批次归属代理并携带结算单价", async () => {
   );
   assert.equal(badAgent.status, 404);
   assert.equal(badAgent.json.error.code, "AGENT_NOT_FOUND");
+
+  // 这条代理专属价用完就删，避免影响后面「代理按余额扣费」的用例
+  await api("DELETE", `/admin/api/prices/${agentPriceId}`, undefined, adminToken);
 });
 
 test("代理：激活时继承代理与单价，并按代理聚合统计", async () => {
@@ -1119,7 +1136,11 @@ test("代理账号：绑定代理、权限固定、只能碰卡密", async () =>
   assert.equal(created.status, 201);
   assert.equal(created.json.data.staff.role, "agent");
   assert.equal(created.json.data.staff.agent_id, agentId);
-  assert.deepEqual(created.json.data.staff.permissions.menus, ["cdks", "customers"], "代理可看卡密页与自己名下的客户");
+  assert.deepEqual(
+    created.json.data.staff.permissions.menus,
+    ["overview", "cdks", "customers"],
+    "代理可看首页、卡密页与自己名下的客户",
+  );
 
   const login = await api("POST", "/admin/api/auth/login", {
     email: "agent-e2e@test.local",
@@ -2922,4 +2943,153 @@ test("门户：客户能看设备和日志，只能解绑（不能重绑）", as
   // 再解一次 → 404（已经不在用了）
   const again = await api("POST", "/api/v1/me/devices/portal-dev-01/release", undefined, token);
   assert.equal(again.status, 404);
+});
+
+
+test("席位比例：按 1 + (席位-1) × 比例 计价", async () => {
+  // 100 分/天，每多一个席位 +50%
+  const price = await api(
+    "POST",
+    "/admin/api/prices",
+    { product_id: productId, module_id: moduleIds[0], term_type: "day", unit_price: 100, seat_ratio: 50 },
+    adminToken,
+  );
+  assert.equal(price.status, 200);
+  assert.equal(price.json.data.price.seat_ratio, 50);
+
+  // 1 席位：7 天 × 1 = 7 → 700 分
+  const one = await api(
+    "POST",
+    "/admin/api/cdks/estimate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 7, count: 1, seats: 1 },
+    adminToken,
+  );
+  assert.equal(one.json.data.seat_factor, 1);
+  assert.equal(one.json.data.billable_units, 7);
+  assert.equal(one.json.data.total_price, 700);
+
+  // 2 席位：7 × (1 + 0.5) = 10.5 → 1050 分
+  const two = await api(
+    "POST",
+    "/admin/api/cdks/estimate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 7, count: 1, seats: 2 },
+    adminToken,
+  );
+  assert.equal(two.json.data.seat_factor, 1.5);
+  assert.equal(two.json.data.billable_units, 10.5);
+  assert.equal(two.json.data.total_price, 1050, "7 天 2 席位 = 10.5 天");
+
+  // 比例 100%：2 席位就是 2 倍
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { product_id: productId, module_id: moduleIds[0], term_type: "day", unit_price: 100, seat_ratio: 100 },
+    adminToken,
+  );
+  const double = await api(
+    "POST",
+    "/admin/api/cdks/estimate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 7, count: 2, seats: 2 },
+    adminToken,
+  );
+  assert.equal(double.json.data.billable_units, 14);
+  assert.equal(double.json.data.total_price, 2800);
+
+  // 档位列表带出比例，供代理端展示
+  assert.ok(Array.isArray(double.json.data.tiers));
+  const dayTier = double.json.data.tiers.find((t: Json) => t.term_type === "day");
+  assert.ok(dayTier, "应带出已定价的档位");
+  assert.equal(dayTier.seat_ratio, 100);
+});
+
+test("客户归属跟着最后一次激活的卡走", async () => {
+  const a = await api("POST", "/admin/api/agents", { code: "grp-a", name: "A 代理" }, adminToken);
+  const b = await api("POST", "/admin/api/agents", { code: "grp-b", name: "B 代理" }, adminToken);
+  const agentA = a.json.data.agent.id;
+  const agentB = b.json.data.agent.id;
+
+  const make = (agentId: string) =>
+    api(
+      "POST",
+      "/admin/api/cdks/generate",
+      { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, agent_id: agentId },
+      adminToken,
+    );
+  const cdkA = (await make(agentA)).json.data.codes[0];
+  const cdkB = (await make(agentB)).json.data.codes[0];
+
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "switch-owner@test.local",
+    password: "SwitchPass123",
+  });
+  const token = reg.json.data.session.token;
+  const customerId = reg.json.data.customer.id;
+
+  // 先用 A 的卡
+  const actA = await api(
+    "POST",
+    "/api/v1/licenses/activate",
+    { cdk: cdkA, bind_device: false },
+    token,
+  );
+  assert.equal(actA.status, 201);
+  const licId = actA.json.data.license.id;
+  assert.equal(actA.json.data.license.agent_id, agentA);
+
+  // 再用 B 的卡续期同一产品 → 并卡，归属应改成 B
+  const actB = await api(
+    "POST",
+    "/api/v1/licenses/activate",
+    { cdk: cdkB, bind_device: false },
+    token,
+  );
+  assert.equal(actB.status, 201);
+  assert.equal(actB.json.data.license.id, licId, "应并到同一条授权");
+  assert.equal(actB.json.data.license.agent_id, agentB, "归属跟随最后激活的卡");
+
+  const byB = await api("GET", `/admin/api/licenses?agent_id=${agentB}`, undefined, adminToken);
+  assert.ok(byB.json.data.items.some((l: Json) => l.id === licId), "B 名下应能看到这个客户");
+  const byA = await api("GET", `/admin/api/licenses?agent_id=${agentA}`, undefined, adminToken);
+  assert.ok(!byA.json.data.items.some((l: Json) => l.id === licId), "A 名下不应再有");
+});
+
+test("代理首页：余额、卡密统计与近期到期", async () => {
+  const a = await api("POST", "/admin/api/agents", { code: "home-a", name: "首页代理" }, adminToken);
+  const agentId2 = a.json.data.agent.id;
+  await api("POST", `/admin/api/agents/${agentId2}/balance`, { amount: 12345 }, adminToken);
+  const staff = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "home-agent@test.local", password: "HomeAgent123", role: "agent", agent_id: agentId2 },
+    adminToken,
+  );
+  assert.equal(staff.status, 201);
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "home-agent@test.local",
+    password: "HomeAgent123",
+  });
+  assert.equal(login.status, 200, `代理登录失败：${JSON.stringify(login.json)}`);
+  const token = login.json.data.token;
+
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 3, count: 3, agent_id: agentId2 },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  await api("POST", "/api/v1/licenses/activate", { cdk: gen.json.data.codes[0], bind_device: false }, (
+    await api("POST", "/api/v1/auth/register", { email: "home-buyer@test.local", password: "HomeBuyer123" })
+  ).json.data.session.token);
+
+  const home = await api("GET", "/admin/api/agent-home", undefined, token);
+  assert.equal(home.status, 200);
+  assert.equal(home.json.data.agent.balance, 12345);
+  assert.equal(home.json.data.cdk.total, 3);
+  assert.equal(home.json.data.cdk.used, 1);
+  assert.equal(home.json.data.cdk.unused, 2);
+  assert.equal(home.json.data.customers.total, 1);
+  // 3 天后到期 → 落在「7 天内」
+  assert.equal(home.json.data.expiring.length, 1);
+  assert.equal(home.json.data.expiring[0].customer_email, "home-buyer@test.local");
 });

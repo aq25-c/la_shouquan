@@ -229,3 +229,79 @@ export function agentSummary(): {
     revenue_30d: scalar("SELECT COALESCE(SUM(unit_price), 0) AS n FROM licenses WHERE created_at >= ?", since),
   };
 }
+
+/**
+ * 代理首页数据：全部只看「我自己名下」的东西。
+ * 卡密按批次归属统计；客户与到期按授权上的 agent_id 统计（= 最后一次激活的卡）。
+ */
+export function agentHome(agentId: string) {
+  const agent = findAgentById(agentId);
+  const cdk = db()
+    .prepare(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN k.status = 'unused' THEN 1 ELSE 0 END) AS unused,
+         SUM(CASE WHEN k.status = 'used' THEN 1 ELSE 0 END) AS used,
+         SUM(CASE WHEN k.status = 'revoked' THEN 1 ELSE 0 END) AS revoked
+       FROM cdks k JOIN cdk_batches b ON b.id = k.batch_id
+       WHERE b.agent_id = ?`,
+    )
+    .get(agentId) as { total: number; unused: number; used: number; revoked: number } | undefined;
+
+  const now = Date.now();
+  const rows = db()
+    .prepare(
+      `SELECT l.id, l.license_no, l.expires_at, l.status, l.seats,
+              c.id AS customer_id, c.name AS customer_name, c.email AS customer_email,
+              p.code AS product_code, p.name AS product_name
+         FROM licenses l
+         JOIN customers c ON c.id = l.customer_id
+         JOIN products p ON p.id = l.product_id
+        WHERE l.agent_id = ? AND l.status != 'revoked'
+        ORDER BY l.expires_at ASC`,
+    )
+    .all(agentId) as {
+    id: string;
+    license_no: string;
+    expires_at: string | null;
+    status: string;
+    seats: number;
+    customer_id: string;
+    customer_name: string | null;
+    customer_email: string | null;
+    product_code: string;
+    product_name: string;
+  }[];
+
+  const withDays = rows.map((r) => {
+    const ms = r.expires_at ? Date.parse(r.expires_at) : NaN;
+    const daysLeft = Number.isFinite(ms) ? Math.ceil((ms - now) / DAY) : null;
+    return { ...r, days_left: daysLeft };
+  });
+
+  const expired = withDays.filter((r) => r.days_left !== null && r.days_left < 0);
+  const in7 = withDays.filter((r) => r.days_left !== null && r.days_left >= 0 && r.days_left <= 7);
+  const in30 = withDays.filter((r) => r.days_left !== null && r.days_left > 7 && r.days_left <= 30);
+  const customerIds = new Set(withDays.map((r) => r.customer_id));
+
+  return {
+    agent: agent
+      ? { id: agent.id, name: agent.name, code: agent.code, balance: agent.balance, credit: agent.credit, status: agent.status }
+      : null,
+    cdk: {
+      total: Number(cdk?.total ?? 0),
+      unused: Number(cdk?.unused ?? 0),
+      used: Number(cdk?.used ?? 0),
+      revoked: Number(cdk?.revoked ?? 0),
+    },
+    customers: {
+      total: customerIds.size,
+      expired: expired.length,
+      in_7d: in7.length,
+      in_30d: in30.length,
+    },
+    // 近期到期：已过期 + 7 天内（给前端直接列）
+    expiring: [...expired, ...in7].slice(0, 20),
+    upcoming: in30.slice(0, 20),
+  };
+}
