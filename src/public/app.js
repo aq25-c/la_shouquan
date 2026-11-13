@@ -282,6 +282,8 @@ function startSession(token, admin) {
   state.admin = admin;
   state.permissions = admin?.permissions ?? { menus: [], features: [] };
   state.role = admin?.role ?? "owner";
+  state.agentId = admin?.agent_id ?? null;
+  state.agentName = admin?.agent_name ?? null;
   localStorage.setItem("lic_admin_token", token);
   $("#login-view").hidden = true;
   $("#app-view").hidden = false;
@@ -724,6 +726,48 @@ async function moduleManager(productId) {
     footer: `<button class="btn" data-close2 type="button">关闭</button>`,
     onMount(modal, close) {
       render(modal);
+      const editModulesBtn = $("[data-edit-modules]", modal);
+      if (editModulesBtn) {
+        editModulesBtn.onclick = async () => {
+          const mods = await apiGet(`/admin/api/products/${l.product_id}/modules`).catch(() => ({ items: [] }));
+          const picked = new Set((data.modules ?? []).map((m) => m.id));
+          openModal({
+            title: `编辑模块：${l.license_no}`,
+            body: `<div class="note">可以勾选或取消，但必须至少保留一个模块；保存后客户端下次心跳/重新签发即可拿到新模块。</div>
+              <div class="checkbox-list" data-mods style="margin-top:12px">
+                ${
+                  mods.items
+                    .map(
+                      (m) =>
+                        `<label><input type="checkbox" value="${esc(m.id)}" ${picked.has(m.id) ? "checked" : ""} /><span>${esc(m.name)}（${esc(m.code)}）</span></label>`,
+                    )
+                    .join("") || '<span class="empty">该产品还没有模块</span>'
+                }
+              </div>`,
+            footer: `<button class="btn" data-c type="button">取消</button><button class="btn btn-primary" data-ok type="button">保存</button>`,
+            onMount(m2, close2) {
+              $("[data-c]", m2).onclick = close2;
+              $("[data-ok]", m2).onclick = async () => {
+                const ids = $$("[data-mods] input:checked", m2).map((i) => i.value);
+                if (!ids.length) {
+                  toast("请至少保留一个模块", "error");
+                  return;
+                }
+                try {
+                  await apiPatch(`/admin/api/licenses/${id}`, { module_ids: ids });
+                  toast("模块已更新", "ok");
+                  close2();
+                  close();
+                  navigate("licenses", true);
+                } catch (err) {
+                  toast(err.message, "error");
+                }
+              };
+            },
+          });
+        };
+      }
+
       $("[data-close2]", modal).onclick = () => {
         close();
         navigate("products");
@@ -738,6 +782,12 @@ const money = (cents) => `¥${(Number(cents ?? 0) / 100).toFixed(2)}`;
 const percent = (ratio) => `${(Number(ratio ?? 0) * 100).toFixed(1)}%`;
 
 function agentOptions(selected = "") {
+  // 代理只能给自己出卡：下拉里只放自己，避免误选到别的代理
+  if (state.role === "agent") {
+    const id = state.agentId ?? "";
+    const name = state.agentName ?? "我的代理";
+    return `<option value="${esc(id)}" selected>${esc(name)}（仅自己）</option>`;
+  }
   const parts = [`<option value="">无（直销）</option>`];
   for (const c of state.agents) {
     if (c.status !== "active" && c.id !== selected) continue;
@@ -1209,7 +1259,7 @@ async function renderCdks(root) {
             <option value="">全部批次</option>
             ${batches.items.map((b) => `<option value="${esc(b.id)}" ${filters.batch_id === b.id ? "selected" : ""}>${fmtDay(b.created_at)} · ${esc(b.product_code)} · ${b.count} 个</option>`).join("")}
           </select>
-          <select data-f-agent>
+          <select data-f-agent ${state.role === "agent" ? "hidden" : ""}>
             <option value="">全部代理</option>
             <option value="__none__" ${filters.agent_id === "__none__" ? "selected" : ""}>无代理（直销）</option>
             ${state.agents.map((c) => `<option value="${esc(c.id)}" ${filters.agent_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
@@ -1530,7 +1580,14 @@ async function openLicenseDetail(id) {
       <dt>状态</dt><dd>${statusBadge(LICENSE_STATUS, l.eff_status)} ${l.kind === "trial" ? '<span class="badge badge-info">试用</span>' : ""} <span class="muted small">来源 ${esc(l.source ?? "cdk")}</span></dd>
       <dt>客户</dt><dd>${esc(data.customer?.email ?? data.customer?.name ?? "—")}</dd>
       <dt>产品</dt><dd>${esc(l.product_name)} <span class="muted mono">${esc(l.product_code)}</span></dd>
-      <dt>模块</dt><dd>${data.module_codes.map((c) => `<code>${esc(c)}</code>`).join(" ") || "（无）"}</dd>
+      <dt>模块</dt><dd>${
+        (data.modules ?? [])
+          .map(
+            (m) =>
+              `<span class="badge ${m.custom_expiry ? "badge-warn" : "badge-info"}" title="${m.custom_expiry ? "该模块有单独到期时间" : "跟随授权到期"}">${esc(m.name)}${m.expires_at ? " · " + fmtDay(m.expires_at) : ""}</span>`,
+          )
+          .join(" ") || "（无）"
+      }</dd>
       <dt>生效时间</dt><dd>${fmtTime(l.starts_at)}</dd>
       <dt>到期时间</dt><dd>${fmtTime(l.expires_at)} <span class="badge badge-warn">${relDays(l.expires_at)}</span></dd>
       <dt>席位</dt><dd>${l.active_devices} / ${l.seats} 台在用</dd>
@@ -1594,6 +1651,7 @@ async function openLicenseDetail(id) {
         </div>
         <div class="form-actions">
           <button class="btn btn-sm" data-suspend type="button">${l.status === "suspended" ? "恢复授权" : "暂停授权"}</button>
+          <button class="btn btn-sm" data-edit-modules type="button">编辑模块</button>
           <button class="btn btn-sm" data-bind-device type="button">绑定新设备</button>
           <button class="btn btn-sm" data-reset-devices type="button">重置全部设备</button>
           <button class="btn btn-sm" data-rotate type="button">重置许可证密钥</button>

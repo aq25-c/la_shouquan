@@ -1634,3 +1634,114 @@ test("代理管自己名下客户：可见、可改资料、到期可缩短可�
   assert.ok(restored <= capExpiry + 1000, "代理延长不得超过 CDK 激活时的实际到期时间");
   assert.ok(Math.abs(restored - capExpiry) < 10_000, "恢复后应回到上限附近");
 });
+
+/* ==================== 模块级：选择、增减与到期 ==================== */
+
+test("激活可选模块子集、后台可增减（至少一个）、登录返回每模块到期", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    {
+      product_id: productId,
+      module_ids: [moduleIds[0], moduleIds[1]],
+      term_type: "day",
+      term_value: 30,
+      count: 2,
+      seats: 1,
+    },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  const [cdkA, cdkB] = gen.json.data.codes;
+
+  await api("POST", "/api/v1/auth/register", { email: "mods@test.local", password: "ModsPass123" });
+
+  // ① 传了 CDK 范围外的模块 → 拒绝
+  const outside = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdkA,
+    device_id: "MODS-0",
+    email: "mods@test.local",
+    password: "ModsPass123",
+    module_ids: ["mod_not_exists"],
+  });
+  assert.equal(outside.status, 400);
+  assert.equal(outside.json.error.code, "MODULE_NOT_ALLOWED");
+
+  // ② 只开通第一个模块
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdkA,
+    device_id: "MODS-1",
+    email: "mods@test.local",
+    password: "ModsPass123",
+    module_ids: [moduleIds[0]],
+  });
+  assert.equal(act.status, 201);
+  assert.equal(act.json.data.module_codes.length, 1, "只应开通勾选的 1 个模块");
+
+  const licId = act.json.data.license.id;
+  const exp0 = act.json.data.expires_at;
+
+  // ③ 登录返回模块级到期
+  const login = await api("POST", "/api/v1/auth/login", {
+    email: "mods@test.local",
+    password: "ModsPass123",
+  });
+  const active = login.json.data.active_license;
+  assert.ok(active.modules?.length === 1, "登录应返回模块明细");
+  assert.equal(active.modules[0].module_id, moduleIds[0]);
+  assert.ok(active.modules[0].expires_at, "模块应带到期时间");
+  assert.equal(active.modules[0].active, true);
+
+  // ④ 后台把模块清空 → 拒绝
+  const empty = await api("PATCH", `/admin/api/licenses/${licId}`, { module_ids: [] }, adminToken);
+  assert.equal(empty.status, 400);
+  assert.equal(empty.json.error.code, "MISSING_FIELD");
+
+  // ⑤ 增加到两个模块 → 成功且新模块继承授权到期
+  const added = await api(
+    "PATCH",
+    `/admin/api/licenses/${licId}`,
+    { module_ids: [moduleIds[0], moduleIds[1]] },
+    adminToken,
+  );
+  assert.equal(added.status, 200);
+  const detail = await api("GET", `/admin/api/licenses/${licId}`, undefined, adminToken);
+  assert.equal(detail.json.data.modules.length, 2);
+  assert.equal(detail.json.data.modules.every((m: Json) => m.expires_at === exp0), true, "模块默认跟随授权到期");
+
+  // ⑥ 单独设置某模块到期
+  const custom = new Date(Date.now() + 5 * 86_400_000).toISOString();
+  const patched = await api(
+    "PATCH",
+    `/admin/api/licenses/${licId}`,
+    { module_expiries: [{ module_id: moduleIds[1], expires_at: custom }] },
+    adminToken,
+  );
+  assert.equal(patched.status, 200);
+
+  const relogin = await api("POST", "/api/v1/auth/login", {
+    email: "mods@test.local",
+    password: "ModsPass123",
+  });
+  const mods = relogin.json.data.active_license.modules;
+  const target = mods.find((m: Json) => m.module_id === moduleIds[1]);
+  assert.ok(target, "应能找到单独设置到期的模块");
+  assert.ok(Math.abs(Date.parse(target.expires_at) - Date.parse(custom)) < 2000, "该模块到期应为单独设置的值");
+  const other = mods.find((m: Json) => m.module_id === moduleIds[0]);
+  assert.ok(Math.abs(Date.parse(other.expires_at) - Date.parse(exp0)) < 2000, "未设置的模块应仍跟随授权");
+
+  // ⑦ 第二个 CDK 激活 → 叠加时模块一并展期
+  const act2 = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdkB,
+    device_id: "MODS-1",
+    email: "mods@test.local",
+    password: "ModsPass123",
+  });
+  assert.equal(act2.status, 201);
+  assert.equal(act2.json.data.merged, true);
+  const after = await api("GET", `/admin/api/licenses/${licId}`, undefined, adminToken);
+  assert.ok(
+    after.json.data.modules.every((m: Json) => Date.parse(m.expires_at) === Date.parse(act2.json.data.expires_at)),
+    "叠加后所有模块应随授权一起展期",
+  );
+});

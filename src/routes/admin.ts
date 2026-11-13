@@ -125,6 +125,9 @@ import {
   listDevices,
   listLicenses,
   listLicensesByCustomer,
+  listLicenseModules,
+  setLicenseModuleExpiry,
+  syncLicenseModules,
   moduleIdsOf,
   releaseAllDevices,
   releaseDevice,
@@ -1375,6 +1378,18 @@ export function registerAdminRoutes(): void {
       license: { ...licenseView(license), module_ids: parseJson<string[]>(license.module_ids, []) },
       devices: listDevices(id),
       module_codes: moduleCodesFor(moduleIdsOf(license)),
+      // 前端按名称展示模块（不再只显示代码或数量）
+      modules: moduleIdsOf(license).map((mid) => {
+        const m = findModuleById(mid);
+        const row = listLicenseModules(id).find((r) => r.module_id === mid);
+        return {
+          id: mid,
+          code: m?.code ?? mid,
+          name: m?.name ?? mid,
+          expires_at: row?.expires_at ?? license.expires_at ?? null,
+          custom_expiry: Boolean(row?.expires_at && row.expires_at !== license.expires_at),
+        };
+      }),
       customer: customer ? { ...customer, password_hash: undefined } : null,
     });
   });
@@ -1405,11 +1420,33 @@ export function registerAdminRoutes(): void {
     if (note !== null) patchData.note = note;
     const moduleIds = bodyStrArray(ctx, "module_ids");
     if (moduleIds) {
+      if (!moduleIds.length) throw badRequest("请至少保留一个模块", "MISSING_FIELD", { field: "module_ids" });
       validateModuleIds(license.product_id, moduleIds);
       patchData.module_ids = JSON.stringify(moduleIds);
     }
 
+    // v9：逐个模块设置到期时间（expires_at 传 null 表示恢复跟随授权到期）
+    const moduleExpiries = Array.isArray(ctx.body.module_expiries) ? ctx.body.module_expiries : null;
+
     const updated = updateLicense(id, patchData as Partial<LicenseRow>);
+
+    if (moduleExpiries) {
+      for (const item of moduleExpiries) {
+        const rec = item as { module_id?: unknown; expires_at?: unknown };
+        const mid = typeof rec.module_id === "string" ? rec.module_id : "";
+        if (!mid) continue;
+        const raw = typeof rec.expires_at === "string" ? rec.expires_at : null;
+        const ms = raw ? Date.parse(raw) : null;
+        if (raw && !Number.isFinite(ms)) throw badRequest("module_expiries.expires_at 时间格式不合法", "INVALID_FIELD");
+        setLicenseModuleExpiry(id, mid, raw ? new Date(ms as number).toISOString() : null);
+      }
+    }
+
+    // 模块集合或到期变动后，同步模块记录（module_ids 变化时补建/清理，其余情况只保证记录存在）
+    if (moduleIds || moduleExpiries) {
+      syncLicenseModules(id, moduleIdsOf(updated ?? license), updated?.expires_at ?? license.expires_at ?? nowIso());
+    }
+
     audit({
       actorType: "admin",
       actorId: admin.id,

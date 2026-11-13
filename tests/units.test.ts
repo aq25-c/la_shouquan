@@ -23,9 +23,9 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v8，新增列齐全", () => {
+test("数据库迁移到 v9，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 8);
+  assert.equal(version, 9);
 
   const admin = columns("admin_users");
   assert.ok(admin.includes("permissions"), "admin_users.permissions");
@@ -126,7 +126,7 @@ test("数据库版本：新库一次建到最新，user_version 等于 SCHEMA_VE
   const tables = (db().prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
     (r) => r.name,
   );
-  for (const t of ["agents", "products", "modules", "customers", "licenses", "cdks", "cdk_batches", "agent_prices"]) {
+  for (const t of ["agents", "products", "modules", "customers", "licenses", "cdks", "cdk_batches", "agent_prices", "license_modules"]) {
     assert.ok(tables.includes(t), `缺少表 ${t}`);
   }
 });

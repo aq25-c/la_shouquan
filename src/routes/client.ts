@@ -16,6 +16,7 @@ import {
   badRequest,
   bodyInt,
   bodyStr,
+  bodyStrArray,
   conflict,
   created,
   forbidden,
@@ -41,13 +42,14 @@ import {
   findCustomerById,
   touchCustomerLogin,
 } from "../store/accounts.ts";
-import { findProductByCode, findProductById, listModules, listProducts, moduleCodesFor } from "../store/catalog.ts";
+import { findModuleById, findProductByCode, findProductById, listModules, listProducts, moduleCodesFor } from "../store/catalog.ts";
 import { canStartTrial, getProductTrialConfig, getTrialConfig, trialCountFor } from "../store/trials.ts";
 import {
   activeDeviceCount,
   consumeUsage,
   effectiveStatus,
   findReusableLicense,
+  listLicenseModules,
   termCategory,
   extendLicenseExpiry,
   addLicenseUsages,
@@ -123,6 +125,20 @@ function licenseSnapshot(customerId: string) {
       usages: isCount
         ? { max: maxUsages, used: usedUsages, remaining: Math.max(0, maxUsages - usedUsages) }
         : null,
+      // v9：每个模块各自的到期时间（未单独设置时跟随授权到期）
+      modules: listLicenseModules(row.id).map((lm) => {
+        const mod = findModuleById(lm.module_id);
+        const modExpiry = lm.expires_at ?? row.expires_at ?? null;
+        const modMs = modExpiry ? Date.parse(modExpiry) : null;
+        return {
+          module_id: lm.module_id,
+          module_code: mod?.code ?? lm.module_id,
+          module_name: mod?.name ?? lm.module_id,
+          expires_at: modExpiry,
+          days_left: modMs ? Math.max(0, Math.ceil((modMs - now) / 86_400_000)) : 0,
+          active: status === "active" && (!modMs || modMs > now),
+        };
+      }),
     };
   });
 
@@ -412,6 +428,21 @@ export function registerClientRoutes(): void {
     if (!product) throw notFound("CDK 关联的产品不存在", "PRODUCT_NOT_FOUND");
     if (product.status !== "active") throw conflict("该产品当前不可激活", "PRODUCT_DISABLED");
 
+    /* --- 模块范围：默认按 CDK 授权全开；客户端可取消部分模块，但至少要保留 1 个 --- */
+    const cdkModuleIds = moduleIdsOf(cdk);
+    const requestedModules = bodyStrArray(ctx, "module_ids");
+    let activeModuleIds = cdkModuleIds;
+    if (requestedModules && requestedModules.length) {
+      const invalid = requestedModules.filter((m) => !cdkModuleIds.includes(m));
+      if (invalid.length) {
+        throw badRequest("所选模块不在该 CDK 的授权范围内", "MODULE_NOT_ALLOWED", { invalid });
+      }
+      activeModuleIds = requestedModules;
+    }
+    if (!activeModuleIds.length) {
+      throw badRequest("请至少勾选一个模块", "MISSING_FIELD", { field: "module_ids" });
+    }
+
     /* --- 账号归属：先做异步校验（scrypt），再进事务做同步写入 --- */
     type Plan =
       | { kind: "existing"; customerId: string }
@@ -493,7 +524,7 @@ export function registerClientRoutes(): void {
           customerId,
           productId: cdk.product_id,
           cdkId: cdk.id,
-          moduleIds: moduleIdsOf(cdk),
+          moduleIds: activeModuleIds,
           seats: cdk.seats,
           days: cdk.days,
           keyHash: sha256hex(licenseKey),
@@ -605,6 +636,23 @@ export function registerClientRoutes(): void {
 
     return ok({
       license: licenseView(fresh),
+      // v9：逐模块返回到期时间，客户端按模块判断可用性
+      modules: (() => {
+        const nowMs = Date.now();
+        return listLicenseModules(fresh.id).map((lm) => {
+          const mod = findModuleById(lm.module_id);
+          const exp = lm.expires_at ?? fresh.expires_at ?? null;
+          const ms = exp ? Date.parse(exp) : null;
+          return {
+            module_id: lm.module_id,
+            module_code: mod?.code ?? lm.module_id,
+            module_name: mod?.name ?? lm.module_id,
+            expires_at: exp,
+            days_left: ms ? Math.max(0, Math.ceil((ms - nowMs) / 86_400_000)) : 0,
+            active: eff === "active" && (!ms || ms > nowMs),
+          };
+        });
+      })(),
       license_file: issued.license_file,
       license_payload: issued.payload,
       offline_expires_at: issued.offline_expires_at,
