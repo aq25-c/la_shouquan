@@ -31,15 +31,57 @@ export function createAdmin(input: {
   passwordHash: string;
   name: string | null;
   role?: string;
+  permissions?: string;
+  channelId?: string | null;
 }): AdminRow {
   const id = newId("adm");
   db()
     .prepare(
-      `INSERT INTO admin_users (id, email, password_hash, name, role, status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+      `INSERT INTO admin_users (id, email, password_hash, name, role, status, created_at, permissions, channel_id)
+       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
     )
-    .run(id, input.email.toLowerCase(), input.passwordHash, nz(input.name), input.role ?? "owner", nowIso());
+    .run(
+      id,
+      input.email.toLowerCase(),
+      input.passwordHash,
+      nz(input.name),
+      input.role ?? "owner",
+      nowIso(),
+      input.permissions ?? "{}",
+      nz(input.channelId),
+    );
   return findAdminById(id) as AdminRow;
+}
+
+/** 员工 / 代理的通用更新（含权限、所属渠道、状态） */
+export function updateStaff(
+  id: string,
+  patch: Partial<Pick<AdminRow, "email" | "name" | "role" | "status" | "permissions" | "channel_id" | "password_hash">>,
+): AdminRow | null {
+  const sets: string[] = [];
+  const params: (string | null)[] = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    sets.push(`${key} = ?`);
+    params.push(value as string | null);
+  }
+  if (sets.length) {
+    params.push(id);
+    db().prepare(`UPDATE admin_users SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+  }
+  return findAdminById(id);
+}
+
+export function deleteStaff(id: string): boolean {
+  const res = db().prepare("DELETE FROM admin_users WHERE id = ? AND role != 'owner'").run(id);
+  return Number(res.changes) > 0;
+}
+
+export function countOwners(): number {
+  const row = db().prepare("SELECT COUNT(*) AS n FROM admin_users WHERE role = 'owner'").get() as
+    | { n: number }
+    | undefined;
+  return Number(row?.n ?? 0);
 }
 
 export function updateAdminPassword(id: string, passwordHash: string): void {

@@ -112,6 +112,10 @@ export type LicensePayload = {
   exp: number;
   grace_until: number;
   status: string;
+  /** v4：计费类型与数量（hour/day/month/year/count） */
+  term?: { type: string; value: number };
+  /** v4：次数型授权的额度与已用量（其余类型为 null） */
+  usage?: { max: number; used: number } | null;
 };
 
 /**

@@ -4,6 +4,8 @@ import { randomToken, sha256hex } from "./crypto.ts";
 import { HttpError, bearerToken, forbidden, unauthorized } from "./http.ts";
 import type { Ctx } from "./http.ts";
 import { findAdminById, findCustomerById, findSessionByTokenHash, createSession } from "./store/accounts.ts";
+import { hasFeature, parsePermissions } from "./permissions.ts";
+import type { Permissions, StaffRole } from "./permissions.ts";
 import type { AdminRow, CustomerRow } from "./types.ts";
 import { plusHours } from "./util.ts";
 
@@ -33,6 +35,48 @@ export function requireAdmin(ctx: Ctx): AdminRow {
   const admin = currentAdmin(ctx);
   if (!admin) throw unauthorized("管理员未登录或登录已过期");
   return admin;
+}
+
+/** 员工/代理的完整身份：角色 + 目录权限 + 功能权限 + 所属渠道 */
+export type StaffContext = {
+  admin: AdminRow;
+  role: StaffRole;
+  permissions: Permissions;
+  /** 代理关联的渠道；非代理为 null */
+  channelId: string | null;
+  isOwner: boolean;
+  isAgent: boolean;
+};
+
+export function requireStaff(ctx: Ctx): StaffContext {
+  const admin = requireAdmin(ctx);
+  const role = (["owner", "staff", "agent"].includes(admin.role) ? admin.role : "owner") as StaffRole;
+  return {
+    admin,
+    role,
+    permissions: parsePermissions(admin.permissions, role),
+    channelId: admin.channel_id ?? null,
+    isOwner: role === "owner",
+    isAgent: role === "agent",
+  };
+}
+
+/** 要求某个软件功能权限（员工没配就 403） */
+export function requireFeature(ctx: Ctx, feature: string): StaffContext {
+  const staffCtx = requireStaff(ctx);
+  if (!hasFeature(staffCtx.permissions, feature)) {
+    throw forbidden(`缺少功能权限：${feature}`, "FORBIDDEN_FEATURE", { feature });
+  }
+  return staffCtx;
+}
+
+/** 仅超级管理员（角色 owner）可操作，例如员工/代理管理 */
+export function requireOwner(ctx: Ctx): StaffContext {
+  const staffCtx = requireStaff(ctx);
+  if (!staffCtx.isOwner) {
+    throw forbidden("仅超级管理员可执行该操作", "FORBIDDEN_OWNER");
+  }
+  return staffCtx;
 }
 
 export function currentCustomer(ctx: Ctx): CustomerRow | null {

@@ -46,6 +46,14 @@ export function buildLicenseFile(input: {
     exp: Math.floor(expMs / 1000),
     grace_until: Math.floor(toMs(input.license.expires_at) / 1000),
     status: input.license.status,
+    term: {
+      type: input.license.term_type ?? "day",
+      value: Number(input.license.term_value ?? 0),
+    },
+    usage:
+      input.license.max_usages !== null && input.license.max_usages !== undefined
+        ? { max: input.license.max_usages, used: input.license.used_usages }
+        : null,
   };
   return {
     license_file: signLicenseFile(input.keys, payload),

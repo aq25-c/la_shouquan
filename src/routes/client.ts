@@ -14,6 +14,7 @@ import {
 } from "../crypto.ts";
 import {
   badRequest,
+  bodyInt,
   bodyStr,
   conflict,
   created,
@@ -44,6 +45,7 @@ import { findProductByCode, findProductById, listModules, listProducts, moduleCo
 import { canStartTrial, getTrialConfig, trialCountFor } from "../store/trials.ts";
 import {
   activeDeviceCount,
+  consumeUsage,
   effectiveStatus,
   findCdkByCode,
   findDevice,
@@ -263,10 +265,13 @@ export function registerClientRoutes(): void {
         cdkId: null,
         moduleIds,
         seats: trialConfig.seats,
-        days: trialConfig.days,
+        // v4：试用支持"试用几天"或"试用几次"
+        days: trialConfig.mode === "day" ? trialConfig.value : 30,
+        termType: trialConfig.mode,
+        termValue: trialConfig.value,
         offlineGraceDays: trialConfig.offline_grace_days ?? undefined,
         keyHash: sha256hex(licenseKey),
-        note: `试用 ${trialConfig.days} 天`,
+        note: trialConfig.mode === "day" ? `试用 ${trialConfig.value} 天` : `试用 ${trialConfig.value} 次`,
         kind: "trial",
         source: "trial",
       }),
@@ -404,6 +409,9 @@ export function registerClientRoutes(): void {
         // v2：渠道与单价从 CDK 批次继承下来，供后台按渠道统计营收
         channelId: cdk.channel_id,
         unitPrice: cdk.unit_price,
+        // v4：计费类型从 CDK 继承（天/月/年/小时/次数）
+        termType: (cdk.term_type ?? "day") as "hour" | "day" | "month" | "year" | "count",
+        termValue: cdk.term_value ?? cdk.days,
       });
       if (!markCdkUsed(cdk.id, customerId, license.id)) {
         throw conflict("该 CDK 刚刚已被使用，请更换", "CDK_ALREADY_USED");
@@ -563,6 +571,73 @@ export function registerClientRoutes(): void {
       days_left: daysLeft(license.expires_at),
       module_codes: issued.payload.mod,
       heartbeat_interval_hours: config.heartbeatIntervalHours,
+      server_time: new Date().toISOString(),
+    });
+  });
+
+  /* ---------------------------- 次数型消耗 ---------------------------- */
+
+  /**
+   * 消耗次数型授权的次数（客户端每用一次调一次）。
+   * 原子扣减：额度不足时返回 403 USAGE_EXHAUSTED，并发下也不会超扣。
+   */
+  post("/api/v1/licenses/consume", (ctx) => {
+    const licenseKey = needStr(ctx, "license_key", 200);
+    const deviceId = needStr(ctx, "device_id", 190);
+    const count = bodyInt(ctx, "count", { min: 1, max: 1000 }) ?? 1;
+
+    const license = findLicenseByKeyHash(sha256hex(licenseKey));
+    if (!license) throw notFound("许可证密钥无效", "INVALID_LICENSE_KEY");
+
+    if (license.term_type !== "count" || license.max_usages === null) {
+      throw conflict("该授权不是按次数计费，无需消耗次数", "NOT_COUNT_LICENSE");
+    }
+
+    const device = findDevice(license.id, deviceId);
+    if (!device || device.status !== "active") {
+      throw notFound("该设备未绑定此授权，请重新激活", "DEVICE_NOT_BOUND");
+    }
+
+    if (license.status === "revoked") throw locked("授权已被吊销", "LICENSE_REVOKED");
+    if (license.status === "suspended") throw locked("授权已被暂停", "LICENSE_SUSPENDED");
+    const customer = findCustomerById(license.customer_id);
+    if (!customer || customer.status !== "active") throw locked("账号已被停用", "CUSTOMER_DISABLED");
+
+    const result = consumeUsage(license.id, count);
+    if (!result.ok) {
+      throw locked(`次数已用完（总额度 ${result.max ?? 0} 次）`, "USAGE_EXHAUSTED", {
+        max: result.max,
+        used: result.used,
+        remaining: result.remaining,
+      });
+    }
+
+    touchDevice(device.id, ctx.ip);
+    const fresh = findLicenseById(license.id) ?? license;
+    const issued = buildLicenseFile({
+      license: fresh,
+      productCode: license.product_code,
+      deviceId,
+      keys: signingKeys(),
+    });
+
+    audit({
+      actorType: "customer",
+      actorId: license.customer_id,
+      action: "license.consume",
+      targetType: "license",
+      targetId: license.id,
+      ip: ctx.ip,
+      detail: { device_id: deviceId, count, remaining: result.remaining },
+    });
+
+    return ok({
+      consumed: count,
+      remaining: result.remaining,
+      max: result.max,
+      used: result.used,
+      license_file: issued.license_file,
+      offline_expires_at: issued.offline_expires_at,
       server_time: new Date().toISOString(),
     });
   });

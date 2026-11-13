@@ -9,6 +9,10 @@ export type AdminRow = {
   status: string;
   created_at: string;
   last_login_at: string | null;
+  /** v4：JSON { menus: string[], features: string[] } */
+  permissions: string;
+  /** v4：代理关联的渠道（role = agent 时有值） */
+  channel_id: string | null;
 };
 
 export type SessionRow = {
@@ -71,6 +75,9 @@ export type CdkBatchRow = {
   channel_id: string | null;
   /** v2：结算单价（单位：分） */
   unit_price: number;
+  /** v4：计费类型（hour/day/month/year/count）与数量 */
+  term_type: string;
+  term_value: number | null;
 };
 
 /** 渠道 / 分销商 */
@@ -85,6 +92,8 @@ export type ChannelRow = {
   status: string;
   created_at: string;
   updated_at: string;
+  /** v4：卡密余额（单位：张），代理生成卡密时扣减 */
+  credit: number;
 };
 
 export type CdkRow = {
@@ -105,6 +114,9 @@ export type CdkRow = {
   used_at: string | null;
   revoked_at: string | null;
   revoked_reason: string | null;
+  /** v4：计费类型与数量（生成时从批次继承） */
+  term_type: string;
+  term_value: number | null;
 };
 
 export type LicenseRow = {
@@ -134,6 +146,13 @@ export type LicenseRow = {
   kind: "paid" | "trial";
   /** v3：开通来源（cdk / manual / trial） */
   source: string;
+  /** v4：计费类型与数量（hour/day/month/year/count） */
+  term_type: string;
+  term_value: number | null;
+  /** v4：次数型授权的总额度（非次数型为 null） */
+  max_usages: number | null;
+  /** v4：次数型授权已消耗次数 */
+  used_usages: number;
 };
 
 export type DeviceRow = {

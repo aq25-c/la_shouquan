@@ -5,7 +5,11 @@ import { parseJson, toJson } from "../util.ts";
 export type TrialConfig = {
   /** 是否允许客户自助申请试用 */
   enabled: boolean;
-  /** 试用授权天数 */
+  /** v4：试用模式 —— day（试用几天）/ count（试用几次） */
+  mode: "day" | "count";
+  /** v4：试用量（天数或次数） */
+  value: number;
+  /** 兼容字段：mode=day 时等于 value */
   days: number;
   /** 试用席位数（可绑定设备数） */
   seats: number;
@@ -21,6 +25,8 @@ export type TrialConfig = {
 
 const KEYS = {
   enabled: "trial.enabled",
+  mode: "trial.mode",
+  value: "trial.value",
   days: "trial.days",
   seats: "trial.seats",
   productId: "trial.product_id",
@@ -31,6 +37,8 @@ const KEYS = {
 
 const DEFAULTS: TrialConfig = {
   enabled: true,
+  mode: "day",
+  value: 14,
   days: 14,
   seats: 1,
   product_id: null,
@@ -50,9 +58,15 @@ export function getTrialConfig(): TrialConfig {
   const enabledRaw = getSetting(KEYS.enabled);
   const productRaw = getSetting(KEYS.productId);
   const graceRaw = getSetting(KEYS.graceDays);
+  const modeRaw = getSetting(KEYS.mode);
+  const mode = modeRaw === "count" ? "count" : "day";
+  const daysSetting = intSetting(KEYS.days, DEFAULTS.days);
+  const value = intSetting(KEYS.value, daysSetting);
   return {
     enabled: enabledRaw === null ? DEFAULTS.enabled : enabledRaw === "1",
-    days: intSetting(KEYS.days, DEFAULTS.days),
+    mode,
+    value,
+    days: mode === "day" ? value : daysSetting,
     seats: intSetting(KEYS.seats, DEFAULTS.seats),
     product_id: productRaw && productRaw !== "" ? productRaw : null,
     module_ids: parseJson<string[]>(getSetting(KEYS.moduleIds), []),
@@ -63,6 +77,8 @@ export function getTrialConfig(): TrialConfig {
 
 export function setTrialConfig(patch: Partial<TrialConfig>): TrialConfig {
   if (patch.enabled !== undefined) setSetting(KEYS.enabled, patch.enabled ? "1" : "0");
+  if (patch.mode !== undefined) setSetting(KEYS.mode, patch.mode);
+  if (patch.value !== undefined) setSetting(KEYS.value, String(patch.value));
   if (patch.days !== undefined) setSetting(KEYS.days, String(patch.days));
   if (patch.seats !== undefined) setSetting(KEYS.seats, String(patch.seats));
   if (patch.product_id !== undefined) setSetting(KEYS.productId, patch.product_id ?? "");
@@ -102,6 +118,19 @@ export function canStartTrial(customerId: string, productId: string): TrialGuard
       ok: false,
       code: "TRIAL_ALREADY_USED",
       message: `该产品试用次数已用完（上限 ${config.max_per_customer} 次）`,
+    };
+  }
+  // 只有还没买过正式授权的客户才能试用
+  const paid = scalar(
+    "SELECT COUNT(*) AS n FROM licenses WHERE customer_id = ? AND product_id = ? AND kind = 'paid'",
+    customerId,
+    productId,
+  );
+  if (paid > 0) {
+    return {
+      ok: false,
+      code: "TRIAL_NOT_ALLOWED",
+      message: "该产品已有正式授权，无需试用",
     };
   }
   return { ok: true };

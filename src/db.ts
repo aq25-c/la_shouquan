@@ -210,6 +210,36 @@ ALTER TABLE licenses ADD COLUMN source TEXT NOT NULL DEFAULT 'cdk';
 CREATE INDEX IF NOT EXISTS idx_licenses_kind ON licenses(kind, created_at DESC);
 `;
 
+/**
+ * v4：员工/代理权限体系 + 卡密计费类型 + 代理额度
+ *   - admin_users.role: owner / staff（员工）/ agent（代理）
+ *   - admin_users.permissions: JSON { menus[], features[] }
+ *   - admin_users.channel_id: 代理关联的渠道
+ *   - term_type: day / month / year / hour / count（term_value 为空时回落到 days）
+ *   - licenses.max_usages / used_usages: 次数型授权的总额度与已用量
+ *   - channels.credit: 代理的卡密余额（单位：张）
+ */
+const SCHEMA_V4 = `
+ALTER TABLE admin_users ADD COLUMN permissions TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE admin_users ADD COLUMN channel_id TEXT;
+
+ALTER TABLE cdk_batches ADD COLUMN term_type TEXT NOT NULL DEFAULT 'day';
+ALTER TABLE cdk_batches ADD COLUMN term_value INTEGER;
+
+ALTER TABLE cdks ADD COLUMN term_type TEXT NOT NULL DEFAULT 'day';
+ALTER TABLE cdks ADD COLUMN term_value INTEGER;
+
+ALTER TABLE licenses ADD COLUMN term_type TEXT NOT NULL DEFAULT 'day';
+ALTER TABLE licenses ADD COLUMN term_value INTEGER;
+ALTER TABLE licenses ADD COLUMN max_usages INTEGER;
+ALTER TABLE licenses ADD COLUMN used_usages INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE channels ADD COLUMN credit INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_admin_channel ON admin_users(channel_id);
+CREATE INDEX IF NOT EXISTS idx_licenses_term ON licenses(term_type);
+`;
+
 export function openDb(path: string): DatabaseSync {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
@@ -243,6 +273,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 1) runMigration(db, SCHEMA_V1, 1);
   if (version < 2) runMigration(db, SCHEMA_V2, 2);
   if (version < 3) runMigration(db, SCHEMA_V3, 3);
+  if (version < 4) runMigration(db, SCHEMA_V4, 4);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

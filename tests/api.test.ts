@@ -571,6 +571,11 @@ test("渠道：创建、编码校验与列表统计", async () => {
 });
 
 test("渠道：CDK 批次归属渠道并携带结算单价", async () => {
+  // v4：渠道生成卡密要扣卡密余额，先充值
+  const recharge = await api("POST", `/admin/api/channels/${channelId}/credit`, { amount: 100 }, adminToken);
+  assert.equal(recharge.status, 200);
+  assert.equal(recharge.json.data.channel.credit, 100);
+
   const gen = await api(
     "POST",
     "/admin/api/cdks/generate",
@@ -931,3 +936,329 @@ test("API 文档公开可访问（无需登录）", async () => {
   const adminDocs = await api("GET", "/admin/api/docs");
   assert.equal(adminDocs.status, 401);
 });
+
+/* ==================== 员工与代理权限 ==================== */
+
+test("员工账号：按菜单/功能权限受限", async () => {
+  const created = await api(
+    "POST",
+    "/admin/api/staff",
+    {
+      email: "staff-e2e@test.local",
+      password: "StaffPass123",
+      name: "受限员工",
+      role: "staff",
+      menus: ["cdks", "licenses"],
+      features: ["cdk.generate"],
+    },
+    adminToken,
+  );
+  assert.equal(created.status, 201);
+  const staffId = created.json.data.staff.id;
+  assert.equal(created.json.data.staff.role, "staff");
+  assert.deepEqual(created.json.data.staff.permissions.menus, ["cdks", "licenses"]);
+  assert.deepEqual(created.json.data.staff.permissions.features, ["cdk.generate"]);
+
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "staff-e2e@test.local",
+    password: "StaffPass123",
+  });
+  assert.equal(login.status, 200);
+  const staffToken = login.json.data.token;
+  assert.deepEqual(login.json.data.admin.permissions.features, ["cdk.generate"], "登录响应应带权限");
+
+  // 有权限：生成卡密
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1 },
+    staffToken,
+  );
+  assert.equal(gen.status, 201, "员工有 cdk.generate 应该能生成");
+
+  // 无权限：改产品 → 403
+  const patchProduct = await api("PATCH", `/admin/api/products/${productId}`, { name: "改名" }, staffToken);
+  assert.equal(patchProduct.status, 403);
+  assert.equal(patchProduct.json.error.code, "FORBIDDEN_FEATURE");
+
+  // 非 owner：不能管员工
+  const staffList = await api("GET", "/admin/api/staff", undefined, staffToken);
+  assert.equal(staffList.status, 403);
+
+  // owner 能管
+  const ownerList = await api("GET", "/admin/api/staff", undefined, adminToken);
+  assert.ok(ownerList.json.data.items.some((s: Json) => s.id === staffId));
+
+  // 停用后会话立即失效
+  const disabled = await api("PATCH", `/admin/api/staff/${staffId}`, { status: "disabled" }, adminToken);
+  assert.equal(disabled.status, 200);
+  const afterDisable = await api("GET", "/admin/api/cdks", undefined, staffToken);
+  assert.equal(afterDisable.status, 401, "停用员工后其会话应立即失效");
+});
+
+test("代理账号：绑定渠道、权限固定、只能碰卡密", async () => {
+  const created = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "agent-e2e@test.local", password: "AgentPass123", name: "代理甲", role: "agent", channel_id: channelId },
+    adminToken,
+  );
+  assert.equal(created.status, 201);
+  assert.equal(created.json.data.staff.role, "agent");
+  assert.equal(created.json.data.staff.channel_id, channelId);
+  assert.deepEqual(created.json.data.staff.permissions.menus, ["cdks"], "代理只看卡密页");
+
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "agent-e2e@test.local",
+    password: "AgentPass123",
+  });
+  const agentToken = login.json.data.token;
+
+  // 代理被限制在卡密相关接口
+  for (const p of ["/admin/api/licenses", "/admin/api/customers", "/admin/api/channels"]) {
+    const res = await api("GET", p, undefined, agentToken);
+    assert.equal(res.status, 403, `${p} 应被代理拒绝`);
+  }
+
+  // 代理不能管员工
+  const staffRes = await api("GET", "/admin/api/staff", undefined, agentToken);
+  assert.equal(staffRes.status, 403);
+});
+
+test("员工/代理创建的参数校验", async () => {
+  const noChannel = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "agent-noc@test.local", password: "AgentPass123", role: "agent" },
+    adminToken,
+  );
+  assert.equal(noChannel.status, 400);
+  assert.equal(noChannel.json.error.code, "MISSING_FIELD");
+
+  const badRole = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "x-role@test.local", password: "StaffPass123", role: "owner" },
+    adminToken,
+  );
+  assert.equal(badRole.status, 400);
+  assert.equal(badRole.json.error.code, "INVALID_FIELD");
+
+  const weak = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "x-weak@test.local", password: "123", role: "staff" },
+    adminToken,
+  );
+  assert.equal(weak.status, 400);
+  assert.equal(weak.json.error.code, "WEAK_PASSWORD");
+});
+
+/* ==================== 卡密计费类型 ==================== */
+
+test("次数型卡密：激活后按次消耗，用完拒绝", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    {
+      product_id: productId,
+      module_ids: [moduleIds[0]],
+      term_type: "count",
+      term_value: 5,
+      count: 1,
+      seats: 1,
+      note: "次数卡",
+    },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  assert.equal(gen.json.data.batch.term_type, "count");
+  assert.equal(gen.json.data.batch.term_value, 5);
+
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: gen.json.data.codes[0],
+    device_id: "COUNT-DEV-1",
+    email: "count-buyer@test.local",
+    password: "CountPass123",
+  });
+  assert.equal(act.status, 201);
+  assert.equal(act.json.data.license.term_type, "count");
+  assert.equal(act.json.data.license.max_usages, 5);
+  assert.equal(act.json.data.license_payload.usage.max, 5);
+  assert.equal(act.json.data.license_payload.usage.used, 0);
+  const key = act.json.data.license_key;
+
+  const c1 = await api("POST", "/api/v1/licenses/consume", { license_key: key, device_id: "COUNT-DEV-1", count: 3 });
+  assert.equal(c1.status, 200);
+  assert.equal(c1.json.data.remaining, 2);
+
+  const over = await api("POST", "/api/v1/licenses/consume", { license_key: key, device_id: "COUNT-DEV-1", count: 3 });
+  assert.equal(over.status, 403);
+  assert.equal(over.json.error.code, "USAGE_EXHAUSTED");
+  assert.equal(over.json.error.details.remaining, 2);
+
+  const exact = await api("POST", "/api/v1/licenses/consume", { license_key: key, device_id: "COUNT-DEV-1", count: 2 });
+  assert.equal(exact.json.data.remaining, 0);
+
+  const after = await api("POST", "/api/v1/licenses/consume", { license_key: key, device_id: "COUNT-DEV-1" });
+  assert.equal(after.status, 403);
+  assert.equal(after.json.error.code, "USAGE_EXHAUSTED");
+});
+
+test("按时长计费：小时卡与天卡到期精确，月卡落在合理区间", async () => {
+  const cases = [
+    { type: "hour", value: 6, expect: 6 * 3_600_000 },
+    { type: "day", value: 3, expect: 3 * 86_400_000 },
+  ];
+  for (const c of cases) {
+    const gen = await api(
+      "POST",
+      "/admin/api/cdks/generate",
+      { product_id: productId, module_ids: [moduleIds[0]], term_type: c.type, term_value: c.value, count: 1, seats: 1 },
+      adminToken,
+    );
+    assert.equal(gen.status, 201);
+    const act = await api("POST", "/api/v1/licenses/activate", {
+      cdk: gen.json.data.codes[0],
+      device_id: `TERM-${c.type}-1`,
+      email: `term-${c.type}@test.local`,
+      password: "TermPass123",
+    });
+    assert.equal(act.status, 201);
+    assert.equal(act.json.data.license.term_type, c.type);
+    const delta = Date.parse(act.json.data.expires_at) - Date.parse(act.json.data.license.starts_at);
+    assert.equal(delta, c.expect, `${c.type} 类型到期时长应正确`);
+  }
+
+  const monthGen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "month", term_value: 2, count: 1, seats: 1 },
+    adminToken,
+  );
+  const monthAct = await api("POST", "/api/v1/licenses/activate", {
+    cdk: monthGen.json.data.codes[0],
+    device_id: "TERM-MONTH-1",
+    email: "term-month@test.local",
+    password: "TermPass123",
+  });
+  const ms = Date.parse(monthAct.json.data.expires_at) - Date.parse(monthAct.json.data.license.starts_at);
+  assert.ok(ms >= 58 * 86_400_000 && ms <= 62 * 86_400_000, "2 个自然月应落在 58~62 天之间");
+});
+
+test("非次数型授权调用消耗接口被拒", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, seats: 1 },
+    adminToken,
+  );
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk: gen.json.data.codes[0],
+    device_id: "NONCOUNT-1",
+    email: "noncount@test.local",
+    password: "NonCount123",
+  });
+  const res = await api("POST", "/api/v1/licenses/consume", {
+    license_key: act.json.data.license_key,
+    device_id: "NONCOUNT-1",
+  });
+  assert.equal(res.status, 409);
+  assert.equal(res.json.error.code, "NOT_COUNT_LICENSE");
+});
+
+/* ==================== 代理额度 ==================== */
+
+test("代理额度：余额不足无法生成，充值后按量扣减", async () => {
+  const ch = await api("POST", "/admin/api/channels", { code: "credit-test", name: "额度测试渠道" }, adminToken);
+  assert.equal(ch.status, 201);
+  const cid = ch.json.data.channel.id;
+  assert.equal(ch.json.data.channel.credit, 0, "新渠道余额为 0");
+
+  const denied = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 5, channel_id: cid },
+    adminToken,
+  );
+  assert.equal(denied.status, 409);
+  assert.equal(denied.json.error.code, "CREDIT_INSUFFICIENT");
+  assert.equal(denied.json.error.details.needed, 5);
+
+  const topup = await api("POST", `/admin/api/channels/${cid}/credit`, { amount: 10 }, adminToken);
+  assert.equal(topup.json.data.channel.credit, 10);
+
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 5, channel_id: cid },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+
+  const detail = await api("GET", `/admin/api/channels/${cid}`, undefined, adminToken);
+  assert.equal(detail.json.data.channel.credit, 5, "生成 5 张后余额应从 10 扣到 5");
+});
+
+test("代理登录后生成卡密受自己渠道余额限制", async () => {  // 用已充值的渠道建代理（此时余额 5）
+  const created = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "agent-credit@test.local", password: "AgentCredit123", role: "agent", channel_id: channelId },
+    adminToken,
+  );
+  assert.equal(created.status, 201);
+
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "agent-credit@test.local",
+    password: "AgentCredit123",
+  });
+  const agentToken = login.json.data.token;
+
+  // 代理生成的卡密自动归属自己渠道
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 2 },
+    agentToken,
+  );
+  assert.equal(gen.status, 201);
+  assert.equal(gen.json.data.batch.channel_id, channelId, "代理生成的卡密必须归属自己的渠道");
+
+  // 代理只能看到自己渠道的卡密（即使传了 __none__ 也会被强制回自己渠道）
+  const list = await api("GET", "/admin/api/cdks?channel_id=__none__", undefined, agentToken);
+  assert.ok(list.json.data.items.length > 0, "代理应能看到自己渠道的卡密");
+  assert.ok(
+    list.json.data.items.every((c: Json) => c.channel_id === channelId),
+    "代理不能看到其它渠道或直销的卡密",
+  );
+});
+
+test("试用按次数模式配置生效，已购客户不能再试用", async () => {
+  const patched = await api(
+    "PATCH",
+    "/admin/api/settings/trial",
+    { enabled: true, mode: "count", value: 3 },
+    adminToken,
+  );
+  assert.equal(patched.status, 200);
+  assert.equal(patched.json.data.config.mode, "count");
+  assert.equal(patched.json.data.config.value, 3);
+
+  // 已有正式授权的客户不允许再试用
+  const login = await api("POST", "/api/v1/auth/login", {
+    email: "buyer@test.local",
+    password: "buyerPass123",
+  });
+  const buyerToken = login.json.data.session.token;
+  const denied = await api("POST", "/api/v1/trial/start", { device_id: "TRIAL-BUYER-1" }, buyerToken);
+  assert.equal(denied.status, 403);
+  assert.ok(
+    ["TRIAL_NOT_ALLOWED", "TRIAL_ALREADY_USED"].includes(denied.json.error.code),
+    `应拒绝试用，实际 ${denied.json.error.code}`,
+  );
+
+  // 恢复按天模式，避免影响其他用例
+  await api("PATCH", "/admin/api/settings/trial", { mode: "day", value: 14 }, adminToken);
+});
+

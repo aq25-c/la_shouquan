@@ -34,8 +34,16 @@ import {
   del,
 } from "../http.ts";
 import type { Ctx } from "../http.ts";
-import { adminTtl, grantSession, requireAdmin } from "../auth.ts";
+import { adminTtl, grantSession, requireAdmin, requireOwner, requireStaff } from "../auth.ts";
 import { currentSession } from "../auth.ts";
+import {
+  AGENT_PERMISSIONS,
+  FEATURES,
+  MENUS,
+  parsePermissions,
+  serializePermissions,
+} from "../permissions.ts";
+import type { StaffRole, TermType } from "../permissions.ts";
 import { buildLicenseFile, licenseView } from "../issuer.ts";
 import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
@@ -44,17 +52,21 @@ import { buildApiDocs } from "../api-spec.ts";
 import {
   channelReferences,
   channelSummary,
+  consumeCredit,
   createChannel,
   deleteChannel,
   findChannelByCode,
   findChannelById,
   listChannels,
+  rechargeChannel,
   updateChannel,
 } from "../store/channels.ts";
 import {
   createAdmin,
   createCustomer,
+  deleteStaff,
   findAdminByEmail,
+  findAdminById,
   findCustomerByEmail,
   findCustomerById,
   listAdmins,
@@ -64,6 +76,7 @@ import {
   touchAdminLogin,
   updateAdminPassword,
   updateCustomer,
+  updateStaff,
 } from "../store/accounts.ts";
 import {
   createModule,
@@ -116,15 +129,21 @@ const P = "/admin/api";
 
 /* ---------------------------- 小工具 ---------------------------- */
 
-function adminView(admin: { id: string; email: string; name: string | null; role: string; status: string; created_at: string; last_login_at: string | null }) {
+function adminView(admin: AdminRow) {
+  const role = (["owner", "staff", "agent"].includes(admin.role) ? admin.role : "owner") as StaffRole;
+  const perms = parsePermissions(admin.permissions, role);
   return {
     id: admin.id,
     email: admin.email,
     name: admin.name,
-    role: admin.role,
+    role,
     status: admin.status,
     created_at: admin.created_at,
     last_login_at: admin.last_login_at,
+    /** 目录权限（可见页面）与功能权限（可执行操作） */
+    permissions: perms,
+    channel_id: admin.channel_id ?? null,
+    channel_name: admin.channel_id ? (findChannelById(admin.channel_id)?.name ?? null) : null,
   };
 }
 
@@ -260,6 +279,165 @@ export function registerAdminRoutes(): void {
     });
   });
 
+  /* ---------------------------- 员工与代理 ---------------------------- */
+
+  /** 权限可选项：前端据此渲染"目录权限 / 软件功能"勾选清单 */
+  get(`${P}/staff/options`, (ctx) => {
+    requireStaff(ctx);
+    return ok({
+      menus: MENUS,
+      features: FEATURES,
+      roles: [
+        { id: "staff", label: "员工" },
+        { id: "agent", label: "代理" },
+      ],
+      agent_permissions: AGENT_PERMISSIONS,
+    });
+  });
+
+  get(`${P}/staff`, (ctx) => {
+    requireStaff(ctx);
+    return ok({ items: listAdmins().map(adminView) });
+  });
+
+  post(`${P}/staff`, async (ctx) => {
+    const actor = requireOwner(ctx).admin;
+    const email = normalizeEmail(needStr(ctx, "email", 190));
+    const password = needStr(ctx, "password", 200);
+    const name = bodyStr(ctx, "name", { max: 120 });
+    const roleInput = bodyStr(ctx, "role", { max: 20 }) ?? "staff";
+
+    if (!["staff", "agent"].includes(roleInput)) throw badRequest("role 只能是 staff / agent", "INVALID_FIELD");
+    if (!isEmail(email)) throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
+    if (password.length < 8) throw badRequest("密码至少 8 位", "WEAK_PASSWORD");
+    if (findAdminByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
+
+    let channelId: string | null = null;
+    if (roleInput === "agent") {
+      const channelInput = bodyStr(ctx, "channel_id", 64);
+      if (!channelInput) throw badRequest("代理必须绑定一个渠道", "MISSING_FIELD", { field: "channel_id" });
+      const channel = findChannelById(channelInput);
+      if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+      channelId = channel.id;
+    }
+
+    // 代理权限固定（只看自己的卡密），员工按勾选配置
+    const permissions =
+      roleInput === "agent"
+        ? serializePermissions(AGENT_PERMISSIONS)
+        : serializePermissions({
+            menus: bodyStrArray(ctx, "menus") ?? [],
+            features: bodyStrArray(ctx, "features") ?? [],
+          });
+
+    const newStaff = await createAdmin({
+      email,
+      passwordHash: await hashPassword(password),
+      name,
+      role: roleInput,
+      permissions,
+      channelId,
+    });
+
+    audit({
+      actorType: "admin",
+      actorId: actor.id,
+      actorLabel: actor.email,
+      action: "staff.create",
+      targetType: "staff",
+      targetId: newStaff.id,
+      ip: ctx.ip,
+      detail: { email, role: roleInput, channel_id: channelId },
+    });
+    return created({ staff: adminView(newStaff) });
+  });
+
+  patch(`${P}/staff/:id`, async (ctx) => {
+    const actor = requireOwner(ctx).admin;
+    const id = slash(ctx, "id");
+    const target = findAdminById(id);
+    if (!target) throw notFound("员工不存在", "STAFF_NOT_FOUND");
+    if (target.role === "owner" && target.id !== actor.id) {
+      throw forbidden("不能修改其他超级管理员", "FORBIDDEN_OWNER");
+    }
+
+    const patchData: Record<string, string | null> = {};
+    const name = bodyStr(ctx, "name", { max: 120 });
+    if (name !== null) patchData.name = name;
+
+    const status = bodyStr(ctx, "status", { max: 20 });
+    if (status) {
+      if (!["active", "disabled"].includes(status)) {
+        throw badRequest("status 只能是 active / disabled", "INVALID_FIELD");
+      }
+      patchData.status = status;
+    }
+
+    const password = bodyStr(ctx, "password", 200);
+    if (password) {
+      if (password.length < 8) throw badRequest("密码至少 8 位", "WEAK_PASSWORD");
+      patchData.password_hash = await hashPassword(password);
+    }
+
+    if (target.role === "agent") {
+      const channelInput = bodyStr(ctx, "channel_id", 64);
+      if (channelInput) {
+        const channel = findChannelById(channelInput);
+        if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+        patchData.channel_id = channel.id;
+      }
+    } else if (target.role !== "owner") {
+      const menus = bodyStrArray(ctx, "menus");
+      const features = bodyStrArray(ctx, "features");
+      if (menus || features) {
+        const current = parsePermissions(target.permissions, "staff");
+        patchData.permissions = serializePermissions({
+          menus: menus ?? current.menus,
+          features: features ?? current.features,
+        });
+      }
+    }
+
+    const updated = updateStaff(id, patchData);
+    // 停用或重置密码后，强制该账号下线
+    if (patchData.status === "disabled" || patchData.password_hash) {
+      revokeSessionsFor("admin", id);
+    }
+    audit({
+      actorType: "admin",
+      actorId: actor.id,
+      actorLabel: actor.email,
+      action: "staff.update",
+      targetType: "staff",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { status: patchData.status ?? null, permissions: patchData.permissions ?? null },
+    });
+    return ok({ staff: updated ? adminView(updated) : null });
+  });
+
+  delete(`${P}/staff/:id`, (ctx) => {
+    const actor = requireOwner(ctx).admin;
+    const id = slash(ctx, "id");
+    const target = findAdminById(id);
+    if (!target) throw notFound("员工不存在", "STAFF_NOT_FOUND");
+    if (target.role === "owner") throw forbidden("不能删除超级管理员", "FORBIDDEN_OWNER");
+    if (target.id === actor.id) throw forbidden("不能删除自己", "FORBIDDEN_SELF");
+    deleteStaff(id);
+    revokeSessionsFor("admin", id);
+    audit({
+      actorType: "admin",
+      actorId: actor.id,
+      actorLabel: actor.email,
+      action: "staff.delete",
+      targetType: "staff",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { email: target.email },
+    });
+    return ok({ deleted: true });
+  });
+
   /* ---------------------------- 渠道 / 分销 ---------------------------- */
 
   get(`${P}/channels`, (ctx) => {
@@ -362,6 +540,38 @@ export function registerAdminRoutes(): void {
       detail: { code: channel.code },
     });
     return ok({ deleted: true });
+  });
+
+  /** 给渠道（代理）充值卡密余额；amount 可为负用于人工修正 */
+  post(`${P}/channels/:id/credit`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    const channel = findChannelById(id);
+    if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+    const amount = needInt(ctx, "amount", { min: -1_000_000, max: 1_000_000 });
+    if (amount === 0) throw badRequest("充值/扣减数量不能为 0", "INVALID_FIELD");
+
+    const updated = rechargeChannel(id, amount);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "channel.recharge",
+      targetType: "channel",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { amount, credit_after: updated?.credit ?? null },
+    });
+    return ok({
+      channel: updated
+        ? {
+            id: updated.id,
+            code: updated.code,
+            name: updated.name,
+            credit: updated.credit,
+          }
+        : null,
+    });
   });
 
   /* ---------------------------- 产品与模块 ---------------------------- */
@@ -543,7 +753,10 @@ export function registerAdminRoutes(): void {
     const product = findProductById(productId);
     if (!product) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
     const moduleIds = validateModuleIds(productId, bodyStrArray(ctx, "module_ids") ?? []);
-    const days = needInt(ctx, "days", { min: 1, max: 3650 });
+    // v4：支持按天/月/年/小时/次数；未传 term 时沿用 days
+    const termTypeInput = bodyStr(ctx, "term_type", 20);
+    const termValueInput = bodyInt(ctx, "term_value", { min: 1, max: 100000 });
+    const days = termValueInput ?? needInt(ctx, "days", { min: 1, max: 3650 });
     const seats = bodyInt(ctx, "seats", { min: 1, max: 100 }) ?? 1;
     const count = needInt(ctx, "count", { min: 1, max: 5000 });
     const note = bodyStr(ctx, "note", { max: 500 });
@@ -552,15 +765,32 @@ export function registerAdminRoutes(): void {
     // v2：渠道与结算单价（单价单位：分）
     const channelInput = bodyStr(ctx, "channel_id", 64);
     const unitPrice = bodyInt(ctx, "unit_price", { min: 0, max: 100_000_000 }) ?? 0;
+
+    // v4：代理只能给自己的渠道生成，且受"卡密余额"限制
+    const staffCtx = requireStaff(ctx);
     let channelId: string | null = null;
-    if (channelInput) {
+    if (staffCtx.isAgent) {
+      if (!staffCtx.channelId) throw forbidden("代理账号未绑定渠道", "AGENT_NO_CHANNEL");
+      channelId = staffCtx.channelId;
+    } else if (channelInput) {
       const channel = findChannelById(channelInput);
       if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
       channelId = channel.id;
     }
 
-    const result = withTx(() =>
-      createCdkBatch({
+    const result = withTx(() => {
+      // 先扣额度再出卡：余额不足时抛错，整个事务回滚，不会出现"扣了额度没出卡"
+      if (channelId) {
+        const consumed = consumeCredit(channelId, count);
+        if (!consumed.ok) {
+          throw conflict(
+            `该渠道卡密余额不足（当前 ${consumed.credit} 张，本次需要 ${count} 张）`,
+            "CREDIT_INSUFFICIENT",
+            { credit: consumed.credit, needed: count },
+          );
+        }
+      }
+      return createCdkBatch({
         productId,
         moduleIds,
         days,
@@ -571,8 +801,10 @@ export function registerAdminRoutes(): void {
         createdBy: admin.id,
         channelId,
         unitPrice,
-      }),
-    );
+        termType: (termTypeInput ?? "day") as TermType,
+        termValue: termValueInput ?? undefined,
+      });
+    });
 
     audit({
       actorType: "admin",
@@ -603,14 +835,15 @@ export function registerAdminRoutes(): void {
   });
 
   get(`${P}/cdks`, (ctx) => {
-    requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
     const { page, pageSize } = paging(ctx);
     const result = listCdks({
       productId: q(ctx, "product_id"),
       batchId: q(ctx, "batch_id"),
       status: q(ctx, "status"),
       q: q(ctx, "q"),
-      channelId: q(ctx, "channel_id"),
+      // 代理只能看到自己渠道的卡密
+      channelId: staffCtx.isAgent ? staffCtx.channelId : q(ctx, "channel_id"),
       page,
       pageSize,
     });
@@ -1068,7 +1301,9 @@ export function registerAdminRoutes(): void {
     }
 
     const moduleIds = validateModuleIds(productId, bodyStrArray(ctx, "module_ids") ?? []);
-    const days = needInt(ctx, "days", { min: 1, max: 3650 });
+    const termTypeInput = bodyStr(ctx, "term_type", 20);
+    const termValueInput = bodyInt(ctx, "term_value", { min: 1, max: 100000 });
+    const days = termValueInput ?? needInt(ctx, "days", { min: 1, max: 3650 });
     const seats = bodyInt(ctx, "seats", { min: 1, max: 100 }) ?? 1;
     const note = bodyStr(ctx, "note", { max: 500 });
 
@@ -1096,6 +1331,8 @@ export function registerAdminRoutes(): void {
         note: note ?? "后台手动开通",
         channelId,
         unitPrice,
+        termType: (termTypeInput ?? "day") as TermType,
+        termValue: termValueInput ?? undefined,
       }),
     );
 
@@ -1210,6 +1447,15 @@ export function registerAdminRoutes(): void {
     const patchData: Partial<TrialConfig> = {};
 
     if (ctx.body.enabled !== undefined) patchData.enabled = ctx.body.enabled === true;
+
+    const mode = bodyStr(ctx, "mode", 10);
+    if (mode) {
+      if (!["day", "count"].includes(mode)) throw badRequest("mode 只能是 day / count", "INVALID_FIELD");
+      patchData.mode = mode as "day" | "count";
+    }
+
+    const value = bodyInt(ctx, "value", { min: 1, max: 3650 });
+    if (value !== null) patchData.value = value;
 
     const days = bodyInt(ctx, "days", { min: 1, max: 365 });
     if (days !== null) patchData.days = days;

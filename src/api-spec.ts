@@ -58,6 +58,13 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /api/v1/licenses/enroll": { title: "加绑设备", auth: "public", params: "`license_key`✅、`device_id`✅、`device_name?`、`platform?`", desc: "为同一授权加绑新设备占用一个席位，席位满返回 409 SEAT_LIMIT。" },
   "POST /api/v1/licenses/release": { title: "解绑设备", auth: "public", params: "`license_key`✅、`device_id`✅", desc: "释放席位，返回 `{released}`。" },
   "GET /api/v1/licenses": { title: "我的授权列表", auth: "customer", desc: "当前客户的授权，每项附在用设备。" },
+  "POST /api/v1/licenses/consume": {
+    title: "消耗次数（次数型）",
+    auth: "public",
+    params: "`license_key`✅、`device_id`✅、`count?`（默认 1）",
+    desc: "按次数计费的授权每次使用调用一次，原子扣减并返回剩余次数与重新签名的许可证文件。",
+    notes: "403 USAGE_EXHAUSTED（次数用完）、409 NOT_COUNT_LICENSE（不是次数型）、404 DEVICE_NOT_BOUND。",
+  },
   "GET /api/v1/licenses/:id": { title: "授权详情", auth: "customer", desc: "授权信息 + 全部设备记录 + 模块编码。" },
   "POST /api/v1/licenses/:id/rotate-key": { title: "重置许可证密钥", auth: "customer", params: "`device_id?`", desc: "旧密钥立即失效；带 `device_id` 时一并返回新签发的许可证文件。" },
   "POST /api/v1/licenses/:id/devices/:deviceId/release": { title: "自助解绑设备", auth: "customer", desc: "客户解绑自己的设备（换机用）。" },
@@ -79,8 +86,30 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/auth/logout": { title: "管理员登出", auth: "admin", desc: "使当前会话失效。" },
   "GET /admin/api/auth/me": { title: "当前管理员", auth: "admin", desc: "管理员信息 + 签名公钥 + 策略参数。" },
   "POST /admin/api/auth/password": { title: "修改密码", auth: "admin", params: "`current_password`、`new_password`", desc: "改完所有会话失效，需重新登录。" },
-  "GET /admin/api/admins": { title: "管理员列表", auth: "admin", desc: "全部管理员账号。" },
-  "POST /admin/api/admins": { title: "新增管理员", auth: "admin", params: "`email`、`password`(≥10位)、`name?`", desc: "创建一个管理端账号。" },
+  "GET /admin/api/admins": { title: "管理员列表", auth: "admin", desc: "全部管理员账号（旧接口，等同 /staff）。" },
+  "POST /admin/api/admins": { title: "新增管理员", auth: "admin", params: "`email`、`password`(≥10位)、`name?`", desc: "创建管理端账号（旧接口，建议改用 /staff 以便配置权限）。" },
+
+  /* ---------------- 管理 · 员工与代理 ---------------- */
+  "GET /admin/api/staff/options": {
+    title: "权限可选项",
+    auth: "admin",
+    desc: "返回可配置的目录权限（menus）与软件功能（features）清单，以及代理的固定权限，供前端渲染勾选。",
+  },
+  "GET /admin/api/staff": { title: "员工与代理列表", auth: "admin", desc: "含角色、目录权限、功能权限、所属渠道。" },
+  "POST /admin/api/staff": {
+    title: "新增员工 / 代理",
+    auth: "admin",
+    params: "`email`✅、`password`✅(≥8位)、`name?`、`role`(staff|agent)、`menus[]`、`features[]`、`channel_id?`",
+    desc: "role=staff 时按 menus/features 授权；role=agent 必须绑定 channel_id，权限固定为「只看卡密页」。仅超级管理员可调用。",
+    notes: "400 MISSING_FIELD（代理缺渠道）/ INVALID_FIELD（role 非法）/ WEAK_PASSWORD；409 EMAIL_TAKEN；403 FORBIDDEN_OWNER。",
+  },
+  "PATCH /admin/api/staff/:id": {
+    title: "编辑员工 / 代理",
+    auth: "admin",
+    params: "`name?`、`status?`、`password?`、`menus[]?`、`features[]?`、`channel_id?`",
+    desc: "改权限/状态/密码；停用或改密后该账号的会话立即失效。仅超级管理员可调用。",
+  },
+  "DELETE /admin/api/staff/:id": { title: "删除员工 / 代理", auth: "admin", desc: "不能删除超级管理员与自己；删除后会话失效。" },
 
   /* ---------------- 管理 · 概览 ---------------- */
   "GET /admin/api/overview": { title: "概览数据", auth: "admin", desc: "统计（授权/CDK/设备/心跳）+ 渠道汇总 + 14 天内到期 + 最近开通。" },
@@ -88,6 +117,12 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   /* ---------------- 管理 · 渠道 ---------------- */
   "GET /admin/api/channels": { title: "渠道列表（含统计）", auth: "admin", params: "`q?`、`status?`", desc: "每个渠道带 CDK 生成/核销数、激活率、授权数、营收（累计与近30天）、续费次数；顶层另有 `summary`。" },
   "POST /admin/api/channels": { title: "新增渠道", auth: "admin", params: "`code`（小写）、`name`、`contact?`、`phone?`、`email?`、`note?`", desc: "`code` 自动转小写，重复返回 409 CODE_TAKEN。" },
+  "POST /admin/api/channels/:id/credit": {
+    title: "充值卡密余额",
+    auth: "admin",
+    params: "`amount`✅（正=充值，负=扣减）",
+    desc: "调整渠道（代理）的卡密余额。代理生成卡密时会按数量扣减余额，不足则无法生成。",
+  },
   "GET /admin/api/channels/:id": { title: "渠道详情", auth: "admin", desc: "单渠道 + 统计。" },
   "PATCH /admin/api/channels/:id": { title: "编辑渠道", auth: "admin", params: "`name?`、`contact?`、`phone?`、`email?`、`note?`、`status?`", desc: "`status` 只能是 active / disabled。" },
   "DELETE /admin/api/channels/:id": { title: "删除渠道", auth: "admin", desc: "已被 CDK 批次或授权引用时返回 409 CHANNEL_IN_USE，此时应改为停用。" },
@@ -140,7 +175,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
 
   /* ---------------- 管理 · 试用配置 ---------------- */
   "GET /admin/api/settings/trial": { title: "读取试用配置", auth: "admin", desc: "`config`（开关/天数/席位/次数/限定产品/离线宽限）+ `summary`（试用总数/有效/转正式客户数）。" },
-  "PATCH /admin/api/settings/trial": { title: "修改试用配置", auth: "admin", params: "`enabled?`、`days?`、`seats?`、`max_per_customer?`、`product_id?`、`module_ids?`、`offline_grace_days?`", desc: "`product_id: null` 取消产品限定，`offline_grace_days: null` 回落到全局默认。" },
+  "PATCH /admin/api/settings/trial": { title: "修改试用配置", auth: "admin", params: "`enabled?`、`mode?`(day/count)、`value?`、`days?`、`seats?`、`max_per_customer?`、`product_id?`、`module_ids?`、`offline_grace_days?`", desc: "`mode=day` 表示试用几天、`mode=count` 表示试用几次（value 为对应数量）；`product_id: null` 取消产品限定，`offline_grace_days: null` 回落到全局默认。只有未购买正式授权的客户才能试用。" },
 
   /* ---------------- 管理 · 审计与密钥 ---------------- */
   "GET /admin/api/audit": { title: "审计日志", auth: "admin", params: "`action?`、`actor_type?`、`q?`、分页", desc: "倒序，含操作者、目标、IP 与变更详情。" },
@@ -159,7 +194,8 @@ const GROUP_RULES: { name: string; test: (m: string, p: string) => boolean }[] =
   { name: "客户端 · 账号", test: (_m, p) => p.startsWith("/api/v1/auth") },
   { name: "客户端 · 授权", test: (_m, p) => p.startsWith("/api/v1/licenses") || p.startsWith("/api/v1/cdks") },
   { name: "客户端 · 试用", test: (_m, p) => p.startsWith("/api/v1/trial") },
-  { name: "管理 · 认证", test: (_m, p) => p.startsWith("/admin/api/auth") || p.startsWith("/admin/api/admins") },
+  { name: "管理 · 认证", test: (_m, p) => p.startsWith("/admin/api/auth") },
+  { name: "管理 · 员工与代理", test: (_m, p) => p.includes("/staff") || p.includes("/admins") },
   { name: "管理 · 概览", test: (_m, p) => p === "/admin/api/overview" },
   { name: "管理 · 渠道", test: (_m, p) => p.includes("/channels") },
   { name: "管理 · 产品与模块", test: (_m, p) => p.includes("/products") || p.includes("/modules") },

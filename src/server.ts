@@ -22,6 +22,9 @@ import { registerAdminRoutes } from "./routes/admin.ts";
 import { registerClientRoutes } from "./routes/client.ts";
 import { serveStatic } from "./routes/static.ts";
 import { publicKeyInfo } from "./keys.ts";
+import { requireFeature, requireStaff } from "./auth.ts";
+import { featureForAdminRoute } from "./permissions.ts";
+import { forbidden } from "./http.ts";
 
 const SERVER_NAME = "license-server";
 const SERVER_VERSION = "1.0.0";
@@ -166,6 +169,19 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
       requestId,
       token: bearerToken(req),
     };
+
+    // 员工/代理的权限：
+    //   1) 登录校验（login 除外）
+    //   2) 代理只能访问卡密相关接口（数据隔离在 handler 里按 channel 过滤）
+    //   3) 按路由表校验功能权限
+    if (path.startsWith("/admin/api/") && !path.startsWith("/admin/api/auth/login")) {
+      const staffCtx = requireStaff(ctx);
+      if (staffCtx.isAgent && !/^\/admin\/api\/(cdks|cdk-batches|auth)/.test(path)) {
+        throw forbidden("代理账号只能访问卡密相关接口", "FORBIDDEN_AGENT_SCOPE");
+      }
+      const requiredFeature = featureForAdminRoute(method, path);
+      if (requiredFeature) requireFeature(ctx, requiredFeature);
+    }
 
     const reply = await matched.handler(ctx);
     writeReply(res, req, reply);

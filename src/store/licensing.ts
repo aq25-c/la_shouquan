@@ -2,6 +2,8 @@
 import { config } from "../config.ts";
 import { db, withTx } from "../db.ts";
 import { formatCdkCode, generateCdkCode, normalizeCdkCode } from "../crypto.ts";
+import { computeExpiry, normalizeTerm } from "../permissions.ts";
+import type { TermType } from "../permissions.ts";
 import { DAY, newId, nowIso, nz, parseJson, toJson, toMs } from "../util.ts";
 import type { CdkBatchRow, CdkRow, DeviceRow, EffectiveLicenseStatus, LicenseRow } from "../types.ts";
 
@@ -60,15 +62,20 @@ export function createCdkBatch(input: {
   channelId?: string | null;
   /** v2：结算单价，单位「分」 */
   unitPrice?: number;
+  /** v4：计费类型（hour/day/month/year/count），未传按 day + days */
+  termType?: TermType;
+  termValue?: number | null;
 }): { batch: CdkBatchRow; codes: string[] } {
   return withTx(() => {
     const batchId = newId("cdb");
     const at = nowIso();
+    const term = normalizeTerm(input.termType ?? null, input.termValue ?? null, input.days);
     db()
       .prepare(
         `INSERT INTO cdk_batches
-           (id, product_id, count, days, seats, module_ids, note, created_by, created_at, channel_id, unit_price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, product_id, count, days, seats, module_ids, note, created_by, created_at,
+            channel_id, unit_price, term_type, term_value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         batchId,
@@ -82,12 +89,15 @@ export function createCdkBatch(input: {
         at,
         nz(input.channelId),
         Math.max(0, Math.trunc(input.unitPrice ?? 0)),
+        term.termType,
+        term.termValue,
       );
 
     const insert = db().prepare(
       `INSERT OR IGNORE INTO cdks
-         (id, code, batch_id, product_id, module_ids, days, seats, status, expires_at, note, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'unused', ?, ?, ?, ?)`,
+         (id, code, batch_id, product_id, module_ids, days, seats, status, expires_at, note, created_by, created_at,
+          term_type, term_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'unused', ?, ?, ?, ?, ?, ?)`,
     );
     const codes: string[] = [];
     let attempts = 0;
@@ -107,6 +117,8 @@ export function createCdkBatch(input: {
         nz(input.note),
         nz(input.createdBy),
         at,
+        term.termType,
+        term.termValue,
       );
       if (Number(res.changes) > 0) codes.push(code);
     }
@@ -343,17 +355,25 @@ export function createLicense(input: {
   kind?: "paid" | "trial";
   /** v3：开通来源（cdk / manual / trial），默认 cdk */
   source?: string;
+  /** v4：计费类型（未传按 day + days） */
+  termType?: TermType;
+  termValue?: number | null;
 }): LicenseRow {
   const id = newId("lic");
   const at = nowIso();
   const startsAt = input.startsAt ?? at;
   const startMs = toMs(startsAt) || Date.now();
+  const term = normalizeTerm(input.termType ?? null, input.termValue ?? null, input.days);
+  const expiresAt = new Date(computeExpiry(term.termType, term.termValue, startMs)).toISOString();
+  // 次数型：max_usages 记录总额度，到期只是远期占位
+  const maxUsages = term.termType === "count" ? term.termValue : null;
   db()
     .prepare(
       `INSERT INTO licenses
          (id, license_no, customer_id, product_id, cdk_id, module_ids, seats, status, starts_at, expires_at,
-          offline_grace_days, key_hash, note, created_at, updated_at, channel_id, unit_price, kind, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          offline_grace_days, key_hash, note, created_at, updated_at, channel_id, unit_price, kind, source,
+          term_type, term_value, max_usages, used_usages)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     )
     .run(
       id,
@@ -364,7 +384,7 @@ export function createLicense(input: {
       toJson(input.moduleIds),
       input.seats,
       startsAt,
-      new Date(startMs + input.days * DAY).toISOString(),
+      expiresAt,
       input.offlineGraceDays ?? config.offlineGraceDays,
       input.keyHash,
       nz(input.note),
@@ -374,8 +394,38 @@ export function createLicense(input: {
       Math.max(0, Math.trunc(input.unitPrice ?? 0)),
       input.kind ?? "paid",
       input.source ?? "cdk",
+      term.termType,
+      term.termValue,
+      maxUsages,
     );
   return db().prepare("SELECT * FROM licenses WHERE id = ?").get(id) as unknown as LicenseRow;
+}
+
+/**
+ * 消耗次数型授权的次数（原子扣减）。
+ * ok=false 表示额度已用完或该授权不是次数型。
+ */
+export function consumeUsage(
+  licenseId: string,
+  count = 1,
+): { ok: boolean; max: number | null; used: number; remaining: number } {
+  const res = db()
+    .prepare(
+      `UPDATE licenses SET used_usages = used_usages + ?, updated_at = ?
+       WHERE id = ? AND max_usages IS NOT NULL AND used_usages + ? <= max_usages`,
+    )
+    .run(count, nowIso(), licenseId, count);
+  const row = db()
+    .prepare("SELECT max_usages, used_usages FROM licenses WHERE id = ?")
+    .get(licenseId) as { max_usages: number | null; used_usages: number } | undefined;
+  const max = row?.max_usages ?? null;
+  const used = Number(row?.used_usages ?? 0);
+  return {
+    ok: Number(res.changes) > 0,
+    max,
+    used,
+    remaining: max === null ? 0 : Math.max(0, max - used),
+  };
 }
 
 function nextLicenseNo(): string {

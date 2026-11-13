@@ -170,6 +170,27 @@ export function deleteChannel(id: string): boolean {
   return Number(res.changes) > 0;
 }
 
+/* ---------------------------- 卡密余额（代理额度） ---------------------------- */
+
+/** 充值/扣减卡密余额（amount 可为负，用于人工修正） */
+export function rechargeChannel(id: string, amount: number): ChannelRow | null {
+  db().prepare("UPDATE channels SET credit = credit + ?, updated_at = ? WHERE id = ?").run(amount, nowIso(), id);
+  const row = db().prepare("SELECT * FROM channels WHERE id = ?").get(id) as unknown as ChannelRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * 原子扣减卡密余额：余额不足时不扣减并返回 ok=false。
+ * 生成卡密时先扣额度，失败则整个事务回滚，不会出现"扣了额度但没出卡"。
+ */
+export function consumeCredit(id: string, count: number): { ok: boolean; credit: number } {
+  const res = db()
+    .prepare("UPDATE channels SET credit = credit - ?, updated_at = ? WHERE id = ? AND credit >= ?")
+    .run(count, nowIso(), id, count);
+  const row = db().prepare("SELECT credit FROM channels WHERE id = ?").get(id) as { credit: number } | undefined;
+  return { ok: Number(res.changes) > 0, credit: Number(row?.credit ?? 0) };
+}
+
 /** 概览页用的渠道汇总。 */
 export function channelSummary(): {
   channels: number;

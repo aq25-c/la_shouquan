@@ -90,7 +90,32 @@ const state = {
   modules: [],
   channels: [],
   pages: {},
+  /** 当前登录账号的权限（后端下发） */
+  permissions: { menus: [], features: [] },
 };
+
+/** 员工权限：只显示被授权的菜单 */
+function hasMenu(menu) {
+  const menus = state.permissions?.menus ?? [];
+  return menus.includes(menu) || menus.includes("*");
+}
+
+function hasFeature(feature) {
+  const feats = state.permissions?.features ?? [];
+  return feats.includes(feature) || feats.includes("*");
+}
+
+function applyMenuPermissions() {
+  $$("#nav .nav-item, .sidebar-foot .nav-item").forEach((btn) => {
+    btn.hidden = !hasMenu(btn.dataset.view);
+  });
+}
+
+/** 第一个有权限的页面（代理只有卡密页） */
+function firstAllowedView() {
+  const order = ["overview", "cdks", "licenses", "customers", "products", "channels", "staff", "audit", "params", "apiDocs", "settings"];
+  return order.find((v) => hasMenu(v)) ?? "overview";
+}
 
 async function api(method, path, body) {
   const res = await fetch(path, {
@@ -234,10 +259,12 @@ function emptyRow(cols, text = "暂无数据") {
 function startSession(token, admin) {
   state.token = token;
   state.admin = admin;
+  state.permissions = admin?.permissions ?? { menus: [], features: [] };
   localStorage.setItem("lic_admin_token", token);
   $("#login-view").hidden = true;
   $("#app-view").hidden = false;
-  $("#admin-label").textContent = admin?.email ?? "";
+  $("#admin-label").textContent = `${admin?.email ?? ""}${admin?.role && admin.role !== "owner" ? " · " + (admin.role === "agent" ? "代理" : "员工") : ""}`;
+  applyMenuPermissions();
 }
 
 function endSession() {
@@ -275,6 +302,8 @@ const VIEWS = {
   licenses: { title: "授权", subtitle: "到期时间、席位、设备与吊销", render: renderLicenses },
   customers: { title: "客户", subtitle: "注册客户与账号状态", render: renderCustomers },
   audit: { title: "审计日志", subtitle: "所有关键操作留痕", render: renderAudit },
+  staff: { title: "员工与代理", subtitle: "员工账号、目录权限与软件功能授权；渠道代理及其卡密余额", render: renderStaff },
+  params: { title: "软件参数", subtitle: "试用策略等软件级参数", render: renderParams },
   apiDocs: { title: "API 文档", subtitle: "全部接口说明 · 由真实路由表自动生成，不会与实现脱节", render: renderApiDocs },
   settings: { title: "设置与公钥", subtitle: "签名公钥、策略参数、管理员", render: renderSettings },
 };
@@ -689,7 +718,7 @@ async function renderChannels(root) {
             <thead>
               <tr>
                 <th>渠道</th><th>联系人</th><th>CDK（已核销/总量）</th><th>激活率</th>
-                <th>授权</th><th>营收</th><th>最近激活</th><th>状态</th><th class="right">操作</th>
+                <th>授权</th><th>卡密余额</th><th>营收</th><th>最近激活</th><th>状态</th><th class="right">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -703,11 +732,13 @@ async function renderChannels(root) {
                           <td>${c.cdk_used} / ${c.cdk_total}<div class="muted small">未用 ${c.cdk_unused}</div></td>
                           <td>${c.cdk_total > 0 ? percent(c.activation_rate) : "—"}</td>
                           <td>${c.license_total}（有效 ${c.license_active}）<div class="muted small">近 30 天新增 ${c.activated_30d}</div></td>
+                          <td>${c.credit ?? 0} 张<div class="muted small">${(c.credit ?? 0) > 0 ? "可继续生成" : "不足，需充值"}</div></td>
                           <td>${money(c.revenue_total)}<div class="muted small">近 30 天 ${money(c.revenue_30d)}</div></td>
                           <td class="nowrap">${c.last_activated_at ? fmtDay(c.last_activated_at) : "—"}</td>
                           <td>${c.status === "active" ? '<span class="badge badge-ok">启用</span>' : '<span class="badge">停用</span>'}</td>
                           <td class="right">
                             <div class="btn-row" style="justify-content:flex-end">
+                              <button class="btn btn-sm" data-credit="${esc(c.id)}" type="button">充值</button>
                               <button class="btn btn-sm" data-edit="${esc(c.id)}" type="button">编辑</button>
                               <button class="btn btn-sm" data-toggle="${esc(c.id)}" type="button">${c.status === "active" ? "停用" : "启用"}</button>
                               <button class="btn btn-sm" data-del="${esc(c.id)}" type="button">删除</button>
@@ -716,7 +747,7 @@ async function renderChannels(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(9, "还没有渠道。渠道用于区分分销来源，并统计各渠道的 CDK 与营收")
+                  : emptyRow(10, "还没有渠道。渠道用于区分分销来源，并统计各渠道的 CDK 与营收")
               }
             </tbody>
           </table>
@@ -735,6 +766,9 @@ async function renderChannels(root) {
       navigate("channels", true);
     }
   };
+  $$("[data-credit]", root).forEach((btn) => {
+    btn.onclick = () => channelCreditForm(state.channels.find((c) => c.id === btn.dataset.credit));
+  });
   $$("[data-edit]", root).forEach((btn) => {
     btn.onclick = () => channelForm(state.channels.find((c) => c.id === btn.dataset.edit));
   });
@@ -764,6 +798,37 @@ async function renderChannels(root) {
         toast(err.message, "error");
       }
     };
+  });
+}
+
+function channelCreditForm(channel) {
+  if (!channel) return;
+  openModal({
+    title: `充值 / 扣减：${channel.name}`,
+    body: `
+      <div class="note">当前卡密余额：<strong>${channel.credit ?? 0} 张</strong>。代理生成卡密时按数量扣减，余额不足则无法生成。</div>
+      <div class="form-grid">
+        <label class="field"><span>数量（正数=充值，负数=扣减）</span><input name="amount" type="number" value="100" /></label>
+      </div>`,
+    footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">确定</button>`,
+    onMount(modal, close) {
+      $("[data-cancel]", modal).onclick = close;
+      $("[data-save]", modal).onclick = async () => {
+        const amount = Number($('[name="amount"]', modal).value);
+        if (!Number.isFinite(amount) || amount === 0) {
+          toast("请填写非 0 的数量", "error");
+          return;
+        }
+        try {
+          const res = await apiPost(`/admin/api/channels/${channel.id}/credit`, { amount });
+          close();
+          toast(`已更新，当前余额 ${res.channel.credit} 张`, "ok");
+          navigate("channels", true);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    },
   });
 }
 
@@ -843,7 +908,15 @@ async function renderCdks(root) {
       <div class="card-body">
         <div class="form-grid">
           <label class="field"><span>产品</span><select name="product_id">${productOptions(state.products[0]?.id)}</select></label>
-          <label class="field"><span>授权时长（天）</span><input name="days" type="number" min="1" max="3650" value="365" /></label>
+          <label class="field"><span>计费方式</span>
+            <select name="term_type">
+              <option value="day">按天</option>
+              <option value="month">按月</option>
+              <option value="year">按年</option>
+              <option value="hour">按小时</option>
+              <option value="count">按次数</option>
+            </select></label>
+          <label class="field"><span>数量（天 / 月 / 年 / 时 / 次）</span><input name="term_value" type="number" min="1" max="100000" value="365" /></label>
           <label class="field"><span>席位数（可绑定设备数）</span><input name="seats" type="number" min="1" max="100" value="1" /></label>
           <label class="field"><span>生成数量</span><input name="count" type="number" min="1" max="5000" value="10" /></label>
           <label class="field"><span>兑换截止时间（可选）</span><input name="redeem_before" type="datetime-local" /></label>
@@ -926,7 +999,9 @@ async function renderCdks(root) {
     const payload = {
       product_id: productSelect.value,
       module_ids: moduleIds,
-      days: Number($('[name="days"]', root).value),
+      days: Number($('[name="term_value"]', root).value),
+      term_type: $('[name="term_type"]', root).value,
+      term_value: Number($('[name="term_value"]', root).value),
       seats: Number($('[name="seats"]', root).value),
       count: Number($('[name="count"]', root).value),
       note: $('[name="note"]', root).value.trim(),
@@ -1949,6 +2024,220 @@ async function renderApiDocs(root) {
   });
 }
 
+/* ============================ 员工与代理 ============================ */
+
+async function renderStaff(root) {
+  const [list, opt] = await Promise.all([apiGet("/admin/api/staff"), apiGet("/admin/api/staff/options")]);
+  const isOwner = state.admin?.role === "owner";
+  const rows = list.items;
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3>员工与代理</h3>
+        <div class="toolbar">
+          <span class="muted small">员工按「目录权限 + 软件功能」受限；代理只能看自己的卡密与余额</span>
+          ${isOwner ? '<button class="btn btn-primary btn-sm" data-new type="button">+ 新增账号</button>' : ""}
+        </div>
+      </div>
+      <div class="card-body tight">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>账号</th><th>角色</th><th>目录权限</th><th>软件功能</th><th>所属渠道</th><th>状态</th><th class="right">操作</th></tr></thead>
+            <tbody>
+              ${
+                rows.length
+                  ? rows
+                      .map(
+                        (s) => `<tr>
+                          <td><strong>${esc(s.email)}</strong>${s.name ? `<div class="muted small">${esc(s.name)}</div>` : ""}</td>
+                          <td>${
+                            s.role === "owner"
+                              ? '<span class="badge badge-danger">超级管理员</span>'
+                              : s.role === "agent"
+                                ? '<span class="badge badge-info">代理</span>'
+                                : '<span class="badge">员工</span>'
+                          }</td>
+                          <td class="small">${s.role === "owner" ? "全部" : `${s.permissions.menus.length} 个页面`}</td>
+                          <td class="small">${s.role === "owner" ? "全部" : `${s.permissions.features.length} 项功能`}</td>
+                          <td>${esc(s.channel_name ?? "—")}</td>
+                          <td>${s.status === "active" ? '<span class="badge badge-ok">正常</span>' : '<span class="badge badge-warn">已停用</span>'}</td>
+                          <td class="right">${
+                            isOwner && s.role !== "owner"
+                              ? `<div class="btn-row" style="justify-content:flex-end">
+                                   <button class="btn btn-sm" data-edit="${esc(s.id)}" type="button">编辑</button>
+                                   <button class="btn btn-sm" data-del="${esc(s.id)}" type="button">删除</button>
+                                 </div>`
+                              : ""
+                          }</td>
+                        </tr>`,
+                      )
+                      .join("")
+                  : emptyRow(7, "还没有员工或代理账号")
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+
+  const newBtn = $("[data-new]", root);
+  if (newBtn) newBtn.onclick = () => staffForm(null, opt);
+  $$("[data-edit]", root).forEach((b) => {
+    b.onclick = () => staffForm(rows.find((x) => x.id === b.dataset.edit), opt);
+  });
+  $$("[data-del]", root).forEach((b) => {
+    b.onclick = async () => {
+      if (!(await confirmDialog("删除该账号？其登录会话会立即失效。", { danger: true, okText: "删除" }))) return;
+      try {
+        await api("DELETE", `/admin/api/staff/${b.dataset.del}`);
+        toast("已删除", "ok");
+        navigate("staff", true);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+  });
+}
+
+async function staffForm(staff, opt) {
+  await ensureCatalog().catch(() => {});
+  const isNew = !staff;
+  const role = staff?.role ?? "staff";
+  const checkedMenus = staff?.permissions?.menus ?? ["cdks", "licenses"];
+  const checkedFeatures = staff?.permissions?.features ?? [];
+
+  openModal({
+    title: isNew ? "新增员工 / 代理" : `编辑：${staff.email}`,
+    wide: true,
+    body: `
+      <div class="form-grid">
+        <label class="field"><span>邮箱</span><input name="email" value="${esc(staff?.email ?? "")}" ${isNew ? "" : "disabled"} /></label>
+        <label class="field"><span>${isNew ? "初始密码（≥8 位）" : "重置密码（留空不改）"}</span><input name="password" type="password" autocomplete="new-password" /></label>
+        <label class="field"><span>名称</span><input name="name" value="${esc(staff?.name ?? "")}" /></label>
+        <label class="field"><span>角色</span>
+          <select name="role" ${isNew ? "" : "disabled"}>
+            <option value="staff" ${role === "staff" ? "selected" : ""}>员工（按权限访问）</option>
+            <option value="agent" ${role === "agent" ? "selected" : ""}>代理（绑定渠道，只管自己的卡密）</option>
+          </select></label>
+        <label class="field" data-channel-wrap><span>所属渠道（代理必填，余额随卡密扣减）</span>
+          <select name="channel_id"></select></label>
+      </div>
+      <div data-perm-wrap style="margin-top:14px">
+        <div class="field"><span>目录权限 —— 能看到哪些页面</span>
+          <div class="checkbox-list" data-menus>
+            ${opt.menus.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" ${checkedMenus.includes(m.id) ? "checked" : ""} /><span>${esc(m.label)}</span></label>`).join("")}
+          </div></div>
+        <div class="field" style="margin-top:10px"><span>软件功能授权 —— 能执行哪些操作</span>
+          <div class="checkbox-list" data-features>
+            ${opt.features.map((f) => `<label><input type="checkbox" value="${esc(f.id)}" ${checkedFeatures.includes(f.id) ? "checked" : ""} /><span>${esc(f.label)}</span></label>`).join("")}
+          </div></div>
+      </div>`,
+    footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">保存</button>`,
+    onMount(modal, close) {
+      const chSel = $('[name="channel_id"]', modal);
+      chSel.innerHTML =
+        '<option value="">未绑定</option>' +
+        state.channels
+          .map(
+            (c) =>
+              `<option value="${esc(c.id)}" ${staff?.channel_id === c.id ? "selected" : ""}>${esc(c.name)}（余额 ${c.credit ?? 0} 张）</option>`,
+          )
+          .join("");
+
+      const roleSel = $('[name="role"]', modal);
+      const syncRole = () => {
+        const isAgent = roleSel.value === "agent";
+        $("[data-channel-wrap]", modal).hidden = !isAgent;
+        $("[data-perm-wrap]", modal).hidden = isAgent;
+      };
+      syncRole();
+      roleSel.onchange = syncRole;
+
+      $("[data-cancel]", modal).onclick = close;
+      $("[data-save]", modal).onclick = async () => {
+        const roleVal = roleSel.value;
+        const payload = { name: $('[name="name"]', modal).value.trim(), role: roleVal };
+        const pw = $('[name="password"]', modal).value;
+        if (pw) payload.password = pw;
+        if (roleVal === "agent") {
+          payload.channel_id = chSel.value;
+        } else {
+          payload.menus = $$("[data-menus] input:checked", modal).map((i) => i.value);
+          payload.features = $$("[data-features] input:checked", modal).map((i) => i.value);
+        }
+        try {
+          if (isNew) {
+            payload.email = $('[name="email"]', modal).value.trim();
+            await apiPost("/admin/api/staff", payload);
+          } else {
+            await apiPatch(`/admin/api/staff/${staff.id}`, payload);
+          }
+          close();
+          toast("已保存", "ok");
+          navigate("staff");
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    },
+  });
+}
+
+/* ============================ 软件参数 ============================ */
+
+async function renderParams(root) {
+  const [trial, productsRes] = await Promise.all([
+    apiGet("/admin/api/settings/trial"),
+    apiGet("/admin/api/products"),
+  ]);
+  const c = trial.config;
+
+  root.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3>试用参数</h3>
+        <span class="muted small">试用授权 ${trial.summary.total} 个 · 有效 ${trial.summary.active} 个</span>
+      </div>
+      <div class="card-body">
+        <div class="form-grid">
+          <label class="field"><span>允许新用户自助试用</span>
+            <select name="enabled"><option value="1" ${c.enabled ? "selected" : ""}>开启</option><option value="0" ${!c.enabled ? "selected" : ""}>关闭</option></select></label>
+          <label class="field"><span>试用方式</span>
+            <select name="mode"><option value="day" ${c.mode === "day" ? "selected" : ""}>试用几天</option><option value="count" ${c.mode === "count" ? "selected" : ""}>试用几次</option></select></label>
+          <label class="field"><span>试用量（天 / 次）</span><input name="value" type="number" min="1" max="3650" value="${c.value}" /></label>
+          <label class="field"><span>试用席位数</span><input name="seats" type="number" min="1" max="100" value="${c.seats}" /></label>
+          <label class="field"><span>每客户可试用次数</span><input name="max" type="number" min="1" max="20" value="${c.max_per_customer}" /></label>
+          <label class="field"><span>限定产品</span>
+            <select name="product"><option value="">不限定</option>${productsRes.items.map((p) => `<option value="${esc(p.id)}" ${c.product_id === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
+        </div>
+        <div class="note" style="margin-top:12px">
+          只有<b>尚未购买正式授权</b>的客户才能自助试用；试用到期前可在「授权」页延长试用。
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" data-save type="button">保存试用参数</button>
+        </div>
+      </div>
+    </div>`;
+
+  $("[data-save]", root).onclick = async () => {
+    try {
+      await apiPatch("/admin/api/settings/trial", {
+        enabled: $('[name="enabled"]', root).value === "1",
+        mode: $('[name="mode"]', root).value,
+        value: Number($('[name="value"]', root).value),
+        seats: Number($('[name="seats"]', root).value),
+        max_per_customer: Number($('[name="max"]', root).value),
+        product_id: $('[name="product"]', root).value || null,
+      });
+      toast("已保存", "ok");
+      navigate("params", true);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  };
+}
+
 async function renderSettings(root) {
   const [key, me, admins, trial, productsRes] = await Promise.all([
     state.signingKey ? Promise.resolve(state.signingKey) : apiGet("/admin/api/signing-key"),
@@ -1987,32 +2276,6 @@ async function renderSettings(root) {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-head"><h3>试用配置</h3>
-        <span class="muted small">试用授权 ${trial.summary.total} 个 · 有效 ${trial.summary.active} 个 · 试用后转正式 ${trial.summary.converted} 个客户</span></div>
-      <div class="card-body">
-        <div class="form-grid">
-          <label class="field"><span>允许客户自助试用</span>
-            <select name="trial_enabled">
-              <option value="1" ${trial.config.enabled ? "selected" : ""}>开启</option>
-              <option value="0" ${!trial.config.enabled ? "selected" : ""}>关闭</option>
-            </select></label>
-          <label class="field"><span>试用天数</span><input name="trial_days" type="number" min="1" max="365" value="${trial.config.days}" /></label>
-          <label class="field"><span>试用席位数</span><input name="trial_seats" type="number" min="1" max="100" value="${trial.config.seats}" /></label>
-          <label class="field"><span>每客户可试用次数</span><input name="trial_max" type="number" min="1" max="20" value="${trial.config.max_per_customer}" /></label>
-          <label class="field"><span>限定产品（留空 = 任意在售产品）</span>
-            <select name="trial_product">
-              <option value="">不限定</option>
-              ${products.map((p) => `<option value="${esc(p.id)}" ${trial.config.product_id === p.id ? "selected" : ""}>${esc(p.name)}（${esc(p.code)}）</option>`).join("")}
-            </select></label>
-          <label class="field"><span>离线宽限（天，留空 = 用全局）</span><input name="trial_grace" type="number" min="0" max="365" value="${trial.config.offline_grace_days ?? ""}" /></label>
-        </div>
-        <div class="form-actions">
-          <button class="btn btn-primary btn-sm" data-save-trial type="button">保存试用配置</button>
-          <span class="muted small">客户在客户端登录后即可自助开通试用；试用授权同样能在「授权」页延长 / 吊销</span>
-        </div>
-      </div>
-    </div>
 
     <div class="card">
       <div class="card-head"><h3>管理员</h3>
@@ -2051,24 +2314,6 @@ async function renderSettings(root) {
 
   $("[data-copy-key]", root).onclick = () => copyText(key.public_key_pem);
 
-  $("[data-save-trial]", root).onclick = async () => {
-    const graceRaw = $('[name="trial_grace"]', root).value.trim();
-    const payload = {
-      enabled: $('[name="trial_enabled"]', root).value === "1",
-      days: Number($('[name="trial_days"]', root).value),
-      seats: Number($('[name="trial_seats"]', root).value),
-      max_per_customer: Number($('[name="trial_max"]', root).value),
-      product_id: $('[name="trial_product"]', root).value || null,
-      offline_grace_days: graceRaw === "" ? null : Number(graceRaw),
-    };
-    try {
-      await apiPatch("/admin/api/settings/trial", payload);
-      toast("试用配置已保存", "ok");
-      navigate("settings", true);
-    } catch (err) {
-      toast(err.message, "error");
-    }
-  };
 
   $("[data-add-admin]", root).onclick = () => {
     openModal({
