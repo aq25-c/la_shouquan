@@ -755,7 +755,21 @@ tr.group-row td { background: var(--surface-soft); font-size: 12.5px; }
   /* 窄屏把键值表的标签列收窄，值列允许换行 */
   .kv { grid-template-columns: 92px minmax(0, 1fr); gap: 8px 10px; }
   /* 底部按钮多时排成两列，别挤成一排误触 */
-  .form-actions .btn { flex: 1 1 calc(50% - 6px); }
+  .form-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    align-items: stretch;
+  }
+  .form-actions .btn {
+    width: 100%;
+    min-height: 40px;
+    height: auto;
+    padding: 9px 10px;
+    white-space: normal;
+    line-height: 1.25;
+    text-align: center;
+  }
   .modal-foot {
     padding: 12px 16px;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
