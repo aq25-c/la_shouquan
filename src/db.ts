@@ -15,7 +15,7 @@ let database: DatabaseSync | null = null;
  * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
  * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
 let migration: { from: number; to: number } = { from: 0, to: 0 };
@@ -369,6 +369,22 @@ CREATE INDEX IF NOT EXISTS idx_vars_product ON remote_vars(product_id);
 `;
 
 /**
+ * v11：模块自己携带计费信息
+ *   - license_modules.term_type / term_value：该模块自己的计费类型与数值
+ *   - 老数据从所属授权继承 term_type / term_value，行为与 v10 一致
+ *   - 次数型授权仍然在授权层面计次（模块级计次留到后续版本）
+ */
+const SCHEMA_V11 = `
+ALTER TABLE license_modules ADD COLUMN term_type TEXT;
+ALTER TABLE license_modules ADD COLUMN term_value INTEGER;
+
+UPDATE license_modules
+   SET term_type = COALESCE((SELECT l.term_type FROM licenses l WHERE l.id = license_modules.license_id), 'day'),
+       term_value = (SELECT l.term_value FROM licenses l WHERE l.id = license_modules.license_id)
+ WHERE term_type IS NULL;
+`;
+
+/**
  * v8：授权到期上限
  *   - licenses.max_expires_at：该授权允许的最大到期时间（= CDK 激活时算出的实际到期时间）
  *     代理调整到期时间可以缩短、也可以恢复，但不能超过这个上限；管理员不受此限制。
@@ -452,6 +468,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 8) runMigration(db, SCHEMA_V8, 8);
   if (version < 9) runMigration(db, SCHEMA_V9, 9);
   if (version < 10) runMigration(db, SCHEMA_V10, 10);
+  if (version < 11) runMigration(db, SCHEMA_V11, 11);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

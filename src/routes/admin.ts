@@ -131,6 +131,7 @@ import {
   listLicenseModules,
   setLicenseModuleExpiry,
   syncLicenseModules,
+  syncModuleExpiry,
   moduleIdsOf,
   releaseAllDevices,
   releaseDevice,
@@ -1597,6 +1598,10 @@ export function registerAdminRoutes(): void {
     const moduleExpiries = Array.isArray(ctx.body.module_expiries) ? ctx.body.module_expiries : null;
 
     const updated = updateLicense(id, patchData as Partial<LicenseRow>);
+
+    // v11：模块到期是权威来源。管理员改授权到期时同步到所有模块，
+    //      需要单独控制某个模块时用下面的 module_expiries 覆盖。
+    if (expiresAt) syncModuleExpiry(id, expiresAt);
 
     if (moduleExpiries) {
       for (const item of moduleExpiries) {

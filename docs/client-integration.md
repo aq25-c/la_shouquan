@@ -290,7 +290,8 @@ POST /api/v1/licenses/heartbeat
 | --- | --- |
 | `200` | 用返回的 `license_file` 覆盖本地，更新 `last_seen_time` |
 | 网络错误 / 5xx / 超时 | **忽略**，继续按本地许可证离线运行（宽限期内有效） |
-| `403` `LICENSE_EXPIRED` | 提示"授权已到期，请续费"，进入宽限倒计时 |
+| `200` 且 `expired=true` | 仍算成功：账号信息可用，但**所有模块都不可用**。按 `modules[].active` 关掉全部功能，不要退出登录 |
+| `200` 且部分模块 `active=false` | 只关掉这些模块对应的功能，其余照常 |
 | `403` `LICENSE_REVOKED` | 提示"授权已被撤销"，标记不可恢复 |
 | `403` `LICENSE_SUSPENDED` | 提示"授权已暂停"，可周期性重试 |
 | `403` `CUSTOMER_DISABLED` | 提示"账号已停用" |

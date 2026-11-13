@@ -116,6 +116,12 @@ export type LicensePayload = {
   term?: { type: string; value: number };
   /** v4：次数型授权的额度与已用量（其余类型为 null） */
   usage?: { max: number; used: number } | null;
+  /**
+   * v11：逐模块到期（新客户端读这个，按模块判断功能）。
+   * exp 为 Unix 秒；active=false 表示该模块已过期。
+   * 老客户端忽略本字段，继续用 mod + exp，行为不变。
+   */
+  mods?: { c: string; exp?: number; active: boolean }[];
 };
 
 /**

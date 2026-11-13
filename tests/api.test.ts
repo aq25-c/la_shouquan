@@ -348,17 +348,26 @@ test("后台续费延长到期时间", async () => {
   }
 });
 
-test("授权到期后心跳被拒绝", async () => {
+test("授权到期后心跳仍可通行，但模块全部不可用", async () => {
   const past = new Date(Date.now() - 86_400_000).toISOString();
   const patched = await api("PATCH", `/admin/api/licenses/${licenseId}`, { expires_at: past }, adminToken);
   assert.equal(patched.status, 200);
 
+  // v11：到期是软状态——心跳不再 403，账号和授权信息照常返回，
+  //      客户端按 modules[].active 判断功能是否可用。
   const hb = await api("POST", "/api/v1/licenses/heartbeat", {
     license_key: licenseKey,
     device_id: "DEV-A",
   });
-  assert.equal(hb.status, 403);
-  assert.equal(hb.json.error.code, "LICENSE_EXPIRED");
+  assert.equal(hb.status, 200, "到期不应再拒绝心跳");
+  assert.equal(hb.json.data.expired, true);
+  assert.equal(hb.json.data.status, "expired");
+  assert.equal(
+    hb.json.data.modules.every((m: Json) => m.active === false),
+    true,
+    "过期后所有模块都不可用",
+  );
+  assert.deepEqual(hb.json.data.module_codes, [], "老客户端看到的模块列表为空，功能随之下线");
 
   const list = await api("GET", "/admin/api/licenses?status=expired", undefined, adminToken);
   assert.equal(list.json.data.total, 1);
@@ -1730,7 +1739,7 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
   const other = mods.find((m: Json) => m.module_id === moduleIds[0]);
   assert.ok(Math.abs(Date.parse(other.expires_at) - Date.parse(exp0)) < 2000, "未设置的模块应仍跟随授权");
 
-  // ⑦ 第二个 CDK 激活 → 叠加时模块一并展期
+  // ⑦ 第二个 CDK 激活（同为 30 天 / 两个模块）→ 每个模块从自己的到期时间叠加
   const act2 = await api("POST", "/api/v1/licenses/activate", {
     cdk: cdkB,
     device_id: "MODS-1",
@@ -1739,10 +1748,127 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
   });
   assert.equal(act2.status, 201);
   assert.equal(act2.json.data.merged, true);
+
   const after = await api("GET", `/admin/api/licenses/${licId}`, undefined, adminToken);
+  const m0 = after.json.data.modules.find((m: Json) => m.id === moduleIds[0]);
+  const m1 = after.json.data.modules.find((m: Json) => m.id === moduleIds[1]);
+  const DAY_MS = 86_400_000;
   assert.ok(
-    after.json.data.modules.every((m: Json) => Date.parse(m.expires_at) === Date.parse(act2.json.data.expires_at)),
-    "叠加后所有模块应随授权一起展期",
+    Math.abs(Date.parse(m0.expires_at) - (Date.parse(exp0) + 30 * DAY_MS)) < 5000,
+    "模块 0 应从自己的原到期时间叠加 30 天",
+  );
+  assert.ok(
+    Math.abs(Date.parse(m1.expires_at) - (Date.parse(custom) + 30 * DAY_MS)) < 5000,
+    "单独设过到期的模块也从自己的时间叠加，不被别的模块带跑",
+  );
+  assert.equal(
+    Date.parse(act2.json.data.expires_at),
+    Math.max(Date.parse(m0.expires_at), Date.parse(m1.expires_at)),
+    "授权整体到期 = 各模块里最晚的那个",
+  );
+  assert.notEqual(m0.expires_at, m1.expires_at, "两个模块的到期时间应各自独立");
+});
+
+/* ==================== 逐模块叠加（v11） ==================== */
+
+test("逐模块叠加：已有模块累加，新模块从今天起算", async () => {
+  const DAY_MS = 86_400_000;
+  const gen = (moduleIdsIn: string[]) =>
+    api(
+      "POST",
+      "/admin/api/cdks/generate",
+      {
+        product_id: productId,
+        module_ids: moduleIdsIn,
+        term_type: "day",
+        term_value: 30,
+        count: 1,
+        seats: 1,
+      },
+      adminToken,
+    );
+
+  await api("POST", "/api/v1/auth/register", { email: "stack@test.local", password: "StackPass123" });
+
+  // ① 先只买模块 A（30 天）
+  const genA = await gen([moduleIds[0]]);
+  const cdkA = genA.json.data.codes[0];
+  const act1 = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdkA,
+    device_id: "STACK-1",
+    email: "stack@test.local",
+    password: "StackPass123",
+  });
+  assert.equal(act1.status, 201);
+  const licId = act1.json.data.license.id;
+  const expA0 = act1.json.data.expires_at;
+
+  // ② 再买一张卡：模块 A + 模块 B，各 30 天
+  const genB = await gen([moduleIds[0], moduleIds[1]]);
+  const cdkB = genB.json.data.codes[0];
+  const before = Date.now();
+  const act2 = await api("POST", "/api/v1/licenses/activate", {
+    cdk: cdkB,
+    device_id: "STACK-1",
+    email: "stack@test.local",
+    password: "StackPass123",
+  });
+  assert.equal(act2.status, 201);
+  assert.equal(act2.json.data.merged, true);
+
+  const detail = await api("GET", `/admin/api/licenses/${licId}`, undefined, adminToken);
+  const a = detail.json.data.modules.find((m: Json) => m.id === moduleIds[0]);
+  const b = detail.json.data.modules.find((m: Json) => m.id === moduleIds[1]);
+  assert.ok(a && b, "两个模块都应在授权上");
+
+  // A 是已有的：从它自己的原到期时间往后加
+  assert.ok(
+    Math.abs(Date.parse(a.expires_at) - (Date.parse(expA0) + 30 * DAY_MS)) < 5000,
+    "已有模块 A 应叠加到原到期时间之后",
+  );
+  // B 是新增的：从当前时间起算
+  assert.ok(
+    Math.abs(Date.parse(b.expires_at) - (before + 30 * DAY_MS)) < 10000,
+    "新模块 B 应从当前时间起算，不与 A 的到期时间对齐",
+  );
+  assert.ok(Date.parse(b.expires_at) < Date.parse(a.expires_at), "新模块到期应早于叠加后的老模块");
+  // 授权整体 = 最晚的模块
+  assert.equal(act2.json.data.expires_at, a.expires_at, "授权整体到期取最晚的模块");
+});
+
+test("逐模块到期：一个模块过期不影响另一个", async () => {
+  // 承接上一个用例：把模块 B 的到期改成过去
+  const list = await api("GET", "/admin/api/customers?q=stack@test.local", undefined, adminToken);
+  const customerId = list.json.data.items[0].id;
+  const detail = await api("GET", `/admin/api/customers/${customerId}`, undefined, adminToken);
+  const licId = detail.json.data.licenses[0].id;
+
+  const modules = (await api("GET", `/admin/api/licenses/${licId}`, undefined, adminToken)).json.data.modules;
+  const aId = modules.find((m: Json) => m.id === moduleIds[0]).id;
+  const bId = modules.find((m: Json) => m.id === moduleIds[1]).id;
+
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  const patched = await api(
+    "PATCH",
+    `/admin/api/licenses/${licId}`,
+    { module_expiries: [{ module_id: bId, expires_at: past }] },
+    adminToken,
+  );
+  assert.equal(patched.status, 200);
+
+  // 客户端登录：B 不可用，A 仍可用
+  const login = await api("POST", "/api/v1/auth/login", {
+    email: "stack@test.local",
+    password: "StackPass123",
+  });
+  const mods = login.json.data.active_license.modules;
+  const a = mods.find((m: Json) => m.module_id === aId);
+  const b = mods.find((m: Json) => m.module_id === bId);
+  assert.equal(a.active, true, "未过期的模块仍然可用");
+  assert.equal(b.active, false, "过期的模块单独失效");
+  assert.ok(
+    login.json.data.active_license.expires_at,
+    "授权整体仍然有效（因为还有一个模块没过期）",
   );
 });
 

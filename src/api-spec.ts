@@ -313,8 +313,8 @@ const EXTRA_DOCS: Record<string, { returns?: string; errors?: string }> = {
       "`404 CDK_NOT_FOUND`、`409 CDK_ALREADY_USED` / `CDK_REVOKED` / `CDK_EXPIRED` / `SEAT_LIMIT` / `TERM_CONFLICT`、`400 MODULE_NOT_ALLOWED`（模块超出 CDK 范围）/ `MISSING_FIELD`、`403 LICENSE_*`",
   },
   "POST /api/v1/licenses/heartbeat": {
-    returns: "`license`、`modules`（每个模块的 `expires_at` / `days_left` / `active`）、`license_file`（滚动续期）、`offline_expires_at`、`expires_at`、`days_left`、`heartbeat_interval_hours`",
-    errors: "`404 INVALID_LICENSE_KEY` / `DEVICE_NOT_BOUND`、`403 LICENSE_EXPIRED` / `LICENSE_REVOKED` / `LICENSE_SUSPENDED`",
+    returns: "`license`、`modules`（每个模块的 `expires_at` / `days_left` / `active`）、`status`（active / expired）、`expired`（全部模块到期时为 true，仍是 200）、`license_file`（滚动续期）、`offline_expires_at`、`expires_at`、`days_left`、`heartbeat_interval_hours`",
+    errors: "`404 INVALID_LICENSE_KEY` / `DEVICE_NOT_BOUND`、`403 LICENSE_REVOKED` / `LICENSE_SUSPENDED`（到期不再返回 403）",
   },
   "POST /api/v1/cdks/inspect": {
     returns: "`code`、`status`、`product`、`module_codes`、`days`、`seats`、`redeem_before`、`usable`（是否可激活）",
@@ -408,7 +408,7 @@ export function buildApiDocs(): ApiDocs {
       { title: "鉴权", text: "客户端接口用客户会话 token，管理接口用管理员 token，均放在请求头 `Authorization: Bearer <token>`。" },
       { title: "时间与金额", text: "时间为 ISO-8601 UTC 字符串；金额单位统一为「分」（整数）。" },
       { title: "分页", text: "`?page=1&page_size=20`，`page_size` 上限 200。" },
-      { title: "心跳与到期同步", text: "客户端每次心跳都会拿到最新 `expires_at` 与重新签名的 `license_file`，因此后台改到期后最迟一个心跳周期生效。" },
+      { title: "心跳与到期同步", text: "客户端每次心跳都会拿到最新 `expires_at`、逐模块的 `modules[]` 与重新签名的 `license_file`，因此后台改到期后最迟一个心跳周期生效。到期是软状态：心跳仍返回 200，只是 `expired=true`、过期模块 `active=false`，账号与授权信息照常可读。" },
       {
         title: "错误码",
         codes: [

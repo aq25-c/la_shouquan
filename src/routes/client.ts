@@ -47,6 +47,10 @@ import { findModuleById, findProductByCode, findProductById, listModules, listPr
 import { canStartTrial, getProductTrialConfig, getTrialConfig, trialCountFor } from "../store/trials.ts";
 import {
   activeDeviceCount,
+  addLicenseModuleIds,
+  applyModuleTerms,
+  findModuleTermConflicts,
+  recomputeLicenseExpiry,
   consumeUsage,
   effectiveStatus,
   findReusableLicense,
@@ -519,19 +523,30 @@ export function registerClientRoutes(): void {
       const newTermType = (cdk.term_type ?? "day") as "hour" | "day" | "month" | "year" | "count";
       const newTermValue = cdk.term_value ?? cdk.days;
 
-      // v8：同客户同产品已有有效授权时「叠加续费」——
-      //   时长型：从原到期时间继续往上加；次数型：累加可用次数（已用不清零）
-      // 两类计费互斥：时长卡未到期不能叠加次数卡，次数卡未用完也不能叠加时长卡
+      // v8：同客户同产品已有有效授权时「叠加续费」
+      // v11：时长型改成「逐模块叠加」——CDK 里每个模块从它自己的到期时间往后加，
+      //      新模块从当前时间起算，本次 CDK 没带的模块完全不动。
+      //      次数型仍按整张授权累加（模块级计次留到后续版本）。
       const reusable = findReusableLicense(customerId, cdk.product_id);
-      const existingCategory = reusable ? termCategory(reusable.term_type ?? "day") : null;
-      if (reusable && existingCategory !== termCategory(newTermType)) {
-        throw conflict(
-          existingCategory === "count"
-            ? "当前授权是次数卡（尚未用完），不能叠加时长卡"
-            : "当前授权是时长卡（尚未到期），不能叠加次数卡",
-          "TERM_CONFLICT",
-          { existing_term_type: reusable.term_type ?? "day", new_term_type: newTermType },
-        );
+      const isCountTerm = termCategory(newTermType) === "count";
+
+      if (reusable && !isCountTerm) {
+        // 同一模块不能既有时长卡又压次数卡；不同模块互不影响
+        const conflicts = findModuleTermConflicts(reusable.id, activeModuleIds, newTermType);
+        if (conflicts.length) {
+          const names = conflicts
+            .map((c) => findModuleById(c.moduleId)?.code ?? c.moduleId)
+            .join("、");
+          throw conflict(`模块 ${names} 当前是次数卡，不能叠加时长卡`, "TERM_CONFLICT", {
+            modules: conflicts.map((c) => ({ module_id: c.moduleId, term_type: c.termType })),
+          });
+        }
+      }
+      if (reusable && isCountTerm && termCategory(reusable.term_type ?? "day") !== "count") {
+        throw conflict("当前授权是时长卡（尚未到期），不能叠加次数卡", "TERM_CONFLICT", {
+          existing_term_type: reusable.term_type ?? "day",
+          new_term_type: newTermType,
+        });
       }
 
       let license: LicenseRow;
@@ -540,10 +555,14 @@ export function registerClientRoutes(): void {
         // 叠加到现有授权，并重新签发密钥（旧密钥作废，客户端需保存新的）
         licenseKey = generateLicenseKey();
         rotateLicenseKey(reusable.id, sha256hex(licenseKey));
-        license =
-          termCategory(newTermType) === "time"
-            ? extendLicenseExpiry(reusable.id, newTermType, newTermValue)
-            : addLicenseUsages(reusable.id, newTermValue);
+        if (isCountTerm) {
+          license = addLicenseUsages(reusable.id, newTermValue);
+        } else {
+          // 逐模块算账：已有模块从原到期叠加，新模块从今天起算
+          addLicenseModuleIds(reusable.id, activeModuleIds);
+          applyModuleTerms(reusable.id, activeModuleIds, newTermType, newTermValue);
+          license = recomputeLicenseExpiry(reusable.id) ?? reusable;
+        }
         merged = true;
       } else {
         license = createLicense({
@@ -639,11 +658,8 @@ export function registerClientRoutes(): void {
       throw locked("账号已被停用", "CUSTOMER_DISABLED");
     }
     const eff = effectiveStatus(license);
-    if (eff === "expired") {
-      throw locked("授权已到期，请续费后重试", "LICENSE_EXPIRED", {
-        expires_at: license.expires_at,
-      });
-    }
+    // v11：到期不再拒绝心跳。账号和授权信息照常返回，只是过期模块的功能不可用
+    //      （客户端按 modules[].active 判断）。吊销 / 暂停 / 停用仍然直接拒绝。
     if (eff === "pending") {
       throw locked("授权尚未生效", "LICENSE_NOT_STARTED", { starts_at: license.starts_at });
     }
@@ -663,12 +679,14 @@ export function registerClientRoutes(): void {
     return ok({
       license: licenseView(fresh),
       // v9：逐模块返回到期时间，客户端按模块判断可用性
+      // v11：模块到期是权威来源，不再受授权整体状态牵连（到期变成软状态）
       modules: (() => {
         const nowMs = Date.now();
         return listLicenseModules(fresh.id).map((lm) => {
           const mod = findModuleById(lm.module_id);
           const exp = lm.expires_at ?? fresh.expires_at ?? null;
           const ms = exp ? Date.parse(exp) : null;
+          const withinTerm = !ms || ms > nowMs;
           return {
             module_id: lm.module_id,
             module_code: mod?.code ?? lm.module_id,
@@ -676,10 +694,13 @@ export function registerClientRoutes(): void {
             module_description: mod?.description ?? null,
             expires_at: exp,
             days_left: ms ? Math.max(0, Math.ceil((ms - nowMs) / 86_400_000)) : 0,
-            active: eff === "active" && (!ms || ms > nowMs),
+            active: fresh.status === "active" && withinTerm,
           };
         });
       })(),
+      /** v11：active / expired 属于软状态；revoked / suspended 走上面的 403 */
+      status: eff,
+      expired: eff === "expired",
       license_file: issued.license_file,
       license_payload: issued.payload,
       offline_expires_at: issued.offline_expires_at,

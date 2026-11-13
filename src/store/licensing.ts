@@ -400,7 +400,11 @@ export function createLicense(input: {
       expiresAt, // v8：上限 = CDK 授予的实际到期时间
     );
   // v9：为每个模块建立到期记录（默认跟随授权到期）
-  syncLicenseModules(id, input.moduleIds, expiresAt);
+  // v11：模块同时记录自己的计费类型与数值
+  syncLicenseModules(id, input.moduleIds, expiresAt, {
+    termType: term.termType,
+    termValue: term.termValue,
+  });
   return db().prepare("SELECT * FROM licenses WHERE id = ?").get(id) as unknown as LicenseRow;
 }
 
@@ -508,6 +512,8 @@ export function adjustCustomerExpiry(
       // 管理员：延长时同步抬高上限，之后代理仍可恢复到该值
       db().prepare("UPDATE licenses SET max_expires_at = ? WHERE id = ?").run(updated.expires_at, updated.id);
     }
+    // v11：模块到期是权威来源，调整授权到期时一并改所有模块
+    if (updated.expires_at) syncModuleExpiry(updated.id, updated.expires_at);
     items.push(updated);
   }
   return { updated: items.length, items };
@@ -711,6 +717,10 @@ export type LicenseModuleRow = {
   license_id: string;
   module_id: string;
   expires_at: string | null;
+  /** v11：该模块自己的计费类型（hour/day/month/year/count），null = 老数据、按授权类型 */
+  term_type: string | null;
+  /** v11：该模块自己的计费数值 */
+  term_value: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -722,7 +732,12 @@ export function listLicenseModules(licenseId: string): LicenseModuleRow[] {
 }
 
 /** 同步授权包含的模块：新增缺失（默认继承授权到期）、删除已移除 */
-export function syncLicenseModules(licenseId: string, moduleIds: string[], expiresAt: string): void {
+export function syncLicenseModules(
+  licenseId: string,
+  moduleIds: string[],
+  expiresAt: string,
+  term?: { termType: string; termValue: number | null },
+): void {
   const at = nowIso();
   const keep = new Set(moduleIds);
   const existing = listLicenseModules(licenseId);
@@ -734,10 +749,20 @@ export function syncLicenseModules(licenseId: string, moduleIds: string[], expir
     if (known.has(mid)) continue;
     db()
       .prepare(
-        `INSERT OR IGNORE INTO license_modules (id, license_id, module_id, expires_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO license_modules
+           (id, license_id, module_id, expires_at, term_type, term_value, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(newId("lmd"), licenseId, mid, expiresAt, at, at);
+      .run(
+        newId("lmd"),
+        licenseId,
+        mid,
+        expiresAt,
+        term?.termType ?? null,
+        term?.termValue ?? null,
+        at,
+        at,
+      );
   }
 }
 
@@ -761,6 +786,112 @@ export function setLicenseModuleExpiry(
     .prepare("SELECT * FROM license_modules WHERE license_id = ? AND module_id = ?")
     .get(licenseId, moduleId) as unknown as LicenseModuleRow | undefined;
   return row ?? null;
+}
+
+/**
+ * 逐模块叠加（v11）：CDK 里的每个模块各算各的账。
+ *   - 模块已存在且未过期 → 从它自己的原到期时间往后加
+ *   - 模块不存在或已过期 → 从当前时间起算
+ *   - 不在本次 moduleIds 里的模块 → 完全不动
+ * 只处理时长型；次数型仍在授权层面累加（见 addLicenseUsages）。
+ */
+export function applyModuleTerms(
+  licenseId: string,
+  moduleIds: string[],
+  termType: TermType,
+  termValue: number,
+): { merged: string[]; created: string[] } {
+  const merged: string[] = [];
+  const created: string[] = [];
+  if (termCategory(termType) === "count") return { merged, created };
+
+  const at = nowIso();
+  const nowMs = Date.now();
+  for (const moduleId of moduleIds) {
+    const row = db()
+      .prepare("SELECT * FROM license_modules WHERE license_id = ? AND module_id = ?")
+      .get(licenseId, moduleId) as unknown as LicenseModuleRow | undefined;
+
+    if (!row) {
+      const expiry = new Date(computeExpiry(termType, termValue, nowMs)).toISOString();
+      db()
+        .prepare(
+          `INSERT OR IGNORE INTO license_modules
+             (id, license_id, module_id, expires_at, term_type, term_value, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(newId("lmd"), licenseId, moduleId, expiry, termType, termValue, at, at);
+      created.push(moduleId);
+      continue;
+    }
+
+    // 已过期（或没有到期时间）就按新买处理：从现在起算
+    const oldMs = row.expires_at ? Date.parse(row.expires_at) : 0;
+    const baseMs = Math.max(nowMs, Number.isFinite(oldMs) ? oldMs : 0);
+    const next = new Date(computeExpiry(termType, termValue, baseMs)).toISOString();
+    db()
+      .prepare(
+        "UPDATE license_modules SET expires_at = ?, term_type = ?, term_value = ?, updated_at = ? WHERE id = ?",
+      )
+      .run(next, termType, termValue, at, row.id);
+    merged.push(moduleId);
+  }
+  return { merged, created };
+}
+
+/** 找出与本次计费类型冲突的模块（同一模块不能既有时长卡又压次数卡） */
+export function findModuleTermConflicts(
+  licenseId: string,
+  moduleIds: string[],
+  termType: TermType,
+): { moduleId: string; termType: string }[] {
+  const want = termCategory(termType);
+  const out: { moduleId: string; termType: string }[] = [];
+  for (const moduleId of moduleIds) {
+    const row = db()
+      .prepare("SELECT term_type FROM license_modules WHERE license_id = ? AND module_id = ?")
+      .get(licenseId, moduleId) as { term_type: string | null } | undefined;
+    const existing = row?.term_type ?? null;
+    if (existing && termCategory(existing) !== want) out.push({ moduleId, termType: existing });
+  }
+  return out;
+}
+
+/**
+ * 授权到期时间 = 各模块到期时间的最大值（v11 起模块是到期时间的权威来源）。
+ * 没有任何模块到期信息时保持原值不动。
+ */
+export function recomputeLicenseExpiry(licenseId: string): LicenseRow | null {
+  const rows = listLicenseModules(licenseId);
+  let maxMs = 0;
+  for (const r of rows) {
+    if (!r.expires_at) continue;
+    const ms = Date.parse(r.expires_at);
+    if (Number.isFinite(ms) && ms > maxMs) maxMs = ms;
+  }
+  if (!maxMs) return findLicenseById(licenseId);
+  const nextIso = new Date(maxMs).toISOString();
+  db()
+    .prepare("UPDATE licenses SET expires_at = ?, max_expires_at = ?, updated_at = ? WHERE id = ?")
+    .run(nextIso, nextIso, nowIso(), licenseId);
+  return findLicenseById(licenseId);
+}
+
+/**
+ * 把新模块并入授权的 module_ids（叠加续费时用，不删除已有模块）。
+ * 返回合并后的模块 id 列表。
+ */
+export function addLicenseModuleIds(licenseId: string, moduleIds: string[]): string[] {
+  const row = findLicenseById(licenseId);
+  if (!row) return [];
+  const current = moduleIdsOf(row);
+  const next = Array.from(new Set([...current, ...moduleIds]));
+  if (next.length !== current.length) {
+    db()
+      .prepare("UPDATE licenses SET module_ids = ?, updated_at = ? WHERE id = ?")
+      .run(toJson(next), nowIso(), licenseId);
+  }
+  return next;
 }
 
 /**

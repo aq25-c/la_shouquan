@@ -2,8 +2,8 @@
 import { config } from "./config.ts";
 import { deviceBinding, signLicenseFile } from "./crypto.ts";
 import type { LicensePayload, SigningKeys } from "./crypto.ts";
-import { moduleCodesFor } from "./store/catalog.ts";
-import { moduleIdsOf } from "./store/licensing.ts";
+import { findModuleById } from "./store/catalog.ts";
+import { listLicenseModules, moduleIdsOf } from "./store/licensing.ts";
 import { DAY, toMs } from "./util.ts";
 import type { LicenseRow } from "./types.ts";
 
@@ -32,6 +32,26 @@ export function buildLicenseFile(input: {
 }): IssuedLicense {
   const nowMs = Date.now();
   const expMs = offlineExpiryMs(input.license, nowMs);
+
+  // v11：逐模块到期。有模块记录就以模块为准，老数据回落到授权本身。
+  const moduleRows = listLicenseModules(input.license.id);
+  const moduleIds = moduleRows.length
+    ? moduleRows.map((r) => r.module_id)
+    : moduleIdsOf(input.license);
+  const mods = moduleIds.map((moduleId) => {
+    const row = moduleRows.find((r) => r.module_id === moduleId);
+    const expIso = row?.expires_at ?? input.license.expires_at ?? null;
+    const ms = expIso ? Date.parse(expIso) : Number.NaN;
+    const hasExp = Number.isFinite(ms);
+    return {
+      c: findModuleById(moduleId)?.code ?? moduleId,
+      ...(hasExp ? { exp: Math.floor(ms / 1000) } : {}),
+      active: !hasExp || ms > nowMs,
+    };
+  });
+  // 兼容老客户端：mod 只列还没过期的模块，据此关闭已过期功能
+  const activeCodes = mods.filter((m) => m.active).map((m) => m.c);
+
   const payload: LicensePayload = {
     v: 1,
     kid: input.keys.kid,
@@ -39,7 +59,7 @@ export function buildLicenseFile(input: {
     lic_no: input.license.license_no,
     cus: input.license.customer_id,
     prd: input.productCode,
-    mod: moduleCodesFor(moduleIdsOf(input.license)),
+    mod: activeCodes,
     dev: deviceBinding(input.deviceId, input.license.id),
     seat: input.license.seats,
     iat: Math.floor(nowMs / 1000),
@@ -54,6 +74,7 @@ export function buildLicenseFile(input: {
       input.license.max_usages !== null && input.license.max_usages !== undefined
         ? { max: input.license.max_usages, used: input.license.used_usages }
         : null,
+    mods,
   };
   return {
     license_file: signLicenseFile(input.keys, payload),
