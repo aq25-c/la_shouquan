@@ -3270,3 +3270,52 @@ test("代理端：客户授权列表设备数按共享池统一，且能看日�
   assert.equal(list.status, 200);
   assert.ok(list.json.data.items.every((l: Json) => l.agent_id === other.json.data.agent.id));
 });
+
+
+test("设备在同软件的多条授权之间共享，从任意一条都能解绑", async () => {
+  const email = "xlic@test.local";
+  const reg = await api("POST", "/api/v1/auth/register", { email, password: "XlicPass123" });
+  const token = reg.json.data.session.token;
+  const customerId = reg.json.data.customer.id;
+
+  // 同一客户同一产品的两条授权
+  const a = await api(
+    "POST",
+    "/admin/api/licenses",
+    { customer_id: customerId, product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 3 },
+    adminToken,
+  );
+  const b = await api(
+    "POST",
+    "/admin/api/licenses",
+    { customer_id: customerId, product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 3 },
+    adminToken,
+  );
+  const licA = a.json.data.license.id;
+  const licB = b.json.data.license.id;
+
+  // 设备绑在 A 上
+  await api("POST", `/admin/api/licenses/${licA}/devices`, { device_id: "XLIC-DEV-1" }, adminToken);
+
+  // 从 B 看，也能看到这台设备（带它真正所属的授权）
+  const viewB = await api("GET", `/admin/api/licenses/${licB}`, undefined, adminToken);
+  const dev = viewB.json.data.devices.find((d: Json) => d.device_id === "XLIC-DEV-1");
+  assert.ok(dev, "另一条授权里也应看到这台设备");
+  assert.equal(dev.license_id, licA);
+
+  // 从 B 发起解绑（按设备真实所属授权落库）→ 应从 A 上解绑成功
+  const rel = await api(
+    "POST",
+    `/admin/api/licenses/${dev.license_id}/devices/XLIC-DEV-1/release`,
+    undefined,
+    adminToken,
+  );
+  assert.equal(rel.status, 200);
+  assert.equal(rel.json.data.released, true);
+
+  const after = await api("GET", `/admin/api/licenses/${licA}`, undefined, adminToken);
+  assert.equal(
+    after.json.data.devices.find((d: Json) => d.device_id === "XLIC-DEV-1").status,
+    "released",
+  );
+});

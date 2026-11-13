@@ -1546,7 +1546,7 @@ export function registerAdminRoutes(): void {
       }
       return {
         ...licenseView(row),
-        devices: listDevicesForGroup(id, row.product_id).filter((d) => d.license_id === row.id),
+        devices: listDevicesForGroup(id, row.product_id),
         pool_seats: poolCache.get(row.product_id)?.seats ?? row.seats,
         pool_active_devices: poolCache.get(row.product_id)?.active_devices ?? 0,
       };

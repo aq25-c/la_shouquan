@@ -3075,7 +3075,7 @@ async function openCustomerDetail(id) {
                             <td>${esc(l.product_code)}</td>
                             <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
                             <td class="nowrap">${fmtDay(l.expires_at)}</td>
-                            <td>${l.pool_active_devices ?? 0} / ${l.pool_seats ?? l.seats} 台<span class="muted small"> · ${l.devices.filter((d) => d.status === "active").length} 台挂在本单</span></td>
+                            <td>${l.pool_active_devices ?? 0} / ${l.pool_seats ?? l.seats} 台</td>
                             <td class="right"><button class="btn btn-sm" data-lic-view="${esc(l.id)}" type="button">设备与日志</button></td>
                           </tr>`,
                         )
