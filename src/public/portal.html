@@ -27,55 +27,77 @@
     </header>
 
     <main class="pt-main">
-      <!-- 未登录：登录 / 注册 -->
+      <!-- 未登录：登录 / 注册 + 查卡 -->
       <section id="view-auth" hidden>
-        <div class="auth-shell">
-          <aside class="auth-hero">
-            <h1>一个账号，管好你买过的所有授权</h1>
-            <p class="auth-sub">登录后可以看到每个软件到期时间、开通了哪些模块、用了几台设备。</p>
-            <ul class="auth-points">
-              <li><i>1</i>输入激活码，立刻知道是什么产品、多少天、几台设备</li>
-              <li><i>2</i>授权到期、模块是否可用，一屏看全</li>
-              <li><i>3</i>换电脑不用问客服，自己就能看设备占用</li>
-            </ul>
-          </aside>
+        <div class="auth-stack">
+          <div class="auth-shell">
+            <aside class="auth-hero">
+              <h1>一个账号，管好你买过的所有授权</h1>
+              <p class="auth-sub">登录后可以看到每个软件到期时间、开通了哪些模块、用了几台设备。</p>
+              <ul class="auth-points">
+                <li><i>1</i>输入激活码，立刻知道是什么产品、多少天、几台设备</li>
+                <li><i>2</i>授权到期、模块是否可用，一屏看全</li>
+                <li><i>3</i>换电脑不用问客服，自己就能看设备占用</li>
+              </ul>
+            </aside>
 
-          <div class="auth-card">
-            <div class="auth-tabs" role="tablist">
-              <button class="auth-tab active" data-auth-tab="login" type="button">登录</button>
-              <button class="auth-tab" data-auth-tab="register" type="button">注册</button>
+            <div class="auth-card">
+              <div class="auth-tabs" role="tablist">
+                <button class="auth-tab active" data-auth-tab="login" type="button">登录</button>
+                <button class="auth-tab" data-auth-tab="register" type="button">注册</button>
+              </div>
+
+              <form id="form-login" class="auth-form" autocomplete="on">
+                <label class="field">
+                  <span>邮箱</span>
+                  <input id="login-email" type="email" inputmode="email" autocomplete="username" required placeholder="you@example.com" />
+                </label>
+                <label class="field">
+                  <span>密码</span>
+                  <input id="login-password" type="password" autocomplete="current-password" required placeholder="至少 8 位" />
+                </label>
+                <p class="form-error" id="login-error" hidden></p>
+                <button class="btn btn-primary btn-block" type="submit">登录</button>
+              </form>
+
+              <form id="form-register" class="auth-form" autocomplete="on" hidden>
+                <label class="field">
+                  <span>邮箱</span>
+                  <input id="reg-email" type="email" inputmode="email" autocomplete="username" required placeholder="you@example.com" />
+                </label>
+                <label class="field">
+                  <span>密码</span>
+                  <input id="reg-password" type="password" autocomplete="new-password" required minlength="8" placeholder="至少 8 位" />
+                </label>
+                <label class="field">
+                  <span>姓名 / 称呼</span>
+                  <input id="reg-name" type="text" autocomplete="name" placeholder="选填，方便对账" maxlength="40" />
+                </label>
+                <p class="form-error" id="reg-error" hidden></p>
+                <button class="btn btn-primary btn-block" type="submit">注册并登录</button>
+              </form>
             </div>
-
-            <form id="form-login" class="auth-form" autocomplete="on">
-              <label class="field">
-                <span>邮箱</span>
-                <input id="login-email" type="email" inputmode="email" autocomplete="username" required placeholder="you@example.com" />
-              </label>
-              <label class="field">
-                <span>密码</span>
-                <input id="login-password" type="password" autocomplete="current-password" required placeholder="至少 8 位" />
-              </label>
-              <p class="form-error" id="login-error" hidden></p>
-              <button class="btn btn-primary btn-block" type="submit">登录</button>
-            </form>
-
-            <form id="form-register" class="auth-form" autocomplete="on" hidden>
-              <label class="field">
-                <span>邮箱</span>
-                <input id="reg-email" type="email" inputmode="email" autocomplete="username" required placeholder="you@example.com" />
-              </label>
-              <label class="field">
-                <span>密码</span>
-                <input id="reg-password" type="password" autocomplete="new-password" required minlength="8" placeholder="至少 8 位" />
-              </label>
-              <label class="field">
-                <span>姓名 / 称呼</span>
-                <input id="reg-name" type="text" autocomplete="name" placeholder="选填，方便对账" maxlength="40" />
-              </label>
-              <p class="form-error" id="reg-error" hidden></p>
-              <button class="btn btn-primary btn-block" type="submit">注册并登录</button>
-            </form>
           </div>
+
+          <!-- 未登录也能查卡，不核销 -->
+          <section class="inspect-card">
+            <div class="inspect-head">
+              <h3>查询激活码</h3>
+              <span class="muted small">不用登录：看看是什么产品、多少天、几台设备</span>
+            </div>
+            <div class="act-row">
+              <input
+                id="guest-cdk"
+                placeholder="XXXX-XXXX-XXXX-XXXX"
+                autocomplete="off"
+                spellcheck="false"
+                maxlength="32"
+                aria-label="激活码"
+              />
+              <button class="btn btn-primary" id="guest-inspect" type="button">查询</button>
+            </div>
+            <div id="guest-result"></div>
+          </section>
         </div>
       </section>
 

@@ -135,6 +135,35 @@ p { margin: 0; }
 }
 
 /* ================= 登录 / 注册 ================= */
+/* 未登录时整块居中：登录卡 + 查卡卡，纵向排 */
+#view-auth {
+  min-height: calc(100vh - 130px);
+  display: flex;
+  flex-direction: column;
+}
+.auth-stack {
+  width: 100%;
+  max-width: 940px;
+  margin: auto; /* 上下自动留白，内容多时不会裁掉顶部 */
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 查卡卡（未登录也能用） */
+.inspect-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.inspect-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.inspect-head h3 { font-size: 14.5px; }
+
 .auth-shell {
   display: grid;
   grid-template-columns: 1.05fr 0.95fr;
@@ -412,7 +441,7 @@ input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px
   flex-direction: column;
   gap: 14px;
 }
-.act-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.act-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: stretch; }
 .act-row input { flex: 1 1 260px; font-family: var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
 .act-row .btn { flex: 0 0 auto; }
 
@@ -499,6 +528,8 @@ input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px
   .pt-main { padding: 16px 14px 48px; }
 
   .auth-shell { grid-template-columns: 1fr; border-radius: 16px; }
+  #view-auth { min-height: 0; }
+  .inspect-card { padding: 16px; }
   .auth-hero {
     padding: 24px 20px 20px;
     gap: 10px;

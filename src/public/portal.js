@@ -135,6 +135,12 @@ function bindAuth() {
     btn.addEventListener("click", () => setAuthTab(btn.dataset.authTab));
   });
 
+  // 未登录也能查卡
+  $("#guest-inspect")?.addEventListener("click", doGuestInspect);
+  $("#guest-cdk")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") doGuestInspect();
+  });
+
   $("#form-login").addEventListener("submit", async (event) => {
     event.preventDefault();
     $("#login-error").hidden = true;
@@ -370,10 +376,10 @@ async function doInspect() {
   }
 }
 
-function renderInspect(info) {
+function inspectHtml(info, { withActivate = false } = {}) {
   const t = info.usable ? "ok" : "bad";
   const reason = info.usable ? "可以激活" : "这张卡现在不能用";
-  $("#act-result").innerHTML = `
+  return `
     <div class="act-result ${t}">
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
         <b>${esc(info.product?.name ?? "未知产品")}</b>
@@ -390,15 +396,32 @@ function renderInspect(info) {
           ${(info.module_codes ?? []).map((m) => `<span class="mod-chip">${esc(m)}</span>`).join("") || '<span class="small muted">—</span>'}
         </div>
       </div>
-      ${
-        info.usable
-          ? `<button class="btn btn-primary" id="btn-activate" type="button" style="margin-top:4px">确认激活</button>`
-          : ""
-      }
+      ${withActivate && info.usable ? `<button class="btn btn-primary" id="btn-activate" type="button" style="margin-top:4px">确认激活</button>` : ""}
+      ${!withActivate && info.usable ? '<p class="small muted">登录后就能直接激活这张卡</p>' : ""}
     </div>`;
+}
 
+function renderInspect(info) {
+  $("#act-result").innerHTML = inspectHtml(info, { withActivate: true });
   const btn = $("#btn-activate");
   if (btn) btn.onclick = doActivate;
+}
+
+/** 登录页下方的查卡：不核销、不需要登录 */
+async function doGuestInspect() {
+  const code = $("#guest-cdk").value.trim().toUpperCase();
+  if (!code) {
+    toast("先填激活码", "error");
+    return;
+  }
+  const box = $("#guest-result");
+  box.innerHTML = '<p class="small muted">查询中…</p>';
+  try {
+    const info = await api("POST", "/api/v1/cdks/inspect", { cdk: code });
+    box.innerHTML = inspectHtml(info, { withActivate: false });
+  } catch (err) {
+    box.innerHTML = `<div class="act-result bad"><b>查不到这张卡</b><span class="small">${esc(err.message)}</span></div>`;
+  }
 }
 
 async function doActivate() {
