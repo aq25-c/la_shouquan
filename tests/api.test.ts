@@ -1892,3 +1892,43 @@ test("删除代理时级联删除其登录账号，并让已登录会话失效",
     "列表中不应再出现该账号",
   );
 });
+
+/* ==================== 请求体解析的容错与提示 ==================== */
+
+test("请求体解析：空 body 视为空对象，表单编码与非对象给出可操作提示", async () => {
+  const raw = (body: string, ct: string) =>
+    fetch(`${base}/api/v1/cdks/inspect`, {
+      method: "POST",
+      headers: { "Content-Type": ct },
+      body,
+    }).then(async (r) => ({ status: r.status, json: await r.json() }));
+
+  // ① 空 body：不应报 INVALID_JSON（应由业务层提示缺参数）
+  const empty = await api("POST", "/api/v1/cdks/inspect", undefined);
+  assert.equal(empty.status, 400);
+  assert.notEqual(empty.json.error.code, "INVALID_JSON", "空 body 应视为 {}，不该报 JSON 错误");
+
+  // ② 表单编码 → 提示改用 JSON
+  const form = await raw("cdk=ABC-123&x=1", "application/x-www-form-urlencoded");
+  assert.equal(form.status, 400);
+  assert.equal(form.json.error.code, "INVALID_JSON");
+  assert.match(form.json.error.message, /表单编码/, "应提示这是表单编码问题");
+
+  // ③ 合法 JSON 但不是对象 → 提示必须是对象
+  const str = await raw('"just-a-string"', "application/json");
+  assert.equal(str.status, 400);
+  assert.equal(str.json.error.code, "INVALID_JSON");
+  assert.match(str.json.error.message, /必须是 JSON 对象/, "应提示需要 JSON 对象");
+  assert.equal(str.json.error.details.received_type, "string");
+
+  // ④ 语法错误（单引号）→ 提示检查引号
+  const bad = await raw("{'cdk': 'ABC'}", "application/json");
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.error.code, "INVALID_JSON");
+  assert.match(bad.json.error.message, /双引号|合法 JSON/);
+
+  // ⑤ 数组仍被兼容包装成 { items: [...] }
+  const arr = await raw('["a","b"]', "application/json");
+  assert.equal(arr.status, 400, "数组会被包装，但仍因缺 cdk 参数被拒");
+  assert.notEqual(arr.json.error.code, "INVALID_JSON");
+});

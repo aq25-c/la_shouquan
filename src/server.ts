@@ -142,17 +142,31 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
     const rawBody = await readBody(req, config.maxBodyBytes);
     let body: Record<string, unknown> = {};
     if (rawBody.trim() !== "") {
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(rawBody);
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          body = parsed as Record<string, unknown>;
-        } else if (Array.isArray(parsed)) {
-          body = { items: parsed };
-        } else {
-          throw new Error("not an object");
-        }
+        parsed = JSON.parse(rawBody);
       } catch {
-        throw badRequest("请求体不是合法的 JSON 对象", "INVALID_JSON");
+        const trimmed = rawBody.trim();
+        // 常见误用：把表单编码/查询串当 JSON 发过来（如 a=1&b=2），或用了单引号/尾逗号
+        const looksLikeForm = /^[^\s{[][^=&\s]*=/.test(trimmed) || /^[\w.-]+=[^&]*$/.test(trimmed);
+        throw badRequest(
+          looksLikeForm
+            ? "请求体看起来是表单编码（如 a=1&b=2）。本服务只接受 JSON，请设置 Content-Type: application/json 并发送 JSON 对象"
+            : "请求体不是合法 JSON：请检查是否使用了双引号、没有尾逗号，且 Content-Type 为 application/json",
+          "INVALID_JSON",
+          { length: rawBody.length, first_char: trimmed.slice(0, 1) },
+        );
+      }
+      if (Array.isArray(parsed)) {
+        body = { items: parsed as unknown[] };
+      } else if (parsed && typeof parsed === "object") {
+        body = parsed as Record<string, unknown>;
+      } else {
+        throw badRequest(
+          `请求体必须是 JSON 对象（形如 {"key":"value"}），当前收到的是 ${parsed === null ? "null" : typeof parsed}`,
+          "INVALID_JSON",
+          { received_type: parsed === null ? "null" : typeof parsed },
+        );
       }
     }
 
