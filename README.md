@@ -279,6 +279,46 @@ curl -X POST http://localhost:6889/api/v1/licenses/heartbeat \
 - **升级**：`git pull`（或替换 `src/`）后 `docker compose up -d --build`。数据库自动迁移，`data/` 不受影响。
 - **换签名密钥**：会导致**所有已签发许可证失效**（客户端内置的公钥对不上），除非同步更新客户端。
 
+### 数据库版本与兼容升级
+
+数据库结构用 `PRAGMA user_version` 标记版本，当前为 **v8**（常量 `SCHEMA_VERSION`，见 `src/db.ts`）。
+
+**升级是自动且向后兼容的**：程序启动时读当前版本，逐级补齐缺失的迁移（v1→v2→…→最新），每一步各自在事务里执行，失败整体回滚，已有数据全部保留。启动日志会写明实际发生了什么：
+
+```
+数据库:      /data/license.db（结构版本 v7 → v8（已自动升级），程序支持 v8）
+数据库:      /data/license.db（结构版本 v8，程序支持 v8）        # 新库或已是最新
+```
+
+**升级前自动备份**：需要升级的是已有数据的库时，会先快照到 `<数据目录>/backups/pre-v<旧版本>-<时间>.db` 再迁移；备份失败只告警、不阻止启动。
+
+**降级保护**：如果库版本**高于**程序支持版本（例如把镜像回滚到旧版），程序拒绝启动并提示：
+
+```
+数据库结构版本 v9 高于当前程序支持的 v8：请升级到更新版本的程序，或从备份恢复数据库后再用当前版本启动。
+```
+
+避免旧代码写坏新结构。
+
+**开发约定：每次改 schema 必须做满三步**
+
+1. `src/db.ts` 末尾追加 `const SCHEMA_Vx = \`...\`;`
+2. `migrate()` 里补一行 `if (version < x) runMigration(db, SCHEMA_Vx, x);`
+3. `SCHEMA_VERSION` 常量 +1
+
+⚠️ **不要修改已发布的历史迁移常量**（V1~V8）。新库会从 V1 一路跑到最新，改动历史会让新库与老库走岔路径——本项目就踩过一次（批量改名时误改了历史迁移，导致新库先建出新表、迁移里再 rename 就冲突）。
+
+**回滚到旧版本时**，镜像与数据库必须一起回滚：
+
+```bash
+docker compose down
+cp data/backups/pre-v7-<时间>.db data/license.db
+rm -f data/license.db-wal data/license.db-shm
+docker compose up -d
+```
+
+只回滚镜像不回滚数据库，会被上面的降级保护拦住（这是有意为之）。
+
 ---
 
 ## 本地开发与测试

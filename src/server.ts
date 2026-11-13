@@ -1,6 +1,7 @@
 /**
  * HTTP 入口：请求分发、安全头、CORS、限流、错误处理。
  */
+import { SCHEMA_VERSION, migrationInfo } from "./db.ts";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { config } from "./config.ts";
@@ -218,7 +219,9 @@ export async function start(): Promise<void> {
   console.log(` ${SERVER_NAME} v${SERVER_VERSION} 已启动`);
   console.log(` 监听:        http://${config.host}:${config.port}`);
   console.log(` 管理后台:    http://localhost:${config.port}/`);
-  console.log(` 数据库:      ${info.dbPath}`);
+  const mig = migrationInfo();
+  const schemaText = mig.from === mig.to ? `v${mig.to}` : `v${mig.from} → v${mig.to}（已自动升级）`;
+  console.log(` 数据库:      ${info.dbPath}（结构版本 ${schemaText}，程序支持 v${SCHEMA_VERSION}）`);
   console.log(` 签名密钥:    kid=${key.kid} (${key.algorithm})`);
   console.log(` 离线宽限:    ${config.offlineGraceDays} 天 / 心跳周期 ${config.heartbeatIntervalHours} 小时`);
   if (info.adminCreated) {

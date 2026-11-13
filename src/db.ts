@@ -3,12 +3,26 @@
  */
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { nowIso } from "./util.ts";
 
 export type Sqlite = DatabaseSync;
 
 let database: DatabaseSync | null = null;
+
+/**
+ * 当前程序支持的数据库结构版本。
+ * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
+ * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
+ */
+export const SCHEMA_VERSION = 8;
+
+/** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
+let migration: { from: number; to: number } = { from: 0, to: 0 };
+
+export function migrationInfo(): { from: number; to: number } {
+  return migration;
+}
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS settings (
@@ -335,9 +349,44 @@ export function openDb(path: string): DatabaseSync {
   db.exec("PRAGMA synchronous = NORMAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");
+
+  const from = readUserVersion(db);
+  // 降级保护：库比程序新（例如回滚到旧镜像）会让旧代码写坏新结构，直接拒绝启动
+  if (from > SCHEMA_VERSION) {
+    db.close();
+    throw new Error(
+      `数据库结构版本 v${from} 高于当前程序支持的 v${SCHEMA_VERSION}：请升级到更新版本的程序，` +
+        `或从备份恢复数据库后再用当前版本启动。`,
+    );
+  }
+  // 已有数据且需要升级时，先做一份快照，升级出问题可以立刻回滚
+  if (from > 0 && from < SCHEMA_VERSION && path !== ":memory:") {
+    backupBeforeMigration(db, path, from);
+  }
+
   migrate(db);
+  migration = { from, to: readUserVersion(db) };
   database = db;
   return db;
+}
+
+function readUserVersion(conn: DatabaseSync): number {
+  const row = conn.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
+  return Number(row?.user_version ?? 0);
+}
+
+/** 升级前快照；失败只告警，不阻止启动 */
+function backupBeforeMigration(conn: DatabaseSync, dbPath: string, fromVersion: number): void {
+  try {
+    const dir = join(dirname(dbPath), "backups");
+    mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const target = join(dir, `pre-v${fromVersion}-${stamp}.db`);
+    conn.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    console.log(`[db] 升级前已自动备份：${target}`);
+  } catch (err) {
+    console.warn(`[db] 升级前备份失败（不阻止启动）：${(err as Error).message}`);
+  }
 }
 
 export function db(): DatabaseSync {
@@ -353,8 +402,7 @@ export function closeDb(): void {
 }
 
 function migrate(db: DatabaseSync): void {
-  const row = db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
-  const version = Number(row?.user_version ?? 0);
+  const version = readUserVersion(db);
 
   if (version < 1) runMigration(db, SCHEMA_V1, 1);
   if (version < 2) runMigration(db, SCHEMA_V2, 2);

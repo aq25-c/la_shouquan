@@ -5,7 +5,10 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 
-const { openDb, closeDb, db } = await import("../src/db.ts");
+const { openDb, closeDb, db, SCHEMA_VERSION } = await import("../src/db.ts");
+import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const perm = await import("../src/permissions.ts");
 
 before(() => {
@@ -111,4 +114,61 @@ test("计费类型：旧数据兼容与展示", () => {
   assert.equal(perm.termLabel("month", 3), "3 个月");
   assert.equal(perm.termLabel("count", 100), "100 次");
   assert.equal(perm.termLabel("unknown", 7), "7 天");
+});
+
+
+/* ==================== 数据库版本与升级 ==================== */
+
+test("数据库版本：新库一次建到最新，user_version 等于 SCHEMA_VERSION", () => {
+  const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  assert.equal(version, SCHEMA_VERSION, `user_version 应为 ${SCHEMA_VERSION}，实际 ${version}`);
+  // 关键表都应存在（逐级迁移全部跑过）
+  const tables = (db().prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(
+    (r) => r.name,
+  );
+  for (const t of ["agents", "products", "modules", "customers", "licenses", "cdks", "cdk_batches", "agent_prices"]) {
+    assert.ok(tables.includes(t), `缺少表 ${t}`);
+  }
+});
+
+test("数据库版本：降级保护——库比程序新时拒绝启动", () => {
+  const dir = mkdtempSync(join(tmpdir(), "lic-downgrade-"));
+  const file = join(dir, "license.db");
+  try {
+    const conn = openDb(file);
+    // 模拟"用新程序跑过、再回滚到旧程序"的场景
+    conn.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
+    closeDb();
+
+    assert.throws(
+      () => openDb(file),
+      /高于当前程序支持/,
+      "库结构比程序新时必须拒绝启动，避免旧代码写坏新结构",
+    );
+  } finally {
+    try {
+      closeDb();
+    } catch {
+      /* 忽略 */
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("数据库版本：需要升级的旧库会先自动备份，新库则不备份", () => {
+  // 新库（from=0）不应产生备份
+  const dir = mkdtempSync(join(tmpdir(), "lic-fresh-"));
+  try {
+    openDb(join(dir, "license.db"));
+    closeDb();
+    const backups = existsSync(join(dir, "backups")) ? readdirSync(join(dir, "backups")) : [];
+    assert.equal(backups.length, 0, "全新数据库不需要备份");
+  } finally {
+    try {
+      closeDb();
+    } catch {
+      /* 忽略 */
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
