@@ -1,6 +1,6 @@
 /** 试用（trial）：全局试用配置 + 每客户试用次数限制。配置存放在 settings 表。 */
-import { getSetting, setSetting, scalar } from "../db.ts";
-import { parseJson, toJson } from "../util.ts";
+import { db, getSetting, scalar, setSetting } from "../db.ts";
+import { nowIso, parseJson, toJson } from "../util.ts";
 
 export type TrialConfig = {
   /** 是否允许客户自助申请试用 */
@@ -101,11 +101,46 @@ export function trialCountFor(customerId: string, productId: string): number {
   );
 }
 
+/* ---------------------------- 按产品覆盖 ---------------------------- */
+
+/**
+ * 读取某产品的试用配置：产品自己配过的字段覆盖全局默认，未配的沿全局。
+ * 这样「产品与模块」里只需要填这个产品关心的几项。
+ */
+export function getProductTrialConfig(productId: string): TrialConfig {
+  const base = getTrialConfig();
+  const row = db().prepare("SELECT trial_config FROM products WHERE id = ?").get(productId) as
+    | { trial_config: string }
+    | undefined;
+  const raw = row?.trial_config ?? "";
+  if (!raw) return { ...base, product_id: productId };
+  const patch = parseJson<Partial<TrialConfig>>(raw, {});
+  return { ...base, ...patch, product_id: productId };
+}
+
+/** 写入产品级试用配置（只覆盖传进来的字段） */
+export function setProductTrialConfig(productId: string, patch: Partial<TrialConfig>): TrialConfig {
+  const row = db().prepare("SELECT trial_config FROM products WHERE id = ?").get(productId) as
+    | { trial_config: string }
+    | undefined;
+  const merged = parseJson<Record<string, unknown>>(row?.trial_config ?? "", {});
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "product_id") continue; // 产品由路径决定
+    if (value !== undefined) merged[key] = value;
+  }
+  db().prepare("UPDATE products SET trial_config = ?, updated_at = ? WHERE id = ?").run(
+    toJson(merged),
+    nowIso(),
+    productId,
+  );
+  return getProductTrialConfig(productId);
+}
+
 export type TrialGuard = { ok: true } | { ok: false; code: string; message: string };
 
 /** 校验客户是否可以发起试用 */
 export function canStartTrial(customerId: string, productId: string): TrialGuard {
-  const config = getTrialConfig();
+  const config = getProductTrialConfig(productId);
   if (!config.enabled) {
     return { ok: false, code: "TRIAL_DISABLED", message: "当前未开放自助试用，请联系服务商" };
   }

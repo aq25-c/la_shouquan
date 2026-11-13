@@ -42,7 +42,7 @@ import {
   touchCustomerLogin,
 } from "../store/accounts.ts";
 import { findProductByCode, findProductById, listModules, listProducts, moduleCodesFor } from "../store/catalog.ts";
-import { canStartTrial, getTrialConfig, trialCountFor } from "../store/trials.ts";
+import { canStartTrial, getProductTrialConfig, getTrialConfig, trialCountFor } from "../store/trials.ts";
 import {
   activeDeviceCount,
   consumeUsage,
@@ -238,9 +238,9 @@ export function registerClientRoutes(): void {
     const platform = bodyStr(ctx, "platform", { max: 64 });
     const productCode = bodyStr(ctx, "product_code", { max: 64 });
 
-    const trialConfig = getTrialConfig();
+    const trialGlobal = getTrialConfig();
 
-    let product = trialConfig.product_id ? findProductById(trialConfig.product_id) : null;
+    let product = trialGlobal.product_id ? findProductById(trialGlobal.product_id) : null;
     if (!product && productCode) product = findProductByCode(productCode);
     if (!product) {
       const candidate = listProducts().find((p) => p.status === "active");
@@ -248,6 +248,9 @@ export function registerClientRoutes(): void {
     }
     if (!product) throw notFound("没有可试用的产品", "PRODUCT_NOT_FOUND");
     if (product.status !== "active") throw conflict("该产品当前不开放试用", "PRODUCT_DISABLED");
+
+    // v6：试用参数按产品配置，未配置的字段回落全局
+    const trialConfig = getProductTrialConfig(product.id);
 
     const guard = canStartTrial(customer.id, product.id);
     if (!guard.ok) throw locked(guard.message, guard.code);

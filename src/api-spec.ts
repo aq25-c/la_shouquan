@@ -152,6 +152,17 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/products": { title: "新增产品", auth: "admin", params: "`code`、`name`、`description?`", desc: "`code` 匹配 `^[a-z0-9][a-z0-9_-]{0,63}$`。" },
   "PATCH /admin/api/products/:id": { title: "编辑产品", auth: "admin", params: "`name?`、`description?`、`status?`", desc: "`status`: active / disabled。" },
   "DELETE /admin/api/products/:id": { title: "删除产品", auth: "admin", desc: "已有授权或 CDK 时返回 409 PRODUCT_IN_USE。" },
+  "GET /admin/api/products/:id/trial": {
+    title: "读取产品试用配置",
+    auth: "admin",
+    desc: "返回该产品生效的试用配置（未配置字段已由全局默认填充）以及全局默认值 `global`。",
+  },
+  "PATCH /admin/api/products/:id/trial": {
+    title: "修改产品试用配置",
+    auth: "admin",
+    params: "`enabled?`、`mode?`(day/count)、`value?`、`seats?`、`max_per_customer?`、`module_ids?`",
+    desc: "只覆盖传入字段，其余沿用全局默认，实现「按产品/模块」单独配置试用。",
+  },
   "GET /admin/api/products/:id/modules": { title: "产品下的模块", auth: "admin", desc: "该产品的模块列表。" },
   "POST /admin/api/products/:id/modules": { title: "新增模块", auth: "admin", params: "`code`、`name`、`description?`", desc: "同产品内编码唯一。" },
   "GET /admin/api/modules": { title: "全部模块", auth: "admin", desc: "跨产品查询，附带 product_code。" },

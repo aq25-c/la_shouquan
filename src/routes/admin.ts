@@ -134,7 +134,7 @@ import {
   updateLicense,
   upsertDevice,
 } from "../store/licensing.ts";
-import { getTrialConfig, setTrialConfig, trialSummary } from "../store/trials.ts";
+import { getProductTrialConfig, getTrialConfig, setProductTrialConfig, setTrialConfig, trialSummary } from "../store/trials.ts";
 import type { TrialConfig } from "../store/trials.ts";
 import type { LicenseRow } from "../types.ts";
 import { DAY, isEmail, normalizeEmail, parseJson, toMs } from "../util.ts";
@@ -313,7 +313,10 @@ export function registerAdminRoutes(): void {
 
   get(`${P}/staff`, (ctx) => {
     requireStaff(ctx);
-    return ok({ items: listAdmins().map(adminView) });
+    // ?role=staff / agent 用于「员工」与「代理」两个页面分别取数
+    const role = q(ctx, "role");
+    const items = role ? listAdmins().filter((a) => a.role === role) : listAdmins();
+    return ok({ items: items.map(adminView) });
   });
 
   post(`${P}/staff`, async (ctx) => {
@@ -612,8 +615,10 @@ export function registerAdminRoutes(): void {
   /* ---------------------------- 卡密价格 ---------------------------- */
 
   get(`${P}/prices`, (ctx) => {
-    requireStaff(ctx);
-    return ok({ items: listPrices(q(ctx, "product_id")) });
+    const staffCtx = requireStaff(ctx);
+    // 代理只能看自己的覆盖价；管理员可用 ?channel_id= 查指定代理（留空=全局默认价）
+    const channelId = staffCtx.isAgent ? staffCtx.channelId : q(ctx, "channel_id");
+    return ok({ items: listPrices(q(ctx, "product_id"), channelId) });
   });
 
   /** 设价：module_id 留空 = 该产品的默认价（对所有模块生效），填了则覆盖该模块 */
@@ -634,7 +639,19 @@ export function registerAdminRoutes(): void {
     }
     const unitPrice = needInt(ctx, "unit_price", { min: 0, max: 100_000_000 });
 
-    const price = upsertPrice({ productId, moduleId: moduleId ?? null, termType, unitPrice });
+    // channel_id 留空 = 全局默认价；填了 = 该代理的覆盖价
+    const channelIdInput = bodyStr(ctx, "channel_id", 64);
+    if (channelIdInput && !findChannelById(channelIdInput)) {
+      throw notFound("代理不存在", "CHANNEL_NOT_FOUND");
+    }
+
+    const price = upsertPrice({
+      channelId: channelIdInput ?? null,
+      productId,
+      moduleId: moduleId ?? null,
+      termType,
+      unitPrice,
+    });
     audit({
       actorType: "admin",
       actorId: admin.id,
@@ -643,7 +660,7 @@ export function registerAdminRoutes(): void {
       targetType: "price",
       targetId: price.id,
       ip: ctx.ip,
-      detail: { product_id: productId, module_id: moduleId, term_type: termType, unit_price: unitPrice },
+      detail: { channel_id: channelIdInput ?? "", product_id: productId, module_id: moduleId, term_type: termType, unit_price: unitPrice },
     });
     return ok({ price });
   });
@@ -802,6 +819,56 @@ export function registerAdminRoutes(): void {
     return ok({ deleted: true });
   });
 
+  /** 产品级试用配置：未配置的字段回落全局默认（「产品与模块」里按产品设） */
+  get(`${P}/products/:id/trial`, (ctx) => {
+    requireStaff(ctx);
+    const id = slash(ctx, "id");
+    if (!findProductById(id)) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
+    return ok({ config: getProductTrialConfig(id), global: getTrialConfig() });
+  });
+
+  patch(`${P}/products/:id/trial`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    if (!findProductById(id)) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
+
+    const patchData: Partial<TrialConfig> = {};
+    if (ctx.body.enabled !== undefined) patchData.enabled = ctx.body.enabled === true;
+
+    const mode = bodyStr(ctx, "mode", 10);
+    if (mode) {
+      if (!["day", "count"].includes(mode)) throw badRequest("mode 只能是 day / count", "INVALID_FIELD");
+      patchData.mode = mode as "day" | "count";
+    }
+    const value = bodyInt(ctx, "value", { min: 1, max: 3650 });
+    if (value !== null) patchData.value = value;
+
+    const seats = bodyInt(ctx, "seats", { min: 1, max: 100 });
+    if (seats !== null) patchData.seats = seats;
+
+    const maxPer = bodyInt(ctx, "max_per_customer", { min: 1, max: 20 });
+    if (maxPer !== null) patchData.max_per_customer = maxPer;
+
+    const moduleIds = bodyStrArray(ctx, "module_ids");
+    if (moduleIds) {
+      validateModuleIds(id, moduleIds);
+      patchData.module_ids = moduleIds;
+    }
+
+    const updated = setProductTrialConfig(id, patchData);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "product.trial_config",
+      targetType: "product",
+      targetId: id,
+      ip: ctx.ip,
+      detail: patchData,
+    });
+    return ok({ config: updated });
+  });
+
   get(`${P}/products/:id/modules`, (ctx) => {
     requireAdmin(ctx);
     const id = slash(ctx, "id");
@@ -934,7 +1001,7 @@ export function registerAdminRoutes(): void {
         });
         if (!scope.ok) throw forbidden(scope.message, scope.code);
 
-        const unit = resolveUnitPrice(productId, moduleIds, termInfo.termType);
+        const unit = resolveUnitPrice(productId, moduleIds, termInfo.termType, channelId);
         if (unit === null) {
           throw conflict("该产品 / 卡类型尚未配置价格，请联系管理员", "PRICE_NOT_CONFIGURED", {
             product_id: productId,
@@ -1679,7 +1746,7 @@ export function registerAdminRoutes(): void {
     const termValue = needInt(ctx, "term_value", { min: 1, max: 100000 });
     const count = bodyInt(ctx, "count", { min: 1, max: 5000 }) ?? 1;
 
-    const unit = resolveUnitPrice(productId, moduleIds, termType);
+    const unit = resolveUnitPrice(productId, moduleIds, termType, staffCtx.channelId);
     const total = unit === null ? null : totalPrice(unit, termValue, count);
 
     // 只有代理需要付费；管理员生成属于赠送，不显示金额

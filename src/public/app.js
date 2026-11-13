@@ -298,11 +298,11 @@ const VIEWS = {
   overview: { title: "概览", subtitle: "授权与 CDK 全局概况", render: renderOverview },
   products: { title: "产品与模块", subtitle: "产品、功能模块维护（CDK 绑定目标）", render: renderProducts },
   cdks: { title: "CDK", subtitle: "批量生成、导出与作废", render: renderCdks },
-  channels: { title: "渠道", subtitle: "分销渠道、CDK 归属与营收统计", render: renderChannels },
+  channels: { title: "代理", subtitle: "分销代理、CDK 归属与营收统计", render: renderChannels },
   licenses: { title: "授权", subtitle: "到期时间、席位、设备与吊销", render: renderLicenses },
   customers: { title: "客户", subtitle: "注册客户与账号状态", render: renderCustomers },
   audit: { title: "审计日志", subtitle: "所有关键操作留痕", render: renderAudit },
-  staff: { title: "员工与代理", subtitle: "员工账号、目录权限与软件功能授权；渠道代理及其卡密余额", render: renderStaff },
+  staff: { title: "员工", subtitle: "员工账号、目录权限与软件功能授权", render: renderStaff },
   params: { title: "软件参数", subtitle: "试用策略等软件级参数", render: renderParams },
   apiDocs: { title: "API 文档", subtitle: "全部接口说明 · 由真实路由表自动生成，不会与实现脱节", render: renderApiDocs },
   settings: { title: "设置与公钥", subtitle: "签名公钥、策略参数、管理员", render: renderSettings },
@@ -334,7 +334,7 @@ async function ensureCatalog(force = false) {
   }
   const [mods, chans] = await Promise.all([
     apiGet("/admin/api/modules"),
-    // 代理无权读渠道列表，这里容错，避免拖垮整个页面
+    // 代理无权读代理列表，这里容错，避免拖垮整个页面
     apiGet("/admin/api/channels").catch(() => ({ items: [] })),
   ]);
   state.modules = mods.items;
@@ -453,6 +453,58 @@ async function renderOverview(root) {
 
 /* ============================ 产品与模块 ============================ */
 
+/** 产品级试用配置：未填的项沿用「软件参数」里的全局默认 */
+async function productTrialForm(productId) {
+  const data = await apiGet(`/admin/api/products/${productId}/trial`);
+  const cfg = data.config;
+  const g = data.global;
+  const product = state.products.find((p) => p.id === productId);
+  const globalHint = g.mode === "day" ? `${g.value} 天` : `${g.value} 次`;
+
+  const modal = openModal({
+    title: `试用配置：${product?.name ?? ""}`,
+    body: `
+      <div class="form-grid">
+        <label class="field"><span>是否允许试用</span>
+          <select name="enabled">
+            <option value="1" ${cfg.enabled ? "selected" : ""}>开启</option>
+            <option value="0" ${!cfg.enabled ? "selected" : ""}>关闭</option>
+          </select></label>
+        <label class="field"><span>试用方式</span>
+          <select name="mode">
+            <option value="day" ${cfg.mode === "day" ? "selected" : ""}>试用几天</option>
+            <option value="count" ${cfg.mode === "count" ? "selected" : ""}>试用几次</option>
+          </select></label>
+        <label class="field"><span>试用量（天 / 次）</span>
+          <input name="value" type="number" min="1" max="3650" value="${cfg.value}" /></label>
+        <label class="field"><span>试用席位数</span>
+          <input name="seats" type="number" min="1" max="100" value="${cfg.seats}" /></label>
+        <label class="field"><span>每个客户可试用次数</span>
+          <input name="max_per_customer" type="number" min="1" max="20" value="${cfg.max_per_customer}" /></label>
+      </div>
+      <div class="note">这里只保存本产品的差异项；没改的字段继续跟随「软件参数」的全局默认（当前 ${esc(globalHint)}）。</div>`,
+    footer: '<button class="btn btn-primary" data-save type="button">保存</button>',
+    onMount: (m) => {
+      $("[data-save]", m).onclick = async () => {
+        try {
+          await apiPatch(`/admin/api/products/${productId}/trial`, {
+            enabled: $('[name="enabled"]', m).value === "1",
+            mode: $('[name="mode"]', m).value,
+            value: Number($('[name="value"]', m).value),
+            seats: Number($('[name="seats"]', m).value),
+            max_per_customer: Number($('[name="max_per_customer"]', m).value),
+          });
+          toast("试用配置已保存", "ok");
+          $("#modal-root").innerHTML = "";
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    },
+  });
+  return modal;
+}
+
 async function renderProducts(root) {
   await ensureCatalog(true);
   root.innerHTML = `
@@ -480,6 +532,7 @@ async function renderProducts(root) {
                           <td class="right">
                             <div class="btn-row" style="justify-content:flex-end">
                               <button class="btn btn-sm" data-modules="${esc(p.id)}" type="button">模块</button>
+                              <button class="btn btn-sm" data-trial="${esc(p.id)}" type="button">试用</button>
                               <button class="btn btn-sm" data-edit="${esc(p.id)}" type="button">编辑</button>
                               <button class="btn btn-sm" data-toggle="${esc(p.id)}" type="button">${p.status === "active" ? "停用" : "启用"}</button>
                               <button class="btn btn-sm" data-del="${esc(p.id)}" type="button">删除</button>
@@ -497,6 +550,9 @@ async function renderProducts(root) {
     </div>`;
 
   $("[data-new-product]", root).onclick = () => productForm();
+  $$("[data-trial]", root).forEach((btn) => {
+    btn.onclick = () => productTrialForm(btn.dataset.trial);
+  });
   $$("[data-edit]", root).forEach((btn) => {
     btn.onclick = () => productForm(state.products.find((p) => p.id === btn.dataset.edit));
   });
@@ -654,7 +710,7 @@ async function moduleManager(productId) {
   });
 }
 
-/* ============================ 渠道 / 分销 ============================ */
+/* ============================ 代理 / 分销 ============================ */
 
 const money = (cents) => `¥${(Number(cents ?? 0) / 100).toFixed(2)}`;
 const percent = (ratio) => `${(Number(ratio ?? 0) * 100).toFixed(1)}%`;
@@ -668,6 +724,67 @@ function channelOptions(selected = "") {
     );
   }
   return parts.join("");
+}
+
+/** 代理单独定价：默认带出全局价，留空表示沿用全局，填了即为覆盖价 */
+async function channelPriceForm(channelId) {
+  const [globalPrices, ownPrices] = await Promise.all([
+    apiGet("/admin/api/prices"),
+    apiGet(`/admin/api/prices?channel_id=${encodeURIComponent(channelId)}`),
+  ]);
+  const own = new Map(ownPrices.items.map((p) => [`${p.product_id}|${p.module_id}|${p.term_type}`, p.unit_price]));
+
+  const rows = globalPrices.items.length
+    ? globalPrices.items
+        .map((p) => {
+          const key = `${p.product_id}|${p.module_id}|${p.term_type}`;
+          const val = own.get(key);
+          return `<tr>
+            <td>${esc(p.product_name)}</td>
+            <td>${p.module_name ? esc(p.module_name) : '<span class="muted small">产品默认</span>'}</td>
+            <td>${esc(p.term_type)}</td>
+            <td>¥${(p.unit_price / 100).toFixed(2)}</td>
+            <td><input type="number" step="0.01" min="0" style="width:110px"
+                 data-p="${esc(p.product_id)}" data-m="${esc(p.module_id)}" data-t="${esc(p.term_type)}"
+                 value="${val === undefined ? "" : (val / 100).toFixed(2)}" placeholder="用全局价" /></td>
+          </tr>`;
+        })
+        .join("")
+    : emptyRow(5, "全局还没有配置价格，请先到「软件参数 → 全局默认卡密价格」配置");
+
+  openModal({
+    title: "代理单独定价",
+    wide: true,
+    body: `
+      <div class="note">留空 = 沿用「软件参数」里的全局默认价；填了即为该代理的覆盖价。</div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead><tr><th>产品</th><th>模块</th><th>卡类型</th><th>全局价</th><th>该代理价</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`,
+    footer: '<button class="btn btn-primary" data-save type="button">保存</button>',
+    onMount: (m) => {
+      $("[data-save]", m).onclick = async () => {
+        const inputs = $$("[data-p]", m).filter((i) => i.value.trim() !== "");
+        try {
+          for (const i of inputs) {
+            await apiPost("/admin/api/prices", {
+              channel_id: channelId,
+              product_id: i.dataset.p,
+              module_id: i.dataset.m || null,
+              term_type: i.dataset.t,
+              unit_price: Math.round(Number(i.value) * 100),
+            });
+          }
+          toast(`已保存 ${inputs.length} 条代理价`, "ok");
+          $("#modal-root").innerHTML = "";
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    },
+  });
 }
 
 async function renderChannels(root) {
@@ -684,14 +801,14 @@ async function renderChannels(root) {
   root.innerHTML = `
     <div class="stat-grid">
       <div class="stat accent">
-        <div class="stat-label">渠道数</div>
+        <div class="stat-label">代理数</div>
         <div class="stat-value">${s.channels}</div>
         <div class="stat-hint">启用中 ${s.channels_active} 个</div>
       </div>
       <div class="stat">
-        <div class="stat-label">归属渠道的授权</div>
+        <div class="stat-label">归属代理的授权</div>
         <div class="stat-value">${s.attributed_licenses}</div>
-        <div class="stat-hint">直销（无渠道）${s.unattributed_licenses} 个</div>
+        <div class="stat-hint">直销（无代理）${s.unattributed_licenses} 个</div>
       </div>
       <div class="stat">
         <div class="stat-label">累计营收</div>
@@ -702,15 +819,15 @@ async function renderChannels(root) {
 
     <div class="card">
       <div class="card-head">
-        <h3>渠道列表</h3>
+        <h3>代理列表</h3>
         <div class="toolbar">
           <select data-f-status>
             <option value="">全部状态</option>
             <option value="active" ${filters.status === "active" ? "selected" : ""}>启用</option>
             <option value="disabled" ${filters.status === "disabled" ? "selected" : ""}>停用</option>
           </select>
-          <input data-f-q placeholder="搜索渠道编码 / 名称 / 联系人" value="${esc(filters.q)}" />
-          <button class="btn btn-primary btn-sm" data-new type="button">+ 新建渠道</button>
+          <input data-f-q placeholder="搜索代理编码 / 名称 / 联系人" value="${esc(filters.q)}" />
+          <button class="btn btn-primary btn-sm" data-new type="button">+ 新建代理</button>
         </div>
       </div>
       <div class="card-body tight">
@@ -718,7 +835,7 @@ async function renderChannels(root) {
           <table>
             <thead>
               <tr>
-                <th>渠道</th><th>联系人</th><th>CDK（已核销/总量）</th><th>激活率</th>
+                <th>代理</th><th>联系人</th><th>CDK（已核销/总量）</th><th>激活率</th>
                 <th>授权</th><th>卡密余额</th><th>营收</th><th>最近激活</th><th>状态</th><th class="right">操作</th>
               </tr>
             </thead>
@@ -733,13 +850,14 @@ async function renderChannels(root) {
                           <td>${c.cdk_used} / ${c.cdk_total}<div class="muted small">未用 ${c.cdk_unused}</div></td>
                           <td>${c.cdk_total > 0 ? percent(c.activation_rate) : "—"}</td>
                           <td>${c.license_total}（有效 ${c.license_active}）<div class="muted small">近 30 天新增 ${c.activated_30d}</div></td>
-                          <td>${c.credit ?? 0} 张<div class="muted small">${(c.credit ?? 0) > 0 ? "可继续生成" : "不足，需充值"}</div></td>
+                          <td>${money(c.balance ?? 0)}<div class="muted small">${(c.balance ?? 0) > 0 ? "可继续生成" : "余额不足"}</div></td>
                           <td>${money(c.revenue_total)}<div class="muted small">近 30 天 ${money(c.revenue_30d)}</div></td>
                           <td class="nowrap">${c.last_activated_at ? fmtDay(c.last_activated_at) : "—"}</td>
                           <td>${c.status === "active" ? '<span class="badge badge-ok">启用</span>' : '<span class="badge">停用</span>'}</td>
                           <td class="right">
                             <div class="btn-row" style="justify-content:flex-end">
                               <button class="btn btn-sm" data-credit="${esc(c.id)}" type="button">充值</button>
+                              <button class="btn btn-sm" data-pricing="${esc(c.id)}" type="button">定价</button>
                               <button class="btn btn-sm" data-edit="${esc(c.id)}" type="button">编辑</button>
                               <button class="btn btn-sm" data-toggle="${esc(c.id)}" type="button">${c.status === "active" ? "停用" : "启用"}</button>
                               <button class="btn btn-sm" data-del="${esc(c.id)}" type="button">删除</button>
@@ -748,7 +866,7 @@ async function renderChannels(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(10, "还没有渠道。渠道用于区分分销来源，并统计各渠道的 CDK 与营收")
+                  : emptyRow(10, "还没有代理。代理用于区分分销来源，并统计各代理的 CDK 与营收")
               }
             </tbody>
           </table>
@@ -757,6 +875,9 @@ async function renderChannels(root) {
     </div>`;
 
   $("[data-new]", root).onclick = () => channelForm();
+  $$("[data-pricing]", root).forEach((btn) => {
+    btn.onclick = () => channelPriceForm(btn.dataset.pricing);
+  });
   $("[data-f-status]", root).onchange = (e) => {
     filters.status = e.target.value;
     navigate("channels", true);
@@ -790,7 +911,7 @@ async function renderChannels(root) {
   $$("[data-del]", root).forEach((btn) => {
     btn.onclick = async () => {
       const c = state.channels.find((x) => x.id === btn.dataset.del);
-      if (!(await confirmDialog(`删除渠道「${c.name}」？已有 CDK 或授权的渠道不能删除，只能停用。`, { danger: true, okText: "删除" }))) return;
+      if (!(await confirmDialog(`删除代理「${c.name}」？已有 CDK 或授权的代理不能删除，只能停用。`, { danger: true, okText: "删除" }))) return;
       try {
         await api("DELETE", `/admin/api/channels/${c.id}`);
         toast("已删除", "ok");
@@ -836,12 +957,12 @@ function channelCreditForm(channel) {
 function channelForm(channel) {
   const isNew = !channel;
   openModal({
-    title: isNew ? "新建渠道" : `编辑渠道：${channel.name}`,
+    title: isNew ? "新建代理" : `编辑代理：${channel.name}`,
     body: `
       <div class="form-grid">
-        <label class="field"><span>渠道编码（小写字母 / 数字 / - / _）</span>
+        <label class="field"><span>代理编码（小写字母 / 数字 / - / _）</span>
           <input name="code" value="${esc(channel?.code ?? "")}" ${isNew ? "" : "disabled"} placeholder="taobao" /></label>
-        <label class="field"><span>渠道名称</span><input name="name" value="${esc(channel?.name ?? "")}" placeholder="淘宝旗舰店" /></label>
+        <label class="field"><span>代理名称</span><input name="name" value="${esc(channel?.name ?? "")}" placeholder="淘宝旗舰店" /></label>
         <label class="field"><span>联系人</span><input name="contact" value="${esc(channel?.contact ?? "")}" /></label>
         <label class="field"><span>电话</span><input name="phone" value="${esc(channel?.phone ?? "")}" /></label>
         <label class="field"><span>邮箱</span><input name="email" value="${esc(channel?.email ?? "")}" /></label>
@@ -859,14 +980,14 @@ function channelForm(channel) {
           note: $('[name="note"]', modal).value.trim(),
         };
         if (!payload.name) {
-          toast("请填写渠道名称", "error");
+          toast("请填写代理名称", "error");
           return;
         }
         try {
           if (isNew) {
             const code = $('[name="code"]', modal).value.trim();
             if (!code) {
-              toast("请填写渠道编码", "error");
+              toast("请填写代理编码", "error");
               return;
             }
             await apiPost("/admin/api/channels", { ...payload, code });
@@ -921,9 +1042,9 @@ async function renderCdks(root) {
           <label class="field"><span>席位数（可绑定设备数）</span><input name="seats" type="number" min="1" max="100" value="1" /></label>
           <label class="field"><span>生成数量</span><input name="count" type="number" min="1" max="5000" value="10" /></label>
           <label class="field"><span>兑换截止时间（可选）</span><input name="redeem_before" type="datetime-local" /></label>
-          <label class="field"><span>归属渠道（可选）</span><select name="channel_id">${channelOptions()}</select></label>
+          <label class="field"><span>归属代理（可选）</span><select name="channel_id">${channelOptions()}</select></label>
           <label class="field"><span>结算单价（元）</span><input name="unit_price" type="number" min="0" step="0.01" value="0" /></label>
-          <label class="field"><span>批次备注</span><input name="note" placeholder="例如 2025Q1 渠道批次" /></label>
+          <label class="field"><span>批次备注</span><input name="note" placeholder="例如 2025Q1 代理批次" /></label>
           <div class="field full"><span>包含模块</span>
             <div class="checkbox-list" data-modules>${moduleCheckboxes(state.products[0]?.id ?? "")}</div>
           </div>
@@ -951,8 +1072,8 @@ async function renderCdks(root) {
             ${batches.items.map((b) => `<option value="${esc(b.id)}" ${filters.batch_id === b.id ? "selected" : ""}>${fmtDay(b.created_at)} · ${esc(b.product_code)} · ${b.count} 个</option>`).join("")}
           </select>
           <select data-f-channel>
-            <option value="">全部渠道</option>
-            <option value="__none__" ${filters.channel_id === "__none__" ? "selected" : ""}>无渠道（直销）</option>
+            <option value="">全部代理</option>
+            <option value="__none__" ${filters.channel_id === "__none__" ? "selected" : ""}>无代理（直销）</option>
             ${state.channels.map((c) => `<option value="${esc(c.id)}" ${filters.channel_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
           </select>
           <input data-f-q placeholder="搜索 CDK / 备注 / 客户邮箱" value="${esc(filters.q)}" />
@@ -962,7 +1083,7 @@ async function renderCdks(root) {
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>CDK</th><th>产品</th><th>渠道</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>到期时间</th><th>生成时间</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>CDK</th><th>产品</th><th>代理</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>到期时间</th><th>生成时间</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
@@ -1056,7 +1177,7 @@ async function renderCdks(root) {
       seats: Number($('[name="seats"]', root).value),
       count: Number($('[name="count"]', root).value),
       note: $('[name="note"]', root).value.trim(),
-      // 渠道可选；单价按「元」录入，提交时换算成「分」
+      // 代理可选；单价按「元」录入，提交时换算成「分」
       channel_id: channelSelect?.value || undefined,
       unit_price: Math.round(Number($('[name="unit_price"]', root).value || 0) * 100),
     };
@@ -2075,17 +2196,17 @@ async function renderApiDocs(root) {
   });
 }
 
-/* ============================ 员工与代理 ============================ */
+/* ============================ 员工 ============================ */
 
 async function renderStaff(root) {
-  const [list, opt] = await Promise.all([apiGet("/admin/api/staff"), apiGet("/admin/api/staff/options")]);
+  const [list, opt] = await Promise.all([apiGet("/admin/api/staff?role=staff"), apiGet("/admin/api/staff/options")]);
   const isOwner = state.admin?.role === "owner";
   const rows = list.items;
 
   root.innerHTML = `
     <div class="card">
       <div class="card-head">
-        <h3>员工与代理</h3>
+        <h3>员工</h3>
         <div class="toolbar">
           <span class="muted small">员工按「目录权限 + 软件功能」受限；代理只能看自己的卡密与余额</span>
           ${isOwner ? '<button class="btn btn-primary btn-sm" data-new type="button">+ 新增账号</button>' : ""}
@@ -2094,7 +2215,7 @@ async function renderStaff(root) {
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>账号</th><th>角色</th><th>目录权限</th><th>软件功能</th><th>所属渠道</th><th>状态</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>账号</th><th>角色</th><th>目录权限</th><th>软件功能</th><th>所属代理</th><th>状态</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 rows.length
@@ -2168,10 +2289,10 @@ async function staffForm(staff, opt) {
         <label class="field"><span>名称</span><input name="name" value="${esc(staff?.name ?? "")}" /></label>
         <label class="field"><span>角色</span>
           <select name="role" ${isNew ? "" : "disabled"}>
-            <option value="staff" ${role === "staff" ? "selected" : ""}>员工（按权限访问）</option>
-            <option value="agent" ${role === "agent" ? "selected" : ""}>代理（绑定渠道，只管自己的卡密）</option>
+            <option value="staff" selected>员工（按目录权限 + 软件功能授权访问）</option>
           </select></label>
-        <label class="field" data-channel-wrap><span>所属渠道（代理必填，余额随卡密扣减）</span>
+        <div class="field full"><span></span><div class="muted small">代理商账号请到「代理」页创建与配置（余额、可售范围、单独定价）。</div></div>
+        <label class="field" data-channel-wrap><span>所属代理（代理必填，余额随卡密扣减）</span>
           <select name="channel_id"></select></label>
         <div class="field full" data-agent-wrap style="margin-top:6px">
           <span>可售产品（不勾 = 全部产品）</span>
@@ -2290,7 +2411,7 @@ async function renderParams(root) {
     </div>
 
     <div class="card">
-      <div class="card-head"><h3>卡密价格（代理进货价）</h3>
+      <div class="card-head"><h3>全局默认卡密价格</h3>
         <span class="muted small">模块留空 = 该产品默认价；单价单位：元 / 单位</span></div>
       <div class="card-body">
         <div class="form-grid">

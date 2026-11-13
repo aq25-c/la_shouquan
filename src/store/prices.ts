@@ -7,6 +7,8 @@ import { newId, nowIso } from "../util.ts";
 
 export type PriceRow = {
   id: string;
+  /** '' = 全局默认价；非空 = 该代理的覆盖价 */
+  channel_id: string;
   product_id: string;
   /** '' 表示该产品的默认价（对所有模块生效）；否则只对该模块生效 */
   module_id: string;
@@ -23,9 +25,13 @@ export type PriceListItem = PriceRow & {
   module_name: string | null;
 };
 
-export function listPrices(productId?: string | null): PriceListItem[] {
-  const where = productId ? "WHERE p.product_id = ?" : "";
-  const params = productId ? [productId] : [];
+export function listPrices(productId?: string | null, channelId?: string | null): PriceListItem[] {
+  const where: string[] = ["p.channel_id = ?"];
+  const params: string[] = [channelId ?? ""];
+  if (productId) {
+    where.push("p.product_id = ?");
+    params.push(productId);
+  }
   return db()
     .prepare(
       `SELECT p.*, pr.code AS product_code, pr.name AS product_name,
@@ -33,7 +39,7 @@ export function listPrices(productId?: string | null): PriceListItem[] {
        FROM agent_prices p
        JOIN products pr ON pr.id = p.product_id
        LEFT JOIN modules m ON m.id = p.module_id
-       ${where}
+       WHERE ${where.join(" AND ")}
        ORDER BY pr.created_at, p.term_type, p.module_id`,
     )
     .all(...params) as unknown as PriceListItem[];
@@ -46,16 +52,20 @@ export function findPrice(id: string): PriceRow | null {
 
 /** 设价（同产品/模块/卡类型幂等覆盖） */
 export function upsertPrice(input: {
+  channelId?: string | null;
   productId: string;
   moduleId: string | null;
   termType: string;
   unitPrice: number;
 }): PriceRow {
+  const channelId = input.channelId ?? "";
   const moduleId = input.moduleId ?? "";
   const at = nowIso();
   const existing = db()
-    .prepare("SELECT * FROM agent_prices WHERE product_id = ? AND module_id = ? AND term_type = ?")
-    .get(input.productId, moduleId, input.termType) as unknown as PriceRow | undefined;
+    .prepare(
+      "SELECT * FROM agent_prices WHERE channel_id = ? AND product_id = ? AND module_id = ? AND term_type = ?",
+    )
+    .get(channelId, input.productId, moduleId, input.termType) as unknown as PriceRow | undefined;
 
   if (existing) {
     db()
@@ -67,10 +77,10 @@ export function upsertPrice(input: {
   const id = newId("prc");
   db()
     .prepare(
-      `INSERT INTO agent_prices (id, product_id, module_id, term_type, unit_price, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agent_prices (id, channel_id, product_id, module_id, term_type, unit_price, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, input.productId, moduleId, input.termType, Math.max(0, Math.trunc(input.unitPrice)), at, at);
+    .run(id, channelId, input.productId, moduleId, input.termType, Math.max(0, Math.trunc(input.unitPrice)), at, at);
   return findPrice(id) as PriceRow;
 }
 
@@ -80,21 +90,32 @@ export function deletePrice(id: string): boolean {
 }
 
 /**
- * 解析单价（分/单位）：
- *   1) 优先取「该授权包含的模块」的覆盖价（取第一个命中的模块）
- *   2) 否则取该产品的默认价
- *   3) 都没配 → 返回 null（调用方应拒绝生成，避免免费出卡）
+ * 解析单价（分/单位），三层优先级：
+ *   1) 该代理的覆盖价（channel_id = 代理渠道）：模块价 → 产品默认价
+ *   2) 全局默认价（channel_id = ''）：模块价 → 产品默认价
+ *   3) 都没配 → null（调用方应拒绝生成，避免免费出卡）
  */
-export function resolveUnitPrice(productId: string, moduleIds: string[], termType: string): number | null {
+export function resolveUnitPrice(
+  productId: string,
+  moduleIds: string[],
+  termType: string,
+  channelId?: string | null,
+): number | null {
   const stmt = db().prepare(
-    "SELECT unit_price FROM agent_prices WHERE product_id = ? AND module_id = ? AND term_type = ?",
+    "SELECT unit_price FROM agent_prices WHERE channel_id = ? AND product_id = ? AND module_id = ? AND term_type = ?",
   );
-  for (const moduleId of moduleIds) {
-    const hit = stmt.get(productId, moduleId, termType) as { unit_price: number } | undefined;
-    if (hit) return Number(hit.unit_price);
-  }
-  const fallback = stmt.get(productId, "", termType) as { unit_price: number } | undefined;
-  return fallback ? Number(fallback.unit_price) : null;
+  const lookup = (owner: string): number | null => {
+    for (const moduleId of moduleIds) {
+      const hit = stmt.get(owner, productId, moduleId, termType) as { unit_price: number } | undefined;
+      if (hit) return Number(hit.unit_price);
+    }
+    const fallback = stmt.get(owner, productId, "", termType) as { unit_price: number } | undefined;
+    return fallback ? Number(fallback.unit_price) : null;
+  };
+
+  const own = channelId ? lookup(channelId) : null;
+  if (own !== null) return own;
+  return lookup("");
 }
 
 /** 总价（分）= 单价 × 数量（天/月/年/时/次）× 张数 */

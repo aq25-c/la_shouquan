@@ -37,6 +37,8 @@ export type ProductRow = {
   status: string;
   created_at: string;
   updated_at: string;
+  /** v6：该产品的试用配置 JSON（空串 = 沿用全局默认） */
+  trial_config: string;
 };
 
 export type ModuleRow = {

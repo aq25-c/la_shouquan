@@ -1343,3 +1343,78 @@ test("代理按价格扣费：可售范围、价格缺失、余额不足、批�
   assert.equal(cidAfter.json.data.channel.balance, 9000, "4000 + 5000");
 });
 
+
+/* ==================== 价格三层 + 页面拆分 ==================== */
+
+test("价格三层：代理覆盖优先、未配则回落全局；员工列表不含代理；产品试用配置", async () => {
+  await api("POST", "/admin/api/prices", { product_id: productId, term_type: "day", unit_price: 100 }, adminToken);
+
+  const ch = await api("POST", "/admin/api/channels", { code: "tier-test", name: "分层定价代理" }, adminToken);
+  const cid = ch.json.data.channel.id;
+
+  await api(
+    "POST",
+    "/admin/api/staff",
+    {
+      email: "tier-agent@test.local",
+      password: "TierAgent123",
+      role: "agent",
+      channel_id: cid,
+      term_types: ["day"],
+    },
+    adminToken,
+  );
+  const agentToken = (
+    await api("POST", "/admin/api/auth/login", { email: "tier-agent@test.local", password: "TierAgent123" })
+  ).json.data.token;
+
+  // 代理没配覆盖价 → 回落全局 100
+  const estGlobal = await api(
+    "POST",
+    "/admin/api/cdks/estimate",
+    { product_id: productId, module_ids: [], term_type: "day", term_value: 10, count: 1 },
+    agentToken,
+  );
+  assert.equal(estGlobal.json.data.unit_price, 100, "应回落全局价");
+  assert.equal(estGlobal.json.data.total_price, 1000);
+
+  // 配代理覆盖价 60 → 估价优先取覆盖价
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { channel_id: cid, product_id: productId, term_type: "day", unit_price: 60 },
+    adminToken,
+  );
+  const estOwn = await api(
+    "POST",
+    "/admin/api/cdks/estimate",
+    { product_id: productId, module_ids: [], term_type: "day", term_value: 10, count: 1 },
+    agentToken,
+  );
+  assert.equal(estOwn.json.data.unit_price, 60, "应优先用代理覆盖价");
+  assert.equal(estOwn.json.data.total_price, 600);
+
+  // 员工列表只含员工，代理列表只含代理
+  const staffList = await api("GET", "/admin/api/staff?role=staff", undefined, adminToken);
+  assert.ok(
+    staffList.json.data.items.every((a: Json) => a.role === "staff"),
+    "员工列表不应出现代理",
+  );
+  const agentList = await api("GET", "/admin/api/staff?role=agent", undefined, adminToken);
+  assert.ok(
+    agentList.json.data.items.some((a: Json) => a.email === "tier-agent@test.local"),
+    "代理列表应包含该代理",
+  );
+
+  // 产品级试用配置
+  const trialGet = await api("GET", `/admin/api/products/${productId}/trial`, undefined, adminToken);
+  assert.ok(trialGet.json.data.global, "应同时返回全局默认值");
+  const trialSet = await api(
+    "PATCH",
+    `/admin/api/products/${productId}/trial`,
+    { enabled: true, mode: "count", value: 5 },
+    adminToken,
+  );
+  assert.equal(trialSet.json.data.config.mode, "count");
+  assert.equal(trialSet.json.data.config.value, 5);
+});

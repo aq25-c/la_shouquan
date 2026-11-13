@@ -262,6 +262,34 @@ CREATE TABLE IF NOT EXISTS agent_prices (
 CREATE INDEX IF NOT EXISTS idx_prices_product ON agent_prices(product_id, term_type);
 `;
 
+/**
+ * v6：价格三层 + 试用按产品
+ *   - agent_prices 增加 channel_id（'' = 全局默认价，非空 = 该代理的覆盖价）
+ *     SQLite 不能改 UNIQUE 约束，因此重建表并保留原数据（原数据视为全局默认价）
+ *   - products.trial_config：每个产品一份试用配置 JSON（空串 = 沿用全局默认）
+ */
+const SCHEMA_V6 = `
+CREATE TABLE agent_prices_v6 (
+  id         TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL DEFAULT '',
+  product_id TEXT NOT NULL,
+  module_id  TEXT NOT NULL DEFAULT '',
+  term_type  TEXT NOT NULL,
+  unit_price INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (channel_id, product_id, module_id, term_type)
+);
+INSERT INTO agent_prices_v6 (id, channel_id, product_id, module_id, term_type, unit_price, created_at, updated_at)
+  SELECT id, '', product_id, module_id, term_type, unit_price, created_at, updated_at FROM agent_prices;
+DROP TABLE agent_prices;
+ALTER TABLE agent_prices_v6 RENAME TO agent_prices;
+CREATE INDEX IF NOT EXISTS idx_prices_product ON agent_prices(product_id, term_type);
+CREATE INDEX IF NOT EXISTS idx_prices_channel ON agent_prices(channel_id, product_id);
+
+ALTER TABLE products ADD COLUMN trial_config TEXT NOT NULL DEFAULT '';
+`;
+
 export function openDb(path: string): DatabaseSync {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
@@ -297,6 +325,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 3) runMigration(db, SCHEMA_V3, 3);
   if (version < 4) runMigration(db, SCHEMA_V4, 4);
   if (version < 5) runMigration(db, SCHEMA_V5, 5);
+  if (version < 6) runMigration(db, SCHEMA_V6, 6);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */
