@@ -51,6 +51,13 @@ import { audit, listAudit, listAuditByTarget } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
 import { checkCustomerPurgeable, customerPurgeSnapshot, purgeCustomer } from "../store/purge.ts";
 import {
+  DEFAULT_ADMIN_PATH,
+  getAdminPath,
+  isDefaultAdminPath,
+  isUsableAdminPath,
+  setAdminPath,
+} from "../store/entry.ts";
+import {
   checkAgentScope,
   deletePrice,
   findPrice,
@@ -2069,6 +2076,39 @@ export function registerAdminRoutes(): void {
   get(`${P}/settings/trial`, (ctx) => {
     requireAdmin(ctx);
     return ok({ config: getTrialConfig(), summary: trialSummary() });
+  });
+
+  /** 管理后台入口地址：根路径留给客户门户，后台走可配置的隐藏入口 */
+  get(`${P}/entry`, (ctx) => {
+    requireAdmin(ctx);
+    return ok({
+      path: getAdminPath(),
+      default_path: DEFAULT_ADMIN_PATH,
+      is_default: isDefaultAdminPath(),
+      root_is_portal: true,
+    });
+  });
+
+  patch(`${P}/entry`, (ctx) => {
+    const staffCtx = requireOwner(ctx);
+    const admin = staffCtx.admin;
+    const next = String(ctx.body.path ?? "").trim();
+    const check = isUsableAdminPath(next);
+    if (!check.ok) throw badRequest(check.reason, "INVALID_ENTRY_PATH");
+
+    const previous = getAdminPath();
+    const path = setAdminPath(next);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "settings.entry_update",
+      targetType: "settings",
+      targetId: "entry.admin_path",
+      ip: ctx.ip,
+      detail: { from: previous, to: path },
+    });
+    return ok({ path, previous, login_url: `/${path}`, restart_required: false });
   });
 
   patch(`${P}/settings/trial`, (ctx) => {

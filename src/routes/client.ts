@@ -331,6 +331,70 @@ export function registerClientRoutes(): void {
     });
   });
 
+  /**
+   * 客户门户的授权总览：一次拿全账号 + 每条授权的模块明细与设备，
+   * 避免门户为了拼一张卡片发四五个请求。
+   */
+  get("/api/v1/me/overview", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const rows = listLicensesByCustomer(customer.id);
+    const nowMs = Date.now();
+
+    const licenses = rows.map((row) => {
+      const modules = listLicenseModules(row.id).map((lm) => {
+        const mod = findModuleById(lm.module_id);
+        const exp = lm.expires_at ?? row.expires_at ?? null;
+        const ms = exp ? Date.parse(exp) : null;
+        const withinTerm = !ms || ms > nowMs;
+        return {
+          code: mod?.code ?? lm.module_id,
+          name: mod?.name ?? lm.module_id,
+          description: mod?.description ?? null,
+          expires_at: exp,
+          days_left: ms ? Math.max(0, Math.ceil((ms - nowMs) / 86_400_000)) : 0,
+          active: row.status === "active" && withinTerm,
+          // 次数型模块顺带给出额度，前端不用再查
+          max_usages: lm.max_usages ?? null,
+          used_usages: lm.used_usages ?? 0,
+        };
+      });
+      return {
+        id: row.id,
+        license_no: row.license_no,
+        kind: row.kind,
+        source: row.source,
+        status: effectiveStatus(row),
+        starts_at: row.starts_at,
+        expires_at: row.expires_at,
+        days_left: daysLeft(row.expires_at),
+        seats: row.seats,
+        active_devices: activeDeviceCount(row.id),
+        product: { code: row.product_code, name: row.product_name },
+        modules,
+        devices: listDevices(row.id)
+          .filter((d) => d.status === "active")
+          .map((d) => ({
+            device_id: d.device_id,
+            device_name: d.device_name,
+            platform: d.platform,
+            last_seen_at: d.last_seen_at,
+          })),
+      };
+    });
+
+    const activeLicenses = licenses.filter((l) => l.status === "active");
+    return ok({
+      customer: customerView(customer),
+      licenses,
+      summary: {
+        licenses: licenses.length,
+        active: activeLicenses.length,
+        expiring_7d: activeLicenses.filter((l) => l.days_left !== null && l.days_left <= 7).length,
+        active_modules: licenses.reduce((n, l) => n + l.modules.filter((m) => m.active).length, 0),
+      },
+    });
+  });
+
   /* ---------------------------- 试用 ---------------------------- */
 
   /** 试用配置（公开）：按模块下发，客户端可据此让用户挑模块试用 */
@@ -540,9 +604,14 @@ export function registerClientRoutes(): void {
 
   post("/api/v1/licenses/activate", async (ctx) => {
     const cdkInput = needStr(ctx, "cdk", 64);
-    const deviceId = needStr(ctx, "device_id", 190);
+    // bind_device=false：网页端激活只把卡绑到账号，不占席位（设备留给客户端之后绑）
+    const bindDevice = ctx.body.bind_device !== false;
+    const deviceId = bodyStr(ctx, "device_id", { max: 190 }) ?? (bindDevice ? null : "web");
+    if (bindDevice && !deviceId) throw badRequest("缺少 device_id（或传 bind_device=false）", "MISSING_FIELD");
     const deviceName = bodyStr(ctx, "device_name", { max: 190 });
-    const platform = bodyStr(ctx, "platform", { max: 64 });
+    const platform = bodyStr(ctx, "platform", { max: 64 }) ?? (bindDevice ? null : "web");
+    /** 签发许可证 / 审计用的设备标识；网页激活时是个占位值，不落设备表 */
+    const deviceRef = deviceId ?? "web";
 
     const cdk = findCdkByCode(cdkInput);
     if (!cdk) throw notFound("CDK 不存在，请检查输入是否正确", "CDK_NOT_FOUND");
@@ -688,20 +757,22 @@ export function registerClientRoutes(): void {
       if (!markCdkUsed(cdk.id, customerId, license.id)) {
         throw conflict("该 CDK 刚刚已被使用，请更换", "CDK_ALREADY_USED");
       }
-      const device = upsertDevice({
-        licenseId: license.id,
-        deviceId,
-        deviceName,
-        platform,
-        ip: ctx.ip,
-      });
-      return { customerId, license, deviceId: device.device_id, merged };
+      const device = bindDevice
+        ? upsertDevice({
+            licenseId: license.id,
+            deviceId: deviceRef,
+            deviceName,
+            platform,
+            ip: ctx.ip,
+          })
+        : null;
+      return { customerId, license, deviceId: device?.device_id ?? null, merged };
     });
 
     const issued = buildLicenseFile({
       license: outcome.license,
       productCode: product.code,
-      deviceId,
+      deviceId: deviceRef,
       keys: signingKeys(),
     });
 
@@ -712,7 +783,7 @@ export function registerClientRoutes(): void {
       targetType: "license",
       targetId: outcome.license.id,
       ip: ctx.ip,
-      detail: { cdk: cdk.code, product: product.code, device_id: deviceId },
+      detail: { cdk: cdk.code, product: product.code, device_id: bindDevice ? deviceRef : null, web: !bindDevice },
     });
 
     return created({
@@ -729,6 +800,8 @@ export function registerClientRoutes(): void {
       server_time: new Date().toISOString(),
       /** true 表示本次是同类型卡的叠加续费（沿用原授权与设备，密钥已重新签发） */
       merged: outcome.merged,
+      /** false = 网页端激活，只绑账号不占席位，设备留给客户端首次启动时绑 */
+      device_bound: bindDevice,
       ...(plan.kind === "new" && plan.email
         ? { session: sessionPayload(ctx, outcome.customerId) }
         : {}),

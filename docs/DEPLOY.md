@@ -109,7 +109,8 @@ docker compose logs -f --tail=50
 ```
  license-server v1.0.0 已启动
  监听:        http://0.0.0.0:6889
- 管理后台:    http://localhost:6889/
+ 客户门户:    http://localhost:6889/
+ 管理后台:    http://localhost:6889/upadmin
  数据库:      /data/license.db
  签名密钥:    kid=k1 (Ed25519)
  离线宽限:    7 天 / 心跳周期 24 小时

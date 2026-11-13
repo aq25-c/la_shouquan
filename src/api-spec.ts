@@ -52,15 +52,21 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     auth: "customer",
     desc: "返回客户信息、名下全部授权（含在用设备与 `days_left`、`usages.remaining`），以及优先展示用的 `active_license`。",
   },
+  "GET /api/v1/me/overview": {
+    title: "授权总览（客户门户用）",
+    auth: "customer",
+    desc: "一次返回账号 + 名下每条授权 + 每条授权的模块明细（名称、到期、剩余天数、次数额度）+ 在用设备，门户不用再拼多个请求。",
+    returns: "`customer`、`licenses[]`（含 `modules[]` / `devices[]` / `seats` / `active_devices`）、`summary`（授权数 / 有效数 / 7 天内到期 / 可用模块数）",
+  },
 
   /* ---------------- 客户端 · 授权 ---------------- */
   "POST /api/v1/cdks/inspect": { title: "CDK 预检", auth: "public", params: "`cdk`", desc: "查询卡密是否可用、天数、席位、模块，**不核销**。" },
   "POST /api/v1/licenses/activate": {
     title: "用 CDK 激活",
     auth: "public",
-    params: "`cdk`✅、`device_id`✅、`device_name?`、`platform?`、`email?`、`password?`、`name?`",
+    params: "`cdk`✅、`device_id`（`bind_device=false` 时不需要）、`device_name?`、`platform?`、`email?`、`password?`、`name?`、`bind_device?`",
     desc: "核销 CDK 并签发授权：返回 `license_key`（只返回一次）、`license_file`（离线验签用）、到期时间与模块。",
-    notes: "带 `email`/`password` 会自动注册或绑定账号；都不带则为匿名激活。并发下 CDK 只可能被核销一次。**席位是软件级的**：并进已有授权时取 `max(原席位, 新卡席位)`；授权全部过期后重新激活会新建授权，席位按新卡从默认 1 起算。",
+    notes: "带 `email`/`password` 会自动注册或绑定账号；都不带则为匿名激活。并发下 CDK 只可能被核销一次。**网页端激活传 `bind_device=false`**：只把卡绑到账号、不占席位（设备留给客户端首次启动时绑），返回 `device_bound=false`。**席位是软件级的**：并进已有授权时取 `max(原席位, 新卡席位)`；授权全部过期后重新激活会新建授权，席位按新卡从默认 1 起算。",
   },
   "POST /api/v1/licenses/heartbeat": {
     title: "心跳续期",
@@ -106,6 +112,8 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/auth/login": { title: "管理员登录", auth: "public", params: "`email`、`password`", desc: "返回 `token`（后续管理接口放在 Authorization: Bearer 里）。限流 10 次/分钟。" },
   "POST /admin/api/auth/logout": { title: "管理员登出", auth: "admin", desc: "使当前会话失效。" },
   "GET /admin/api/auth/me": { title: "当前管理员", auth: "admin", desc: "管理员信息 + 签名公钥 + 策略参数。" },
+  "GET /admin/api/entry": { title: "读取后台入口", auth: "admin", returns: "`path`、`default_path`、`is_default`、`root_is_portal`", desc: "根路径 `/` 是客户门户，管理后台走这里返回的入口（默认 `upadmin`）。" },
+  "PATCH /admin/api/entry": { title: "修改后台入口", auth: "admin", params: "`path`✅", desc: "仅超级管理员。小写字母 / 数字 / 中划线，2-32 位，且不能是保留字；改完立即生效，旧地址马上失效。400 INVALID_ENTRY_PATH。" },
   "POST /admin/api/auth/password": { title: "修改密码", auth: "admin", params: "`current_password`、`new_password`", desc: "改完所有会话失效，需重新登录。" },
   "GET /admin/api/admins": { title: "管理员列表", auth: "admin", desc: "全部管理员账号（旧接口，等同 /staff）。" },
   "POST /admin/api/admins": { title: "新增管理员", auth: "admin", params: "`email`、`password`(≥10位)、`name?`", desc: "创建管理端账号（旧接口，建议改用 /staff 以便配置权限）。" },

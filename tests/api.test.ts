@@ -2298,26 +2298,88 @@ test("接口兼容：旧的 channel_id 作为 agent_id 仍可正常使用", asyn
 
 /* ==================== 删除客户（v13） ==================== */
 
-test("静态资源：管理后台在根路径和 /admin/ 下都能打开", async () => {
-  for (const p of ["/", "/admin/", "/admin"]) {
+test("入口：根路径是客户门户，后台在可配置入口下", async () => {
+  // 根路径 = 客户门户
+  const portal = await fetch(base + "/");
+  assert.equal(portal.status, 200);
+  assert.match(portal.headers.get("content-type") ?? "", /text\/html/);
+  const portalHtml = await portal.text();
+  assert.match(portalHtml, /授权中心/, "根路径应是客户门户");
+
+  // 后台入口（默认 upadmin）
+  for (const p of ["/upadmin", "/upadmin/"]) {
     const res = await fetch(base + p);
     assert.equal(res.status, 200, `${p} 应返回 200`);
-    assert.match(res.headers.get("content-type") ?? "", /text\/html/, `${p} 应是 HTML`);
-    assert.match(await res.text(), /login-form/, `${p} 应返回后台页面`);
+    assert.match(await res.text(), /login-form/, `${p} 应是管理后台`);
   }
-  for (const p of ["/admin/app.js", "/admin/styles.css"]) {
+
+  // 后台静态资源
+  for (const [p, type] of [
+    ["/upadmin/app.js", "javascript"],
+    ["/upadmin/styles.css", "css"],
+  ]) {
     const res = await fetch(base + p);
     assert.equal(res.status, 200, `${p} 应能取到`);
-    const ct = res.headers.get("content-type") ?? "";
-    assert.ok(
-      p.endsWith(".js") ? ct.includes("javascript") : ct.includes("css"),
-      `${p} 的 MIME 必须是 ${p.endsWith(".js") ? "javascript" : "css"}，实际是 ${ct}`,
-    );
+    assert.ok((res.headers.get("content-type") ?? "").includes(type), `${p} 的 MIME 不对`);
   }
-  // /admin/api 不能被静态层兜底成 index.html
+
+  // 门户资源
+  for (const [p, type] of [
+    ["/portal.js", "javascript"],
+    ["/portal.css", "css"],
+  ]) {
+    const res = await fetch(base + p);
+    assert.equal(res.status, 200, `${p} 应能取到`);
+    assert.ok((res.headers.get("content-type") ?? "").includes(type), `${p} 的 MIME 不对`);
+  }
+
+  // 旧的 /admin 不再是后台，兜底到门户
+  const oldAdmin = await fetch(base + "/admin");
+  assert.equal(oldAdmin.status, 200);
+  assert.match(await oldAdmin.text(), /授权中心/, "旧 /admin 应回落到门户");
+
+  // /admin/api 不能被静态层兜底成页面
   const apiMiss = await fetch(base + "/admin/api/not-exist");
   assert.equal(apiMiss.status, 404);
   assert.match(apiMiss.headers.get("content-type") ?? "", /json/, "API 404 应返回 JSON");
+});
+
+test("入口地址可在后台修改，改完立即生效", async () => {
+  const before = await api("GET", "/admin/api/entry", undefined, adminToken);
+  assert.equal(before.status, 200);
+  assert.equal(before.json.data.path, "upadmin");
+  assert.equal(before.json.data.is_default, true);
+
+  // 保留字 / 非法格式一律拒绝
+  for (const bad of ["admin", "api", "docs", "A B", "x", "UPADMIN-", "中文入口"]) {
+    const res = await api("PATCH", "/admin/api/entry", { path: bad }, adminToken);
+    assert.equal(res.status, 400, `「${bad}」应被拒绝`);
+    assert.equal(res.json.error.code, "INVALID_ENTRY_PATH");
+  }
+
+  const changed = await api("PATCH", "/admin/api/entry", { path: "gate7" }, adminToken);
+  assert.equal(changed.status, 200);
+  assert.equal(changed.json.data.path, "gate7");
+  assert.equal(changed.json.data.previous, "upadmin");
+
+  // 新地址是后台，旧地址立刻回落到门户
+  const fresh = await fetch(base + "/gate7");
+  assert.equal(fresh.status, 200);
+  assert.match(await fresh.text(), /login-form/, "新入口应是后台");
+
+  const stale = await fetch(base + "/upadmin");
+  assert.equal(stale.status, 200);
+  assert.match(await stale.text(), /授权中心/, "旧入口应失效");
+
+  // 资源也跟着新入口走
+  const asset = await fetch(base + "/gate7/app.js");
+  assert.equal(asset.status, 200);
+  assert.ok((asset.headers.get("content-type") ?? "").includes("javascript"));
+
+  // 还原，避免影响其他用例
+  const restored = await api("PATCH", "/admin/api/entry", { path: "upadmin" }, adminToken);
+  assert.equal(restored.status, 200);
+  assert.equal(restored.json.data.path, "upadmin");
 });
 
 test("删除客户：有有效授权时拒绝，全部过期后硬删除并留完整快照", async () => {
@@ -2620,4 +2682,60 @@ test("过期后设备自动解绑：席位释放，心跳仍按「已过期」�
   });
   assert.equal(back.status, 200, "续费后原机器应能恢复心跳");
   assert.equal(back.json.data.license.eff_status, "active");
+});
+
+
+test("网页激活：bind_device=false 只绑账号，不占席位；门户总览能看全", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 1, count: 1 },
+    adminToken,
+  );
+  const cdk = gen.json.data.codes[0];
+
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "web-activate@test.local",
+    password: "WebPass123",
+    name: "网页激活",
+  });
+  assert.equal(reg.status, 201);
+  const token = reg.json.data.session.token;
+
+  // 登录状态下激活，且不绑设备
+  const act = await api("POST", "/api/v1/licenses/activate", { cdk, bind_device: false }, token);
+  assert.equal(act.status, 201);
+  assert.equal(act.json.data.device_bound, false, "网页激活应标记未绑设备");
+  assert.ok(act.json.data.license_key, "必须返回密钥，客户端之后要靠它绑设备");
+  const licenseId = act.json.data.license.id;
+
+  // 后台看：一条设备都没有，席位空着
+  const detail = await api("GET", `/admin/api/licenses/${licenseId}`, undefined, adminToken);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.json.data.devices.length, 0, "网页激活不应写设备记录");
+
+  // 门户总览：授权 + 模块明细齐全
+  const ov = await api("GET", "/api/v1/me/overview", undefined, token);
+  assert.equal(ov.status, 200);
+  assert.equal(ov.json.data.licenses.length, 1);
+  const lic = ov.json.data.licenses[0];
+  assert.equal(lic.product.code, "app-pro");
+  assert.equal(lic.seats, 1);
+  assert.equal(lic.active_devices, 0);
+  assert.ok(lic.modules.length >= 1, "应有模块明细");
+  assert.equal(typeof lic.modules[0].active, "boolean");
+  assert.ok("days_left" in lic.modules[0]);
+  assert.equal(ov.json.data.summary.licenses, 1);
+  assert.ok(ov.json.data.summary.active_modules >= 1);
+
+  // 客户端随后用密钥占第 1 个席位
+  const enroll = await api("POST", "/api/v1/licenses/enroll", {
+    license_key: act.json.data.license_key,
+    device_id: "WEB-PC-1",
+  });
+  assert.equal(enroll.status, 200);
+
+  const ov2 = await api("GET", "/api/v1/me/overview", undefined, token);
+  assert.equal(ov2.json.data.licenses[0].active_devices, 1);
+  assert.equal(ov2.json.data.licenses[0].devices[0].device_id, "WEB-PC-1");
 });

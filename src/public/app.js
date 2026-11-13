@@ -3158,6 +3158,24 @@ async function renderSettings(root) {
     </div>
 
     <div class="card">
+      <div class="card-head"><h3>系统入口</h3>
+        <span class="muted small" id="entry-hint"></span></div>
+      <div class="card-body">
+        <div class="note">根路径 <code>/</code> 是客户门户（注册 / 登录 / 查授权 / 激活）。管理后台走下面这个入口。
+          改完立即生效，旧地址马上失效——记得先存下来。</div>
+        <div class="form-grid" style="margin-top:12px">
+          <label class="field"><span>管理员入口地址</span>
+            <input id="entry-input" type="text" placeholder="upadmin" value="" />
+          </label>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" id="entry-save" type="button">保存入口</button>
+          <span class="muted small" id="entry-current"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-head"><h3>策略参数</h3><span class="muted small">修改需改环境变量并重启服务</span></div>
       <div class="card-body">
         <div class="kv">
@@ -3205,6 +3223,41 @@ async function renderSettings(root) {
     </div>`;
 
   $("[data-copy-key]", root).onclick = () => copyText(key.public_key_pem);
+
+  // 系统入口：根路径是客户门户，后台入口可改，改完立即生效
+  (async () => {
+    try {
+      const entry = await apiGet("/admin/api/entry");
+      $("#entry-input", root).value = entry.path;
+      $("#entry-current", root).innerHTML = `当前生效：<code>/${esc(entry.path)}</code>${
+        entry.is_default ? "（默认值，建议改掉）" : ""
+      }`;
+      $("#entry-hint", root).textContent = entry.is_default ? "仍在使用默认入口" : "已是自定义入口";
+      $("#entry-save", root).onclick = async () => {
+        const next = $("#entry-input", root).value.trim().toLowerCase();
+        if (!next) {
+          toast("先填入口地址", "error");
+          return;
+        }
+        const ok = await confirmDialog(
+          `入口改成 /${next} 之后，现在这个地址会立即失效。确认修改？`,
+          { okText: "确认修改" },
+        );
+        if (!ok) return;
+        try {
+          const r = await apiPatch("/admin/api/entry", { path: next });
+          toast(`已改为 /${r.path}`, "ok");
+          const go = await confirmDialog(`新入口是 /${r.path}，现在就跳过去吗？`, { okText: "前往" });
+          if (go) location.href = `/${r.path}`;
+          else navigate("settings", true);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+    } catch (err) {
+      $("#entry-current", root).textContent = `读取入口失败：${err.message}`;
+    }
+  })();
 
 
   $("[data-add-admin]", root).onclick = () => {
