@@ -1200,7 +1200,10 @@ test("代理额度：余额不足无法生成，充值后按量扣减", async ()
   assert.equal(detail.json.data.channel.credit, 5, "生成 5 张后余额应从 10 扣到 5");
 });
 
-test("代理登录后生成卡密受自己渠道余额限制", async () => {  // 用已充值的渠道建代理（此时余额 5）
+test("代理登录后生成卡密受自己渠道余额限制", async () => {
+  // v5：代理按金额扣费，先配价并充值余额
+  await api("POST", "/admin/api/prices", { product_id: productId, term_type: "day", unit_price: 50 }, adminToken);
+  await api("POST", `/admin/api/channels/${channelId}/balance`, { amount: 500000 }, adminToken);  // 用已充值的渠道建代理（此时余额 5）
   const created = await api(
     "POST",
     "/admin/api/staff",
@@ -1260,5 +1263,97 @@ test("试用按次数模式配置生效，已购客户不能再试用", async ()
 
   // 恢复按天模式，避免影响其他用例
   await api("PATCH", "/admin/api/settings/trial", { mode: "day", value: 14 }, adminToken);
+});
+
+/* ==================== 代理按价格扣费 ==================== */
+
+test("代理按价格扣费：可售范围、价格缺失、余额不足、批量充值", async () => {
+  // 价格：产品默认 day=100 分/天，模块 core 覆盖 200 分/天，month=5000 分/月
+  await api("POST", "/admin/api/prices", { product_id: productId, term_type: "day", unit_price: 100 }, adminToken);
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { product_id: productId, module_id: moduleIds[0], term_type: "day", unit_price: 200 },
+    adminToken,
+  );
+  await api("POST", "/admin/api/prices", { product_id: productId, term_type: "month", unit_price: 5000 }, adminToken);
+
+  const prices = await api("GET", `/admin/api/prices?product_id=${productId}`, undefined, adminToken);
+  assert.ok(prices.json.data.items.length >= 3);
+
+  const ch = await api("POST", "/admin/api/channels", { code: "agent-pay", name: "按价代理" }, adminToken);
+  const cid = ch.json.data.channel.id;
+
+  const agent = await api(
+    "POST",
+    "/admin/api/staff",
+    {
+      email: "agent-pay@test.local",
+      password: "AgentPay123",
+      role: "agent",
+      channel_id: cid,
+      term_types: ["day", "month"],
+    },
+    adminToken,
+  );
+  assert.equal(agent.status, 201);
+  const agentId = agent.json.data.staff.id;
+  const agentToken = (
+    await api("POST", "/admin/api/auth/login", { email: "agent-pay@test.local", password: "AgentPay123" })
+  ).json.data.token;
+
+  // 余额 0：模块覆盖价 200 × 30 天 = 6000 分 → 余额不足
+  const noBal = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 1 },
+    agentToken,
+  );
+  assert.equal(noBal.status, 409);
+  assert.equal(noBal.json.error.code, "BALANCE_INSUFFICIENT");
+  assert.equal(noBal.json.error.details.needed, 6000, "应使用模块覆盖价 200×30");
+
+  // 充值 100 元
+  const topup = await api("POST", `/admin/api/channels/${cid}/balance`, { amount: 10000 }, adminToken);
+  assert.equal(topup.json.data.channel.balance, 10000);
+
+  // 生成成功并扣费
+  const ok = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 1 },
+    agentToken,
+  );
+  assert.equal(ok.status, 201);
+  const after = await api("GET", `/admin/api/channels/${cid}`, undefined, adminToken);
+  assert.equal(after.json.data.channel.balance, 4000, "10000 - 6000 = 4000");
+
+  // 卡类型不在可售范围
+  const badTerm = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "hour", term_value: 2, count: 1 },
+    agentToken,
+  );
+  assert.equal(badTerm.status, 403);
+  assert.equal(badTerm.json.error.code, "AGENT_TERM_DENIED");
+
+  // 放开 count 类型但未配价 → PRICE_NOT_CONFIGURED
+  await api("PATCH", `/admin/api/staff/${agentId}`, { term_types: ["day", "month", "count"] }, adminToken);
+  const noPrice = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "count", term_value: 5, count: 1 },
+    agentToken,
+  );
+  assert.equal(noPrice.status, 409);
+  assert.equal(noPrice.json.error.code, "PRICE_NOT_CONFIGURED");
+
+  // 一键批量充值
+  const batch = await api("POST", "/admin/api/channels/batch-balance", { amount: 5000 }, adminToken);
+  assert.equal(batch.status, 200);
+  assert.ok(batch.json.data.updated >= 2, "应对全部渠道生效");
+  const cidAfter = await api("GET", `/admin/api/channels/${cid}`, undefined, adminToken);
+  assert.equal(cidAfter.json.data.channel.balance, 9000, "4000 + 5000");
 });
 

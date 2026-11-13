@@ -50,6 +50,18 @@ import { withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
 import {
+  checkAgentScope,
+  deletePrice,
+  findPrice,
+  listPrices,
+  parseAgentProfile,
+  resolveUnitPrice,
+  serializeAgentProfile,
+  totalPrice,
+  upsertPrice,
+} from "../store/prices.ts";
+import { normalizeTerm } from "../permissions.ts";
+import {
   channelReferences,
   channelSummary,
   consumeCredit,
@@ -58,6 +70,8 @@ import {
   findChannelByCode,
   findChannelById,
   listChannels,
+  consumeBalance,
+  rechargeBalance,
   rechargeChannel,
   updateChannel,
 } from "../store/channels.ts";
@@ -144,6 +158,8 @@ function adminView(admin: AdminRow) {
     permissions: perms,
     channel_id: admin.channel_id ?? null,
     channel_name: admin.channel_id ? (findChannelById(admin.channel_id)?.name ?? null) : null,
+    /** 代理可售范围（非代理为 null） */
+    agent_profile: role === "agent" ? parseAgentProfile(admin.agent_profile) : null,
   };
 }
 
@@ -313,12 +329,19 @@ export function registerAdminRoutes(): void {
     if (findAdminByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
 
     let channelId: string | null = null;
+    let agentProfile = "{}";
     if (roleInput === "agent") {
       const channelInput = bodyStr(ctx, "channel_id", 64);
       if (!channelInput) throw badRequest("代理必须绑定一个渠道", "MISSING_FIELD", { field: "channel_id" });
       const channel = findChannelById(channelInput);
       if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
       channelId = channel.id;
+      // 可售范围：产品 / 模块 / 卡类型（空数组表示不限制）
+      agentProfile = serializeAgentProfile({
+        product_ids: bodyStrArray(ctx, "product_ids") ?? [],
+        module_ids: bodyStrArray(ctx, "module_ids") ?? [],
+        term_types: bodyStrArray(ctx, "term_types") ?? [],
+      });
     }
 
     // 代理权限固定（只看自己的卡密），员工按勾选配置
@@ -337,6 +360,7 @@ export function registerAdminRoutes(): void {
       role: roleInput,
       permissions,
       channelId,
+      agentProfile,
     });
 
     audit({
@@ -385,6 +409,17 @@ export function registerAdminRoutes(): void {
         const channel = findChannelById(channelInput);
         if (!channel) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
         patchData.channel_id = channel.id;
+      }
+      const productIds = bodyStrArray(ctx, "product_ids");
+      const moduleIds = bodyStrArray(ctx, "module_ids");
+      const termTypes = bodyStrArray(ctx, "term_types");
+      if (productIds || moduleIds || termTypes) {
+        const current = parseAgentProfile(target.agent_profile);
+        patchData.agent_profile = serializeAgentProfile({
+          product_ids: productIds ?? current.product_ids,
+          module_ids: moduleIds ?? current.module_ids,
+          term_types: termTypes ?? current.term_types,
+        });
       }
     } else if (target.role !== "owner") {
       const menus = bodyStrArray(ctx, "menus");
@@ -572,6 +607,114 @@ export function registerAdminRoutes(): void {
           }
         : null,
     });
+  });
+
+  /* ---------------------------- 卡密价格 ---------------------------- */
+
+  get(`${P}/prices`, (ctx) => {
+    requireStaff(ctx);
+    return ok({ items: listPrices(q(ctx, "product_id")) });
+  });
+
+  /** 设价：module_id 留空 = 该产品的默认价（对所有模块生效），填了则覆盖该模块 */
+  post(`${P}/prices`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const productId = needStr(ctx, "product_id", 64);
+    if (!findProductById(productId)) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
+
+    const moduleId = bodyStr(ctx, "module_id", 64);
+    if (moduleId) {
+      const mod = findModuleById(moduleId);
+      if (!mod || mod.product_id !== productId) throw badRequest("模块不属于该产品", "INVALID_MODULE");
+    }
+
+    const termType = needStr(ctx, "term_type", 10);
+    if (!["hour", "day", "month", "year", "count"].includes(termType)) {
+      throw badRequest("term_type 只能是 hour/day/month/year/count", "INVALID_FIELD");
+    }
+    const unitPrice = needInt(ctx, "unit_price", { min: 0, max: 100_000_000 });
+
+    const price = upsertPrice({ productId, moduleId: moduleId ?? null, termType, unitPrice });
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "price.upsert",
+      targetType: "price",
+      targetId: price.id,
+      ip: ctx.ip,
+      detail: { product_id: productId, module_id: moduleId, term_type: termType, unit_price: unitPrice },
+    });
+    return ok({ price });
+  });
+
+  delete(`${P}/prices/:id`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    if (!findPrice(id)) throw notFound("价格不存在", "PRICE_NOT_FOUND");
+    deletePrice(id);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "price.delete",
+      targetType: "price",
+      targetId: id,
+      ip: ctx.ip,
+    });
+    return ok({ deleted: true });
+  });
+
+  /* ---------------------------- 代理余额 ---------------------------- */
+
+  /** 单渠道充值/扣减余额（单位：分） */
+  post(`${P}/channels/:id/balance`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    if (!findChannelById(id)) throw notFound("渠道不存在", "CHANNEL_NOT_FOUND");
+    const amount = needInt(ctx, "amount", { min: -100_000_000, max: 100_000_000 });
+    if (amount === 0) throw badRequest("金额不能为 0", "INVALID_FIELD");
+
+    const updated = rechargeBalance(id, amount);
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "channel.recharge_balance",
+      targetType: "channel",
+      targetId: id,
+      ip: ctx.ip,
+      detail: { amount, balance_after: updated?.balance ?? null },
+    });
+    return ok({
+      channel: updated
+        ? { id: updated.id, code: updated.code, name: updated.name, balance: updated.balance }
+        : null,
+    });
+  });
+
+  /** 一键批量充值：不传 channel_ids 则作用于全部渠道（统一配置） */
+  post(`${P}/channels/batch-balance`, (ctx) => {
+    const admin = requireAdmin(ctx);
+    const amount = needInt(ctx, "amount", { min: 1, max: 100_000_000 });
+    const ids = bodyStrArray(ctx, "channel_ids");
+    const targets = ids && ids.length ? ids : listChannels().map((c) => c.id);
+
+    let updated = 0;
+    for (const id of targets) {
+      if (rechargeBalance(id, amount)) updated += 1;
+    }
+    audit({
+      actorType: "admin",
+      actorId: admin.id,
+      actorLabel: admin.email,
+      action: "channel.batch_recharge",
+      targetType: "channel",
+      targetId: "*",
+      ip: ctx.ip,
+      detail: { amount, updated },
+    });
+    return ok({ updated, amount });
   });
 
   /* ---------------------------- 产品与模块 ---------------------------- */
@@ -779,8 +922,36 @@ export function registerAdminRoutes(): void {
     }
 
     const result = withTx(() => {
-      // 先扣额度再出卡：余额不足时抛错，整个事务回滚，不会出现"扣了额度没出卡"
-      if (channelId) {
+      // 代理生成：校验可售范围 → 按价格扣账户余额（金额）
+      if (staffCtx.isAgent) {
+        if (!channelId) throw forbidden("代理账号未绑定渠道", "AGENT_NO_CHANNEL");
+        const profile = parseAgentProfile(staffCtx.admin.agent_profile);
+        const termInfo = normalizeTerm(termTypeInput ?? null, termValueInput ?? null, days);
+        const scope = checkAgentScope(profile, {
+          productId,
+          moduleIds,
+          termType: termInfo.termType,
+        });
+        if (!scope.ok) throw forbidden(scope.message, scope.code);
+
+        const unit = resolveUnitPrice(productId, moduleIds, termInfo.termType);
+        if (unit === null) {
+          throw conflict("该产品 / 卡类型尚未配置价格，请联系管理员", "PRICE_NOT_CONFIGURED", {
+            product_id: productId,
+            term_type: termInfo.termType,
+          });
+        }
+        const amount = totalPrice(unit, termInfo.termValue, count);
+        const paid = consumeBalance(channelId, amount);
+        if (!paid.ok) {
+          throw conflict(
+            `账户余额不足（当前 ¥${(paid.balance / 100).toFixed(2)}，本次需要 ¥${(amount / 100).toFixed(2)}）`,
+            "BALANCE_INSUFFICIENT",
+            { balance: paid.balance, needed: amount },
+          );
+        }
+      } else if (channelId) {
+        // 管理员代生成：沿用卡密张数额度（不走金额结算）
         const consumed = consumeCredit(channelId, count);
         if (!consumed.ok) {
           throw conflict(

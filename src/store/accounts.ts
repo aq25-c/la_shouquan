@@ -33,12 +33,14 @@ export function createAdmin(input: {
   role?: string;
   permissions?: string;
   channelId?: string | null;
+  agentProfile?: string;
 }): AdminRow {
   const id = newId("adm");
   db()
     .prepare(
-      `INSERT INTO admin_users (id, email, password_hash, name, role, status, created_at, permissions, channel_id)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+      `INSERT INTO admin_users
+         (id, email, password_hash, name, role, status, created_at, permissions, channel_id, agent_profile)
+       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
     )
     .run(
       id,
@@ -49,14 +51,17 @@ export function createAdmin(input: {
       nowIso(),
       input.permissions ?? "{}",
       nz(input.channelId),
+      input.agentProfile ?? "{}",
     );
   return findAdminById(id) as AdminRow;
 }
 
-/** 员工 / 代理的通用更新（含权限、所属渠道、状态） */
+/** 员工 / 代理的通用更新（含权限、所属渠道、可售范围、状态） */
 export function updateStaff(
   id: string,
-  patch: Partial<Pick<AdminRow, "email" | "name" | "role" | "status" | "permissions" | "channel_id" | "password_hash">>,
+  patch: Partial<
+    Pick<AdminRow, "email" | "name" | "role" | "status" | "permissions" | "channel_id" | "password_hash" | "agent_profile">
+  >,
 ): AdminRow | null {
   const sets: string[] = [];
   const params: (string | null)[] = [];

@@ -222,7 +222,6 @@ CREATE INDEX IF NOT EXISTS idx_licenses_kind ON licenses(kind, created_at DESC);
 const SCHEMA_V4 = `
 ALTER TABLE admin_users ADD COLUMN permissions TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE admin_users ADD COLUMN channel_id TEXT;
-
 ALTER TABLE cdk_batches ADD COLUMN term_type TEXT NOT NULL DEFAULT 'day';
 ALTER TABLE cdk_batches ADD COLUMN term_value INTEGER;
 
@@ -238,6 +237,29 @@ ALTER TABLE channels ADD COLUMN credit INTEGER NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_admin_channel ON admin_users(channel_id);
 CREATE INDEX IF NOT EXISTS idx_licenses_term ON licenses(term_type);
+`;
+
+/**
+ * v5：代理按金额结算
+ *   - channels.balance：代理账户余额（单位：分），生成卡密按价格扣费
+ *   - admin_users.agent_profile：代理可售范围 JSON { product_ids[], module_ids[], term_types[] }
+ *   - agent_prices：卡密价格表（产品级默认价 + 模块可覆盖，按卡类型定价，单位：分/单位）
+ */
+const SCHEMA_V5 = `
+ALTER TABLE channels ADD COLUMN balance INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE admin_users ADD COLUMN agent_profile TEXT NOT NULL DEFAULT '{}';
+
+CREATE TABLE IF NOT EXISTS agent_prices (
+  id         TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  module_id  TEXT NOT NULL DEFAULT '',
+  term_type  TEXT NOT NULL,
+  unit_price INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (product_id, module_id, term_type)
+);
+CREATE INDEX IF NOT EXISTS idx_prices_product ON agent_prices(product_id, term_type);
 `;
 
 export function openDb(path: string): DatabaseSync {
@@ -274,6 +296,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 2) runMigration(db, SCHEMA_V2, 2);
   if (version < 3) runMigration(db, SCHEMA_V3, 3);
   if (version < 4) runMigration(db, SCHEMA_V4, 4);
+  if (version < 5) runMigration(db, SCHEMA_V5, 5);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

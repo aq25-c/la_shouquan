@@ -13,6 +13,8 @@ export type AdminRow = {
   permissions: string;
   /** v4：代理关联的渠道（role = agent 时有值） */
   channel_id: string | null;
+  /** v5：代理可售范围 JSON { product_ids[], module_ids[], term_types[] } */
+  agent_profile: string;
 };
 
 export type SessionRow = {
@@ -94,6 +96,8 @@ export type ChannelRow = {
   updated_at: string;
   /** v4：卡密余额（单位：张），代理生成卡密时扣减 */
   credit: number;
+  /** v5：账户余额（单位：分），代理按「单价 × 时长/次数 × 张数」扣费 */
+  balance: number;
 };
 
 export type CdkRow = {

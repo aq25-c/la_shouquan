@@ -20,15 +20,23 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v4，新增列齐全", () => {
+test("数据库迁移到 v5，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 4);
+  assert.equal(version, 5);
 
   const admin = columns("admin_users");
   assert.ok(admin.includes("permissions"), "admin_users.permissions");
   assert.ok(admin.includes("channel_id"), "admin_users.channel_id");
+  assert.ok(admin.includes("agent_profile"), "admin_users.agent_profile");
 
-  assert.ok(columns("channels").includes("credit"), "channels.credit");
+  const ch = columns("channels");
+  assert.ok(ch.includes("credit"), "channels.credit");
+  assert.ok(ch.includes("balance"), "channels.balance");
+
+  const price = columns("agent_prices");
+  for (const c of ["product_id", "module_id", "term_type", "unit_price"]) {
+    assert.ok(price.includes(c), `agent_prices.${c}`);
+  }
 
   const lic = columns("licenses");
   for (const c of ["term_type", "term_value", "max_usages", "used_usages"]) {

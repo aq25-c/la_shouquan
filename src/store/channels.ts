@@ -191,6 +191,25 @@ export function consumeCredit(id: string, count: number): { ok: boolean; credit:
   return { ok: Number(res.changes) > 0, credit: Number(row?.credit ?? 0) };
 }
 
+/* ---------------------------- 账户余额（按金额结算） ---------------------------- */
+
+/** 充值/扣减账户余额（单位：分） */
+export function rechargeBalance(id: string, amount: number): ChannelRow | null {
+  db().prepare("UPDATE channels SET balance = balance + ?, updated_at = ? WHERE id = ?").run(amount, nowIso(), id);
+  const row = db().prepare("SELECT * FROM channels WHERE id = ?").get(id) as unknown as ChannelRow | undefined;
+  return row ?? null;
+}
+
+/** 原子扣减余额（分）：不足则不扣并返回 ok=false，避免并发超扣 */
+export function consumeBalance(id: string, amount: number): { ok: boolean; balance: number } {
+  const value = Math.max(0, Math.trunc(amount));
+  const res = db()
+    .prepare("UPDATE channels SET balance = balance - ?, updated_at = ? WHERE id = ? AND balance >= ?")
+    .run(value, nowIso(), id, value);
+  const row = db().prepare("SELECT balance FROM channels WHERE id = ?").get(id) as { balance: number } | undefined;
+  return { ok: Number(res.changes) > 0, balance: Number(row?.balance ?? 0) };
+}
+
 /** 概览页用的渠道汇总。 */
 export function channelSummary(): {
   channels: number;

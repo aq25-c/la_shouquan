@@ -334,7 +334,8 @@ async function ensureCatalog(force = false) {
   }
   const [mods, chans] = await Promise.all([
     apiGet("/admin/api/modules"),
-    apiGet("/admin/api/channels"),
+    // 代理无权读渠道列表，这里容错，避免拖垮整个页面
+    apiGet("/admin/api/channels").catch(() => ({ items: [] })),
   ]);
   state.modules = mods.items;
   state.channels = chans.items;
@@ -2122,6 +2123,20 @@ async function staffForm(staff, opt) {
           </select></label>
         <label class="field" data-channel-wrap><span>所属渠道（代理必填，余额随卡密扣减）</span>
           <select name="channel_id"></select></label>
+        <div class="field full" data-agent-wrap style="margin-top:6px">
+          <span>可售产品（不勾 = 全部产品）</span>
+          <div class="checkbox-list" data-agent-products>
+            ${state.products.map((p) => `<label><input type="checkbox" value="${esc(p.id)}" ${(staff?.agent_profile?.product_ids ?? []).includes(p.id) ? "checked" : ""} /><span>${esc(p.name)}</span></label>`).join("") || '<span class="empty">还没有产品</span>'}
+          </div>
+        </div>
+        <div class="field full" data-agent-wrap>
+          <span>可售卡类型（不勾 = 全部类型）</span>
+          <div class="checkbox-list" data-agent-terms>
+            ${[["hour", "按小时"], ["day", "按天"], ["month", "按月"], ["year", "按年"], ["count", "按次数"]]
+              .map(([v, label]) => `<label><input type="checkbox" value="${v}" ${(staff?.agent_profile?.term_types ?? []).includes(v) ? "checked" : ""} /><span>${label}</span></label>`)
+              .join("")}
+          </div>
+        </div>
       </div>
       <div data-perm-wrap style="margin-top:14px">
         <div class="field"><span>目录权限 —— 能看到哪些页面</span>
@@ -2148,7 +2163,8 @@ async function staffForm(staff, opt) {
       const roleSel = $('[name="role"]', modal);
       const syncRole = () => {
         const isAgent = roleSel.value === "agent";
-        $("[data-channel-wrap]", modal).hidden = !isAgent;
+        $$("[data-channel-wrap]", modal).forEach((el) => (el.hidden = !isAgent));
+        $$("[data-agent-wrap]", modal).forEach((el) => (el.hidden = !isAgent));
         $("[data-perm-wrap]", modal).hidden = isAgent;
       };
       syncRole();
@@ -2162,6 +2178,8 @@ async function staffForm(staff, opt) {
         if (pw) payload.password = pw;
         if (roleVal === "agent") {
           payload.channel_id = chSel.value;
+          payload.product_ids = $$("[data-agent-products] input:checked", modal).map((i) => i.value);
+          payload.term_types = $$("[data-agent-terms] input:checked", modal).map((i) => i.value);
         } else {
           payload.menus = $$("[data-menus] input:checked", modal).map((i) => i.value);
           payload.features = $$("[data-features] input:checked", modal).map((i) => i.value);
@@ -2187,9 +2205,10 @@ async function staffForm(staff, opt) {
 /* ============================ 软件参数 ============================ */
 
 async function renderParams(root) {
-  const [trial, productsRes] = await Promise.all([
+  const [trial, productsRes, pricesRes] = await Promise.all([
     apiGet("/admin/api/settings/trial"),
     apiGet("/admin/api/products"),
+    apiGet("/admin/api/prices"),
   ]);
   const c = trial.config;
 
@@ -2218,7 +2237,101 @@ async function renderParams(root) {
           <button class="btn btn-primary btn-sm" data-save type="button">保存试用参数</button>
         </div>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>卡密价格（代理进货价）</h3>
+        <span class="muted small">模块留空 = 该产品默认价；单价单位：元 / 单位</span></div>
+      <div class="card-body">
+        <div class="form-grid">
+          <label class="field"><span>产品</span>
+            <select name="price_product">${productsRes.items.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select></label>
+          <label class="field"><span>模块（留空=产品默认价）</span>
+            <select name="price_module"><option value="">（产品默认价）</option></select></label>
+          <label class="field"><span>卡类型</span>
+            <select name="price_term">
+              <option value="hour">按小时</option><option value="day">按天</option><option value="month">按月</option>
+              <option value="year">按年</option><option value="count">按次数</option>
+            </select></label>
+          <label class="field"><span>单价（元 / 单位）</span>
+            <input name="price_unit" type="number" step="0.01" min="0" value="1" /></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" data-save-price type="button">保存价格</button>
+          <span class="muted small">代理生成卡密时按「单价 × 时长/次数 × 张数」从账户余额扣费</span>
+        </div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table>
+            <thead><tr><th>产品</th><th>模块</th><th>卡类型</th><th>单价</th><th class="right">操作</th></tr></thead>
+            <tbody>
+              ${
+                pricesRes.items.length
+                  ? pricesRes.items
+                      .map(
+                        (p) => `<tr>
+                          <td>${esc(p.product_name)}</td>
+                          <td>${p.module_name ? esc(p.module_name) : '<span class="muted small">产品默认</span>'}</td>
+                          <td>${esc(p.term_type)}</td>
+                          <td>¥${(p.unit_price / 100).toFixed(2)}</td>
+                          <td class="right"><button class="btn btn-sm" data-del-price="${esc(p.id)}" type="button">删除</button></td>
+                        </tr>`,
+                      )
+                      .join("")
+                  : emptyRow(5, "还没有配置价格——代理将无法生成卡密")
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>`;
+
+  // 选产品后联动加载模块（价格卡片的 select 在上面的 HTML 里，这里统一绑定）
+
+  $("[data-save-price]", root)?.addEventListener("click", async () => {
+    const productId = $('[name="price_product"]', root).value;
+    const moduleId = $('[name="price_module"]', root).value || null;
+    const termType = $('[name="price_term"]', root).value;
+    const yuan = Number($('[name="price_unit"]', root).value);
+    if (!productId || !Number.isFinite(yuan) || yuan < 0) {
+      toast("请选择产品并填写单价", "error");
+      return;
+    }
+    try {
+      await apiPost("/admin/api/prices", {
+        product_id: productId,
+        module_id: moduleId,
+        term_type: termType,
+        unit_price: Math.round(yuan * 100),
+      });
+      toast("价格已保存", "ok");
+      navigate("params", true);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+
+  const priceProduct = $('[name="price_product"]', root);
+  if (priceProduct) {
+    priceProduct.onchange = async () => {
+      const mods = await apiGet(`/admin/api/products/${priceProduct.value}/modules`).catch(() => ({ items: [] }));
+      $('[name="price_module"]', root).innerHTML =
+        '<option value="">（产品默认价）</option>' +
+        mods.items.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
+    };
+  }
+
+  $$("[data-del-price]", root).forEach((btn) => {
+    btn.onclick = async () => {
+      if (!(await confirmDialog("删除该价格？", { danger: true, okText: "删除" }))) return;
+      try {
+        await api("DELETE", `/admin/api/prices/${btn.dataset.delPrice}`);
+        toast("已删除", "ok");
+        navigate("params", true);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+  });
 
   $("[data-save]", root).onclick = async () => {
     try {
