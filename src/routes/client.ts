@@ -75,6 +75,7 @@ import {
   markCdkUsed,
   moduleIdsOf,
   releaseDevice,
+  releaseAllDevices,
   rotateLicenseKey,
   touchDevice,
   touchLicenseHeartbeat,
@@ -453,7 +454,8 @@ export function registerClientRoutes(): void {
         productId: product.id,
         cdkId: null,
         moduleIds: [], // 先建壳，下面逐模块写入各自的计费
-        seats: Math.max(...terms.map((t) => t.config.seats)),
+        // 席位是软件级的：所有模块共用产品 / 全局的试用席位（默认 1）
+        seats: first.seats,
         days: first.days,
         termType: terms[0].termType,
         termValue: terms[0].termValue,
@@ -742,10 +744,7 @@ export function registerClientRoutes(): void {
     const license = findLicenseByKeyHash(sha256hex(licenseKey));
     if (!license) throw notFound("许可证密钥无效", "INVALID_LICENSE_KEY");
 
-    const device = findDevice(license.id, deviceId);
-    if (!device || device.status !== "active") {
-      throw notFound("该设备未绑定此授权，请重新激活", "DEVICE_NOT_BOUND");
-    }
+    const eff = effectiveStatus(license);
 
     if (license.status === "revoked") {
       throw locked("授权已被吊销", "LICENSE_REVOKED", { expires_at: license.expires_at });
@@ -757,14 +756,40 @@ export function registerClientRoutes(): void {
     if (!customer || customer.status !== "active") {
       throw locked("账号已被停用", "CUSTOMER_DISABLED");
     }
-    const eff = effectiveStatus(license);
     // v11：到期不再拒绝心跳。账号和授权信息照常返回，只是过期模块的功能不可用
     //      （客户端按 modules[].active 判断）。吊销 / 暂停 / 停用仍然直接拒绝。
     if (eff === "pending") {
       throw locked("授权尚未生效", "LICENSE_NOT_STARTED", { starts_at: license.starts_at });
     }
 
-    touchDevice(device.id, ctx.ip);
+    // 到期后设备会被统一解绑（把席位释放出来），所以这里不能用「设备未绑定」把它挡在门外：
+    // 拿到过期授权仍然正常回 200 + 各模块 active=false，客户端据此关功能即可。
+    let device = findDevice(license.id, deviceId);
+    if (eff !== "expired") {
+      if (!device) throw notFound("该设备未绑定此授权，请重新激活", "DEVICE_NOT_BOUND");
+      if (device.status !== "active") {
+        // 只有「到期自动释放」的机器能在续费后自己回来；手动解绑的不许自动复位
+        if (device.released_reason === "expired" && activeDeviceCount(license.id) < license.seats) {
+          upsertDevice({
+            licenseId: license.id,
+            deviceId,
+            deviceName: device.device_name,
+            platform: device.platform,
+            ip: ctx.ip,
+          });
+          device = findDevice(license.id, deviceId);
+        } else {
+          throw notFound("该设备未绑定此授权，请重新激活", "DEVICE_NOT_BOUND");
+        }
+      }
+    }
+
+    if (eff === "expired") {
+      // 过期即释放席位：这台机器不再占用名额，续费激活后从 0 台重新绑定
+      releaseAllDevices(license.id, "expired");
+    }
+
+    if (device && device.status === "active") touchDevice(device.id, ctx.ip);
     touchLicenseHeartbeat(license.id);
 
     // 重新读取，保证响应里的 last_heartbeat_at 是本次心跳时间

@@ -1044,8 +1044,13 @@ export function registerAdminRoutes(): void {
     }
     const value = bodyInt(ctx, "value", { min: 1, max: 100000 });
     if (value !== null) patch.value = value;
-    const seats = bodyInt(ctx, "seats", { min: 1, max: 100 });
-    if (seats !== null) patch.seats = seats;
+    // 席位是「软件 / 授权」级的（决定同一账号能登录几台设备），模块里不设
+    if (ctx.body.seats !== undefined) {
+      throw badRequest(
+        "席位是软件级的，不能在模块里设置；请到 CDK 或授权里调整",
+        "SEATS_NOT_MODULE_LEVEL",
+      );
+    }
     const maxPerCustomer = bodyInt(ctx, "max_per_customer", { min: 0, max: 100 });
     if (maxPerCustomer !== null) patch.max_per_customer = maxPerCustomer;
     const grace = bodyInt(ctx, "offline_grace_days", { min: 0, max: 365 });

@@ -15,7 +15,7 @@ let database: DatabaseSync | null = null;
  * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
  * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
  */
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 
 /** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
 let migration: { from: number; to: number } = { from: 0, to: 0 };
@@ -397,6 +397,15 @@ ALTER TABLE license_modules ADD COLUMN used_usages INTEGER NOT NULL DEFAULT 0;
 `;
 
 /**
+ * v13：设备解绑原因
+ *   - devices.released_reason：manual（后台/客户手动解绑）/ expired（授权到期自动释放）
+ *     到期释放的机器在续费恢复后可以自动回来占回席位；手动解绑的不会自己回来。
+ */
+const SCHEMA_V13 = `
+ALTER TABLE devices ADD COLUMN released_reason TEXT;
+`;
+
+/**
  * v8：授权到期上限
  *   - licenses.max_expires_at：该授权允许的最大到期时间（= CDK 激活时算出的实际到期时间）
  *     代理调整到期时间可以缩短、也可以恢复，但不能超过这个上限；管理员不受此限制。
@@ -482,6 +491,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 10) runMigration(db, SCHEMA_V10, 10);
   if (version < 11) runMigration(db, SCHEMA_V11, 11);
   if (version < 12) runMigration(db, SCHEMA_V12, 12);
+  if (version < 13) runMigration(db, SCHEMA_V13, 13);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

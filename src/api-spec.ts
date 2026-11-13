@@ -200,7 +200,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/products/:id/modules": { title: "新增模块", auth: "admin", params: "`code`、`name`、`description?`", desc: "同产品内编码唯一。" },
   "GET /admin/api/modules": { title: "全部模块", auth: "admin", desc: "跨产品查询，附带 product_code 与每个模块的试用配置（`trial` = 合并后的结果，`trial_custom` = 是否单独配过）。" },
   "GET /admin/api/modules/:id/trial": { title: "模块试用配置", auth: "admin", returns: "`module`、`config`（合并后的完整配置）、`custom`（是否模块自定义）、`inherited_from`", desc: "模块级配置优先，未配置的字段回落产品级 / 全局。" },
-  "PATCH /admin/api/modules/:id/trial": { title: "修改模块试用配置", auth: "admin", params: "`enabled?`、`mode?`（day/count）、`value?`、`seats?`、`max_per_customer?`、`offline_grace_days?`", desc: "只覆盖传入字段；传 null 表示清空该字段、回到继承上层。" },
+  "PATCH /admin/api/modules/:id/trial": { title: "修改模块试用配置", auth: "admin", params: "`enabled?`、`mode?`（day/count）、`value?`、`max_per_customer?`、`offline_grace_days?`", desc: "只覆盖传入字段；传 null 表示清空该字段、回到继承上层。**席位是软件级的，模块里不设**：传 `seats` 直接 400 SEATS_NOT_MODULE_LEVEL。" },
   "DELETE /admin/api/modules/:id/trial": { title: "清除模块试用配置", auth: "admin", desc: "清空该模块的试用配置，回到继承产品级 / 全局。" },
   "PATCH /admin/api/modules/:id": { title: "编辑模块", auth: "admin", params: "`name?`、`description?`、`status?`" },
   "DELETE /admin/api/modules/:id": { title: "删除模块", auth: "admin", desc: "不影响已签发授权。" },

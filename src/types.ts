@@ -172,6 +172,8 @@ export type DeviceRow = {
   device_name: string | null;
   platform: string | null;
   status: "active" | "released";
+  /** manual = 手动解绑；expired = 授权到期自动释放（续费后可以自己回来） */
+  released_reason: "manual" | "expired" | null;
   first_seen_at: string;
   last_seen_at: string;
   released_at: string | null;

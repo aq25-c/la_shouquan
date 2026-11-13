@@ -903,13 +903,11 @@ async function moduleManager(productId) {
         <label class="field"><span>试用数量（天 / 次）</span>
           <input name="t-value" type="number" min="1" value="${esc(String(t.value ?? 14))}" />
         </label>
-        <label class="field"><span>试用席位数</span>
-          <input name="t-seats" type="number" min="1" value="${esc(String(t.seats ?? 1))}" />
-        </label>
         <label class="field"><span>每客户可试用次数</span>
           <input name="t-max" type="number" min="0" value="${esc(String(t.max_per_customer ?? 1))}" />
         </label>
       </div>
+      <div class="note">席位属于软件 / 授权级（决定同一账号能登录几台设备），模块这里不设。</div>
       <div class="note">${
         m.trial_custom
           ? "当前是这个模块自己的配置。"
@@ -943,7 +941,6 @@ async function moduleManager(productId) {
         enabled: $('[name="t-enabled"]', modal).value === "1",
         mode: $('[name="t-mode"]', modal).value,
         value: Number($('[name="t-value"]', modal).value) || 1,
-        seats: Number($('[name="t-seats"]', modal).value) || 1,
         max_per_customer: Number($('[name="t-max"]', modal).value),
       };
       try {

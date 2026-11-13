@@ -256,7 +256,32 @@ function licenseSelect(): string {
           LEFT JOIN agents ch ON ch.id = l.agent_id`;
 }
 
+/**
+ * 自然到期后自动解绑设备：过期授权上的 active 设备一律释放，
+ * 这样客户续费重新激活时是从 0 台开始占席位，而不是被旧机器占着。
+ * 读取授权（列表 / 详情 / 心跳）时顺手扫一遍，不依赖定时任务。
+ * 5 秒节流，避免高频心跳反复写库。
+ */
+let lastDeviceSweepAt = 0;
+export function sweepExpiredDevices(force = false): number {
+  const now = Date.now();
+  if (!force && now - lastDeviceSweepAt < 5000) return 0;
+  lastDeviceSweepAt = now;
+  const iso = new Date(now).toISOString();
+  const res = db()
+    .prepare(
+      `UPDATE devices SET status = 'released', released_at = ?, released_reason = 'expired'
+        WHERE status = 'active'
+          AND license_id IN (
+            SELECT id FROM licenses WHERE expires_at IS NOT NULL AND expires_at <= ?
+          )`,
+    )
+    .run(iso, iso);
+  return Number(res.changes);
+}
+
 export function findLicenseById(id: string): LicenseListItem | null {
+  sweepExpiredDevices();
   const now = nowIso();
   const row = db().prepare(`${licenseSelect()} WHERE l.id = ?`).get(now, now, id) as unknown as
     | LicenseListItem
@@ -273,6 +298,7 @@ export function findLicenseByKeyHash(keyHash: string): LicenseListItem | null {
 }
 
 export function listLicensesByCustomer(customerId: string): LicenseListItem[] {
+  sweepExpiredDevices();
   const now = nowIso();
   return db()
     .prepare(`${licenseSelect()} WHERE l.customer_id = ? ORDER BY l.created_at DESC`)
@@ -292,6 +318,7 @@ export function listLicenses(opts: {
   page: number;
   pageSize: number;
 }): { items: LicenseListItem[]; total: number } {
+  sweepExpiredDevices();
   const now = nowIso();
   const outer: string[] = [];
   const params: (string | number)[] = [];
@@ -460,6 +487,11 @@ export function updateLicense(
     params.push(nowIso(), id);
     db().prepare(`UPDATE licenses SET ${sets.join(", ")} WHERE id = ?`).run(...params);
   }
+  // 到期时间被改到过去（后台直接改到期、按天缩短、批量调整）→ 立刻释放设备，不等后台扫
+  if (patch.expires_at) {
+    const ms = Date.parse(patch.expires_at);
+    if (Number.isFinite(ms) && ms <= Date.now()) releaseAllDevices(id, "expired");
+  }
   const row = db().prepare("SELECT * FROM licenses WHERE id = ?").get(id) as unknown as LicenseRow | undefined;
   return row ?? null;
 }
@@ -569,7 +601,7 @@ export function upsertDevice(input: {
   if (existing) {
     db()
       .prepare(
-        "UPDATE devices SET status = 'active', last_seen_at = ?, released_at = NULL, device_name = COALESCE(?, device_name), platform = COALESCE(?, platform), last_ip = ? WHERE id = ?",
+        "UPDATE devices SET status = 'active', last_seen_at = ?, released_at = NULL, released_reason = NULL, device_name = COALESCE(?, device_name), platform = COALESCE(?, platform), last_ip = ? WHERE id = ?",
       )
       .run(at, nz(input.deviceName), nz(input.platform), nz(input.ip), existing.id);
     return findDevice(input.licenseId, input.deviceId) as DeviceRow;
@@ -587,17 +619,28 @@ export function touchDevice(id: string, ip: string | null): void {
   db().prepare("UPDATE devices SET last_seen_at = ?, last_ip = ? WHERE id = ?").run(nowIso(), nz(ip), id);
 }
 
-export function releaseDevice(licenseId: string, deviceId: string): boolean {
+export function releaseDevice(
+  licenseId: string,
+  deviceId: string,
+  reason: "manual" | "expired" = "manual",
+): boolean {
   const res = db()
-    .prepare("UPDATE devices SET status = 'released', released_at = ? WHERE license_id = ? AND device_id = ? AND status = 'active'")
-    .run(nowIso(), licenseId, deviceId);
+    .prepare(
+      "UPDATE devices SET status = 'released', released_at = ?, released_reason = ? WHERE license_id = ? AND device_id = ? AND status = 'active'",
+    )
+    .run(nowIso(), reason, licenseId, deviceId);
   return Number(res.changes) > 0;
 }
 
-export function releaseAllDevices(licenseId: string): number {
+export function releaseAllDevices(
+  licenseId: string,
+  reason: "manual" | "expired" = "manual",
+): number {
   const res = db()
-    .prepare("UPDATE devices SET status = 'released', released_at = ? WHERE license_id = ? AND status = 'active'")
-    .run(nowIso(), licenseId);
+    .prepare(
+      "UPDATE devices SET status = 'released', released_at = ?, released_reason = ? WHERE license_id = ? AND status = 'active'",
+    )
+    .run(nowIso(), reason, licenseId);
   return Number(res.changes);
 }
 

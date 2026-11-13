@@ -295,7 +295,7 @@ POST /api/v1/licenses/heartbeat
 | `403` `LICENSE_REVOKED` | 提示"授权已被撤销"，标记不可恢复 |
 | `403` `LICENSE_SUSPENDED` | 提示"授权已暂停"，可周期性重试 |
 | `403` `CUSTOMER_DISABLED` | 提示"账号已停用" |
-| `404` `DEVICE_NOT_BOUND` | 设备被解绑 → 要求重新激活 |
+| `404` `DEVICE_NOT_BOUND` | 设备被解绑 → 要求重新激活（到期自动释放的机器，续费后下次心跳会自动复位） |
 | `404` `INVALID_LICENSE_KEY` | 密钥失效 → 要求重新激活 |
 
 推荐的整体流程：

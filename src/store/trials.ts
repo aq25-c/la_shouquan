@@ -194,6 +194,9 @@ export function getModuleTrialConfig(moduleId: string): TrialConfig {
   const merged = { ...base, ...patch };
   if (patch.value === undefined && patch.days !== undefined) merged.value = patch.days;
   merged.days = merged.mode === "day" ? merged.value : merged.days;
+  // 席位属于「软件 / 授权」这一层（决定同一账号能登录几台设备），
+  // 模块只是功能开关，不参与席位计算 —— 老数据里即使存了 seats 也一律忽略。
+  merged.seats = base.seats;
   return merged;
 }
 
@@ -204,6 +207,10 @@ export function setModuleTrialConfig(moduleId: string, patch: Partial<TrialConfi
   const current = parseJson<Record<string, unknown>>(mod.trial_config ?? "", {});
   for (const [key, value] of Object.entries(patch)) {
     if (key === "product_id") continue; // 产品由模块决定
+    if (key === "seats") {
+      delete current[key]; // 席位是软件级的，不允许存在模块里
+      continue;
+    }
     if (value === undefined) continue;
     if (value === null) delete current[key];
     else current[key] = value;

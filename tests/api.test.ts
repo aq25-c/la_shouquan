@@ -921,7 +921,7 @@ test("模块级试用：每个模块按自己的天数开通", async () => {
   const cfgA = await api(
     "PATCH",
     `/admin/api/modules/${moduleIds[0]}/trial`,
-    { enabled: true, mode: "day", value: 7, seats: 1, max_per_customer: 2 },
+    { enabled: true, mode: "day", value: 7, max_per_customer: 2 },
     adminToken,
   );
   assert.equal(cfgA.status, 200);
@@ -930,7 +930,7 @@ test("模块级试用：每个模块按自己的天数开通", async () => {
   const cfgB = await api(
     "PATCH",
     `/admin/api/modules/${moduleIds[1]}/trial`,
-    { enabled: true, mode: "day", value: 3, seats: 1, max_per_customer: 2 },
+    { enabled: true, mode: "day", value: 3, max_per_customer: 2 },
     adminToken,
   );
   assert.equal(cfgB.json.data.config.value, 3);
@@ -973,7 +973,7 @@ test("模块级试用：次数型按模块各自扣减", async () => {
   const cfg = await api(
     "PATCH",
     `/admin/api/modules/${moduleIds[1]}/trial`,
-    { enabled: true, mode: "count", value: 2, seats: 1, max_per_customer: 3 },
+    { enabled: true, mode: "count", value: 2, max_per_customer: 3 },
     adminToken,
   );
   assert.equal(cfg.json.data.config.mode, "count");
@@ -2503,4 +2503,121 @@ test("软件参数接口：客户会话和许可证密钥都能取", async () =>
   // ③ 什么都不带 → 401
   const anon = await api("GET", "/api/v1/vars");
   assert.equal(anon.status, 401);
+});
+
+
+test("席位：模块里不能设，全部过期后按新卡从默认值起算", async () => {
+  // ① 模块级试用配置不接受 seats
+  const badSeats = await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[0]}/trial`,
+    { seats: 5 },
+    adminToken,
+  );
+  assert.equal(badSeats.status, 400);
+  assert.equal(badSeats.json.error.code, "SEATS_NOT_MODULE_LEVEL");
+
+  // 模块配置里读出来的席位始终等于产品 / 全局的席位，不随模块走
+  const modTrial = await api("GET", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
+  assert.equal(modTrial.status, 200);
+  assert.equal(typeof modTrial.json.data.config.seats, "number");
+
+  const mint = async (seats: number) => {
+    const r = await api(
+      "POST",
+      "/admin/api/cdks/generate",
+      { product_id: productId, module_ids: [moduleIds[0]], days: 30, seats, count: 1 },
+      adminToken,
+    );
+    return r.json.data.codes[0];
+  };
+  const activate = async (cdk: string, deviceId: string) =>
+    api("POST", "/api/v1/licenses/activate", {
+      cdk,
+      device_id: deviceId,
+      email: "expire-seat@test.local",
+      password: "ExpirePass123",
+    });
+
+  await api("POST", "/api/v1/auth/register", {
+    email: "expire-seat@test.local",
+    password: "ExpirePass123",
+    name: "过期席位",
+  });
+
+  // ② 先买 3 席位
+  const first = await activate(await mint(3), "EXP-1");
+  assert.equal(first.status, 201);
+  assert.equal(first.json.data.license.seats, 3);
+  const firstId = first.json.data.license.id;
+
+  // ③ 让它全部过期
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  const expired = await api("PATCH", `/admin/api/licenses/${firstId}`, { expires_at: past }, adminToken);
+  assert.equal(expired.status, 200);
+
+  // ④ 过期后再激活 1 席位的卡 → 新建授权，席位从卡上的 1 起算，不继承 3
+  const second = await activate(await mint(1), "EXP-1");
+  assert.equal(second.status, 201);
+  assert.notEqual(second.json.data.license.id, firstId, "过期后应新建一条授权");
+  assert.equal(second.json.data.license.seats, 1, "全部过期后席位按新卡起算（默认 1）");
+});
+
+
+test("过期后设备自动解绑：席位释放，心跳仍按「已过期」返回", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 2, count: 1 },
+    adminToken,
+  );
+  const cdk = gen.json.data.codes[0];
+
+  await api("POST", "/api/v1/auth/register", {
+    email: "sweep@test.local",
+    password: "SweepPass123",
+    name: "到期解绑",
+  });
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk,
+    device_id: "SWEEP-1",
+    email: "sweep@test.local",
+    password: "SweepPass123",
+  });
+  assert.equal(act.status, 201);
+  const licenseId = act.json.data.license.id;
+  const licenseKey = act.json.data.license_key;
+
+  const before = await api("GET", `/admin/api/licenses/${licenseId}`, undefined, adminToken);
+  assert.equal(before.json.data.devices.filter((d: Json) => d.status === "active").length, 1);
+
+  // 让它过期
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  await api("PATCH", `/admin/api/licenses/${licenseId}`, { expires_at: past }, adminToken);
+
+  // 后台一看：设备已经全部 released，席位不再被占
+  const after = await api("GET", `/admin/api/licenses/${licenseId}`, undefined, adminToken);
+  const activeDevices = after.json.data.devices.filter((d: Json) => d.status === "active");
+  assert.equal(activeDevices.length, 0, "过期后设备应全部解绑");
+  assert.equal(after.json.data.devices[0].status, "released");
+  assert.ok(after.json.data.devices[0].released_at, "应记录解绑时间");
+  assert.equal(after.json.data.devices[0].released_reason, "expired", "应标记为到期释放");
+
+  // 心跳不能因此变成 404：仍然 200 + expired，客户端据此关功能
+  const hb = await api("POST", "/api/v1/licenses/heartbeat", {
+    license_key: licenseKey,
+    device_id: "SWEEP-1",
+  });
+  assert.equal(hb.status, 200, "过期授权的心跳仍应成功");
+  assert.equal(hb.json.data.license.eff_status, "expired");
+
+  // 续费把到期改回未来后，同一台机器能自己恢复（到期释放的才允许，手动解绑的不行）
+  const future = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  await api("PATCH", `/admin/api/licenses/${licenseId}`, { status: "active", expires_at: future }, adminToken);
+  const back = await api("POST", "/api/v1/licenses/heartbeat", {
+    license_key: licenseKey,
+    device_id: "SWEEP-1",
+  });
+  assert.equal(back.status, 200, "续费后原机器应能恢复心跳");
+  assert.equal(back.json.data.license.eff_status, "active");
 });
