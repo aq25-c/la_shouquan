@@ -346,6 +346,7 @@ const LOG_LABELS = {
   "license.consume": "激活（激活码）",
   "license.trial_start": "开始试用",
   "license.extend": "加时",
+  "license.adjust_expiry": "调整到期",
   "license.update": "调整授权",
   "license.bind_device": "绑定设备",
   "license.release_device": "解绑设备",
@@ -372,9 +373,21 @@ function logDetailText(d) {
   if (d.device_id) parts.push(`设备 ${d.device_id}`);
   if (d.device_name) parts.push(d.device_name);
   if (d.platform) parts.push(d.platform);
-  if (d.days != null) parts.push(`${d.days > 0 ? "+" : ""}${d.days} 天`);
-  if (d.new_expires_at) parts.push(`到期改为 ${fmtTime(d.new_expires_at)}`);
-  if (d.expires_at && !d.new_expires_at) parts.push(`到期 ${fmtTime(d.expires_at)}`);
+  // days = 后台加减的天数；days_added = 激活时这张卡带来的天数
+  const delta = d.days ?? d.days_added;
+  if (delta != null && delta !== 0) parts.push(`${delta > 0 ? "+" : ""}${delta} 天`);
+  if (d.from_expires_at && d.to_expires_at) {
+    parts.push(`${fmtDay(d.from_expires_at)} → ${fmtDay(d.to_expires_at)}`);
+  } else if (d.to_expires_at) {
+    parts.push(`到期 ${fmtDay(d.to_expires_at)}`);
+  } else if (d.from_expires_at) {
+    parts.push(`原到期 ${fmtDay(d.from_expires_at)}`);
+  } else if (d.new_expires_at) {
+    parts.push(`到期改为 ${fmtTime(d.new_expires_at)}`);
+  } else if (d.expires_at) {
+    parts.push(`到期 ${fmtTime(d.expires_at)}`);
+  }
+  if (d.capped) parts.push("（已按上限截断）");
   if (d.seats != null) parts.push(`席位 ${d.seats}`);
   if (d.status) parts.push(`状态改为 ${STATUS_CN[d.status] ?? d.status}`);
   if (d.cdk) parts.push(`激活码 ${d.cdk}`);
@@ -383,7 +396,8 @@ function logDetailText(d) {
   const skip = new Set([
     "device_id", "device_name", "platform", "days", "new_expires_at", "expires_at",
     "seats", "status", "cdk", "product", "modules", "module_codes", "by", "released",
-    "rebind", "not_reset", "from_now",
+    "rebind", "not_reset", "from_now", "from_expires_at", "to_expires_at", "capped",
+    "merged", "term_type", "term_value", "days_added", "web",
   ]);
   for (const [k, v] of Object.entries(d)) {
     if (skip.has(k) || v == null || v === "" || typeof v === "object") continue;

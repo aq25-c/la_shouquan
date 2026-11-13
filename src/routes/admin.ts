@@ -1692,8 +1692,31 @@ export function registerAdminRoutes(): void {
       detail: { days, expires_at: expiresAt, license_ids: licenseIds, updated: result.updated },
     });
 
+    // 每条授权的天数增减单独留痕：授权的「操作记录」里要能看出加了多少天、原到期、新到期
+    for (const ch of result.changes) {
+      if (ch.days === 0 && !ch.capped) continue;
+      audit({
+        actorType: "admin",
+        actorId: admin.id,
+        actorLabel: admin.email,
+        action: "license.adjust_expiry",
+        targetType: "license",
+        targetId: ch.license_id,
+        ip: ctx.ip,
+        detail: {
+          days: ch.days,
+          from_expires_at: ch.from,
+          to_expires_at: ch.to,
+          capped: ch.capped,
+          by: staffCtx.isAgent ? "agent" : "admin",
+        },
+      });
+    }
+
     return ok({
       updated: result.updated,
+      capped: result.changes.filter((c) => c.capped).map((c) => ({ license_no: c.license_no, to: c.to })),
+      changes: result.changes,
       licenses: result.items.map((row) => ({
         ...licenseView(row),
         module_ids: moduleIdsOf(row),
@@ -1858,7 +1881,13 @@ export function registerAdminRoutes(): void {
       targetType: "license",
       targetId: id,
       ip: ctx.ip,
-      detail: { days, from_now: fromNow, new_expires_at: updated?.expires_at },
+      detail: {
+        days,
+        from_now: fromNow,
+        from_expires_at: license.expires_at,
+        new_expires_at: updated?.expires_at,
+        to_expires_at: updated?.expires_at,
+      },
     });
     return ok({
       license: updated ? { ...licenseView(updated), module_ids: moduleIdsOf(updated) } : null,

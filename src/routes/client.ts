@@ -758,6 +758,8 @@ export function registerClientRoutes(): void {
 
       let license: LicenseRow;
       let merged = false;
+      // 记「原到期」，日志里要写清楚这次加了多少天
+      const beforeExpires = reusable?.expires_at ?? null;
       if (reusable) {
         // 叠加到现有授权，并重新签发密钥（旧密钥作废，客户端需保存新的）
         licenseKey = generateLicenseKey();
@@ -810,7 +812,25 @@ export function registerClientRoutes(): void {
             ip: ctx.ip,
           })
         : null;
-      return { customerId, license, deviceId: device?.device_id ?? null, merged };
+      // 这张卡带来的天数（并卡时按授权到期实际变化算，新卡就是卡的时长）
+      const daysAdded = (() => {
+        if (termCategory(newTermType) === "count") return 0;
+        const from = beforeExpires ? Date.parse(beforeExpires) : NaN;
+        const to = license.expires_at ? Date.parse(license.expires_at) : NaN;
+        if (Number.isFinite(from) && Number.isFinite(to)) return Math.round((to - from) / 86_400_000);
+        return cdk.days;
+      })();
+
+      return {
+        customerId,
+        license,
+        deviceId: device?.device_id ?? null,
+        merged,
+        beforeExpires,
+        daysAdded,
+        termType: newTermType,
+        termValue: newTermValue,
+      };
     });
 
     const issued = buildLicenseFile({
@@ -827,7 +847,19 @@ export function registerClientRoutes(): void {
       targetType: "license",
       targetId: outcome.license.id,
       ip: ctx.ip,
-      detail: { cdk: cdk.code, product: product.code, device_id: bindDevice ? deviceRef : null, web: !bindDevice },
+      detail: {
+        cdk: cdk.code,
+        product: product.code,
+        device_id: bindDevice ? deviceRef : null,
+        web: !bindDevice,
+        // 这张卡带来的天数与到期变化（并卡时按实际变化算）
+        days_added: outcome.daysAdded,
+        from_expires_at: outcome.beforeExpires,
+        to_expires_at: outcome.license.expires_at,
+        merged: outcome.merged,
+        term_type: outcome.termType,
+        term_value: outcome.termValue,
+      },
     });
 
     return created({

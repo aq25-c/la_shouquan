@@ -3093,3 +3093,85 @@ test("代理首页：余额、卡密统计与近期到期", async () => {
   assert.equal(home.json.data.expiring.length, 1);
   assert.equal(home.json.data.expiring[0].customer_email, "home-buyer@test.local");
 });
+
+
+test("调整到期：超上限会被夹取，并留下「加/减了几天 + 原到期→新到期」的日志", async () => {
+  // 建代理 + 客户 + 一张 10 天的卡（上限 = 激活时算出的到期）
+  const ag = await api("POST", "/admin/api/agents", { code: "cap-a", name: "上限测试代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  const cdk = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 10, count: 1, agent_id: agId },
+    adminToken,
+  );
+  const code = cdk.json.data.codes[0];
+
+  const reg = await api("POST", "/api/v1/auth/register", {
+    email: "cap-buyer@test.local",
+    password: "CapBuyer123",
+  });
+  const token = reg.json.data.session.token;
+  const buyerId = reg.json.data.customer.id;
+  const act = await api("POST", "/api/v1/licenses/activate", { cdk: code, bind_device: false }, token);
+  assert.equal(act.status, 201);
+  const licId = act.json.data.license.id;
+  const cap = act.json.data.license.max_expires_at;
+  assert.ok(cap, "激活后应有 max_expires_at");
+
+  // 激活日志带上「加了多少天 + 原→新」
+  const logs0 = await api("GET", `/admin/api/licenses/${licId}/logs`, undefined, adminToken);
+  const actLog = logs0.json.data.items.find((i: Json) => i.action === "license.activate");
+  const d0 = JSON.parse(actLog.detail);
+  assert.equal(d0.days_added, 10, "激活日志应写 +10 天");
+  assert.equal(d0.to_expires_at, cap);
+
+  // 代理把时间往后再加 5 天 → 超过上限，应被夹回上限
+  const staff = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "cap-agent@test.local", password: "CapAgent123", role: "agent", agent_id: agId },
+    adminToken,
+  );
+  assert.equal(staff.status, 201);
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "cap-agent@test.local",
+    password: "CapAgent123",
+  });
+  const agentToken = login.json.data.token;
+
+  const adj = await api(
+    "POST",
+    `/admin/api/customers/${buyerId}/adjust-expiry`,
+    { license_ids: [licId], days: 5 },
+    agentToken,
+  );
+  assert.equal(adj.status, 200);
+  assert.equal(adj.json.data.capped.length, 1, "应告诉前端被夹取了");
+  const after = adj.json.data.licenses.find((l: Json) => l.id === licId);
+  assert.equal(after.expires_at, cap, "不能超过上限");
+
+  // 日志里有「调整到期」，带天数与前后时间
+  const logs = await api("GET", `/admin/api/licenses/${licId}/logs`, undefined, adminToken);
+  const adjLog = logs.json.data.items.find((i: Json) => i.action === "license.adjust_expiry");
+  assert.ok(adjLog, "应有调整到期日志");
+  const d = JSON.parse(adjLog.detail);
+  assert.equal(d.from_expires_at, cap);
+  assert.equal(d.to_expires_at, cap);
+  assert.equal(d.capped, true);
+
+  // 缩短 3 天 → 日志写 -3
+  const short = await api(
+    "POST",
+    `/admin/api/licenses/${licId}/extend`,
+    { days: -3 },
+    adminToken,
+  );
+  assert.equal(short.status, 200);
+  const logs2 = await api("GET", `/admin/api/licenses/${licId}/logs`, undefined, adminToken);
+  const ext = logs2.json.data.items.find((i: Json) => i.action === "license.extend");
+  const de = JSON.parse(ext.detail);
+  assert.equal(de.days, -3);
+  assert.equal(de.from_expires_at, cap);
+  assert.notEqual(de.to_expires_at, cap);
+});

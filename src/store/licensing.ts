@@ -623,7 +623,19 @@ export function extendLicense(id: string, days: number, fromNow = false): Licens
 export function adjustCustomerExpiry(
   customerId: string,
   opts: { days?: number; expiresAt?: string; licenseIds?: string[]; capByMaxExpiry?: boolean },
-): { updated: number; items: LicenseRow[] } {
+): {
+  updated: number;
+  items: LicenseRow[];
+  /** 每条授权的改动明细：改了多少天、原到期、新到期（写操作日志用） */
+  changes: {
+    license_id: string;
+    license_no: string;
+    from: string | null;
+    to: string | null;
+    days: number;
+    capped: boolean;
+  }[];
+} {
   const rows = db()
     .prepare("SELECT * FROM licenses WHERE customer_id = ? AND status != 'revoked'")
     .all(customerId) as unknown as LicenseRow[];
@@ -632,7 +644,16 @@ export function adjustCustomerExpiry(
   const targets = wanted ? rows.filter((r) => wanted.has(r.id)) : rows;
 
   const items: LicenseRow[] = [];
+  const changes: {
+    license_id: string;
+    license_no: string;
+    from: string | null;
+    to: string | null;
+    days: number;
+    capped: boolean;
+  }[] = [];
   for (const row of targets) {
+    const before = row.expires_at ?? null;
     let updated = opts.expiresAt
       ? updateLicense(row.id, { expires_at: opts.expiresAt })
       : typeof opts.days === "number"
@@ -646,9 +667,11 @@ export function adjustCustomerExpiry(
 
     const cap = updated.max_expires_at ?? row.max_expires_at ?? null;
     const nextMs = toMs(updated.expires_at);
+    let capped = false;
     if (opts.capByMaxExpiry && cap && nextMs > toMs(cap)) {
       // 代理：可以缩短、也可以恢复，但不得超过 CDK 授予的上限
       updated = updateLicense(updated.id, { expires_at: cap }) ?? updated;
+      capped = true;
     } else if (!opts.capByMaxExpiry && (!cap || nextMs > toMs(cap))) {
       // 管理员：延长时同步抬高上限，之后代理仍可恢复到该值
       db().prepare("UPDATE licenses SET max_expires_at = ? WHERE id = ?").run(updated.expires_at, updated.id);
@@ -656,8 +679,16 @@ export function adjustCustomerExpiry(
     // v11：模块到期是权威来源，调整授权到期时一并改所有模块
     if (updated.expires_at) syncModuleExpiry(updated.id, updated.expires_at);
     items.push(updated);
+    changes.push({
+      license_id: updated.id,
+      license_no: row.license_no,
+      from: before,
+      to: updated.expires_at ?? null,
+      days: before && updated.expires_at ? Math.round((toMs(updated.expires_at) - toMs(before)) / DAY) || 0 : 0,
+      capped,
+    });
   }
-  return { updated: items.length, items };
+  return { updated: items.length, items, changes };
 }
 
 export function revokeLicense(id: string, reason: string | null): LicenseRow | null {

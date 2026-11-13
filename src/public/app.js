@@ -2086,6 +2086,7 @@ const LICENSE_LOG_LABELS = {
   "license.consume": "激活（CDK）",
   "license.trial_start": "开始试用",
   "license.extend": "加时",
+  "license.adjust_expiry": "调整到期",
   "license.update": "调整授权",
   "license.bind_device": "绑定设备",
   "license.release_device": "解绑设备",
@@ -2126,9 +2127,21 @@ function licenseLogText(entry) {
   if (d.device_id) parts.push(`设备 ${d.device_id}`);
   if (d.device_name) parts.push(d.device_name);
   if (d.platform) parts.push(d.platform);
-  if (d.days != null) parts.push(`${d.days > 0 ? "+" : ""}${d.days} 天`);
-  if (d.new_expires_at) parts.push(`到期改为 ${fmtTime(d.new_expires_at)}`);
-  if (d.expires_at && !d.new_expires_at) parts.push(`到期 ${fmtTime(d.expires_at)}`);
+  // days = 后台加减的天数；days_added = 激活时这张卡带来的天数
+  const delta = d.days ?? d.days_added;
+  if (delta != null && delta !== 0) parts.push(`${delta > 0 ? "+" : ""}${delta} 天`);
+  if (d.from_expires_at && d.to_expires_at) {
+    parts.push(`${fmtDay(d.from_expires_at)} → ${fmtDay(d.to_expires_at)}`);
+  } else if (d.to_expires_at) {
+    parts.push(`到期 ${fmtDay(d.to_expires_at)}`);
+  } else if (d.from_expires_at) {
+    parts.push(`原到期 ${fmtDay(d.from_expires_at)}`);
+  } else if (d.new_expires_at) {
+    parts.push(`到期改为 ${fmtTime(d.new_expires_at)}`);
+  } else if (d.expires_at) {
+    parts.push(`到期 ${fmtTime(d.expires_at)}`);
+  }
+  if (d.capped) parts.push("（已按上限截断）");
   if (d.seats != null) parts.push(`席位 ${d.seats}`);
   if (d.unit_price) parts.push(`单价 ${(Number(d.unit_price) / 100).toFixed(2)} 元`);
   if (d.status) parts.push(`状态改为 ${STATUS_CN[d.status] ?? d.status}`);
@@ -2142,6 +2155,7 @@ function licenseLogText(entry) {
     "device_id", "device_name", "platform", "days", "new_expires_at", "expires_at",
     "seats", "status", "cdk", "modules", "module_codes", "by", "released", "rebind",
     "not_reset", "from_now", "product", "customer", "unit_price", "agent_id",
+    "from_expires_at", "to_expires_at", "capped", "merged", "term_type", "term_value", "days_added", "web",
   ]);
   for (const [k, v] of Object.entries(d)) {
     if (skip.has(k) || v == null || v === "" || typeof v === "object") continue;
@@ -2245,7 +2259,10 @@ async function openLicenseDetail(id) {
                           (e) => `<tr>
                             <td class="nowrap small">${fmtTime(e.at)}</td>
                             <td><span class="badge ${licenseLogTone(e.action)}">${esc(licenseLogLabel(e.action))}</span></td>
-                            <td class="small">${esc(e.actor_label ?? e.actor_type ?? "—")}</td>
+                            <td class="small">${esc(
+                              e.actor_label ??
+                                (e.actor_type === "customer" ? "客户" : e.actor_type === "agent" ? "代理商" : e.actor_type === "admin" ? "管理员" : "—"),
+                            )}</td>
                             <td class="small">${esc(licenseLogText(e)) || '<span class="muted">—</span>'}</td>
                             <td class="mono small">${esc(groupNo(e.target_id) || "—")}</td>
                           </tr>`,
@@ -2763,20 +2780,90 @@ async function customerExpiryForm(customerId) {
         <div class="checkbox-list" data-lic>
           ${licenses
             .map(
-              (l) => `<label><input type="checkbox" value="${esc(l.id)}" checked />
-                <span>${esc(l.license_no)} · ${esc(l.product_code)} · 到期 ${fmtDay(l.expires_at)}${l.kind === "trial" ? " · 试用" : ""}</span></label>`,
+              (l) => `<label><input type="checkbox" value="${esc(l.id)}" checked
+                  data-cur="${esc(l.expires_at ?? "")}" data-cap="${esc(l.max_expires_at ?? "")}" />
+                <span>${esc(l.license_no)} · ${esc(l.product_code)} · 到期 ${fmtDay(l.expires_at)}${
+                  l.max_expires_at ? ` · <span class="muted">最多可到 ${fmtDay(l.max_expires_at)}</span>` : ""
+                }${l.kind === "trial" ? " · 试用" : ""}</span></label>`,
             )
             .join("")}
         </div>
       </div>
-      <div class="note warn">「按天调整」和「直接设定时间」二选一；填了日期时以日期为准。</div>`,
+      <div class="note warn">「按天调整」和「直接设定时间」二选一；填了日期时以日期为准。</div>
+      <div class="note" data-cap-hint></div>`,
     footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">应用</button>`,
     onMount(modal, close) {
       $("[data-cancel]", modal).onclick = close;
+      const hint = $("[data-cap-hint]", modal);
+      const DAY = 86_400_000;
+
+      // 选中授权的上限：取最紧的那个（代理不能用超过 CDK 授予的时间）
+      const capInfo = () => {
+        const picked = $$("[data-lic] input:checked", modal);
+        let capMs = Infinity;
+        let curMs = 0;
+        for (const i of picked) {
+          if (i.dataset.cap) capMs = Math.min(capMs, Date.parse(i.dataset.cap));
+          if (i.dataset.cur) curMs = Math.max(curMs, Date.parse(i.dataset.cur));
+        }
+        const maxDays = Number.isFinite(capMs) ? Math.floor((capMs - Math.max(curMs, Date.now())) / DAY) : null;
+        return { capMs: Number.isFinite(capMs) ? capMs : null, curMs, maxDays };
+      };
+
+      const paintHint = () => {
+        if (!hint) return;
+        const { capMs, maxDays } = capInfo();
+        if (!capMs) {
+          hint.className = "note";
+          hint.textContent =
+            state.role === "agent" ? "这些授权没有时间上限记录，可按需调整。" : "管理员不受上限限制，可以随意延长时间。";
+          return;
+        }
+        const reach = fmtDay(new Date(capMs).toISOString());
+        if (state.role !== "agent") {
+          hint.className = "note";
+          hint.textContent = `当前最紧的上限是 ${reach}；管理员可以超过这个时间，超过后上限会自动抬高。`;
+          return;
+        }
+        hint.className = maxDays !== null && maxDays <= 0 ? "note warn" : "note";
+        hint.textContent =
+          maxDays !== null && maxDays > 0
+            ? `最多只能调整到 ${reach}（还能加 ${maxDays} 天）`
+            : `已经到期上限 ${reach}，不能再延长；只能缩短或改回。`;
+      };
+
+      const dtInput = $('[name="expires_at"]', modal);
+      const daysInput = $('[name="days"]', modal);
+      const checkCap = () => {
+        const { capMs, maxDays } = capInfo();
+        if (state.role !== "agent" || !capMs) return null;
+        const v = dtInput.value;
+        if (v) {
+          const ms = new Date(v).getTime();
+          if (ms > capMs) return `超出当前用户最大时间：最多只能调整到 ${fmtDay(new Date(capMs).toISOString())}`;
+          return null;
+        }
+        const d = Number(daysInput.value);
+        if (Number.isFinite(d) && maxDays !== null && d > maxDays) {
+          return `超出当前用户最大时间：最多还能加 ${Math.max(0, maxDays)} 天（到 ${fmtDay(new Date(capMs).toISOString())}）`;
+        }
+        return null;
+      };
+
+      if (dtInput) dtInput.addEventListener("input", paintHint);
+      if (daysInput) daysInput.addEventListener("input", paintHint);
+      $$("[data-lic] input", modal).forEach((i) => i.addEventListener("change", paintHint));
+      paintHint();
+
       $("[data-save]", modal).onclick = async () => {
         const ids = $$("[data-lic] input:checked", modal).map((i) => i.value);
         if (!ids.length) {
           toast("请至少选择一个授权", "error");
+          return;
+        }
+        const capErr = checkCap();
+        if (capErr) {
+          toast(capErr, "error");
           return;
         }
         const dt = $('[name="expires_at"]', modal).value;
@@ -2794,7 +2881,14 @@ async function customerExpiryForm(customerId) {
         try {
           const res = await apiPost(`/admin/api/customers/${customerId}/adjust-expiry`, payload);
           close();
-          toast(`已调整 ${res.updated} 个授权`, "ok");
+          if (res.capped?.length) {
+            toast(
+              `超出当前用户最大时间，已按上限调整：${res.capped.map((c) => `${c.license_no} → ${fmtDay(c.to)}`).join("；")}`,
+              "error",
+            );
+          } else {
+            toast(`已调整 ${res.updated} 个授权`, "ok");
+          }
           navigate("customers", true);
         } catch (err) {
           toast(err.message, "error");
