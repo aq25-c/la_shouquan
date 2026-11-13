@@ -787,6 +787,118 @@ async function agentPriceForm(agentId) {
   });
 }
 
+/** 代理登录账号：没有则创建，有则改密码 / 停用 / 调整可售范围 */
+async function agentAccountForm(agentId) {
+  const [staffRes, agentRes, productsRes] = await Promise.all([
+    apiGet("/admin/api/staff?role=agent"),
+    apiGet(`/admin/api/agents/${agentId}`),
+    apiGet("/admin/api/products"),
+  ]);
+  const account = staffRes.items.find((s) => s.agent_id === agentId) ?? null;
+  const agent = agentRes.agent;
+  const products = productsRes.items;
+  const pickedProducts = account?.agent_profile?.product_ids ?? [];
+  const pickedTerms = account?.agent_profile?.term_types ?? [];
+
+  const scopeBlock = `
+    <div class="field full" style="margin-top:14px"><span>可售产品（不勾 = 全部产品）</span>
+      <div class="checkbox-list" data-scope-products>
+        ${
+          products
+            .map(
+              (p) =>
+                `<label><input type="checkbox" value="${esc(p.id)}" ${pickedProducts.includes(p.id) ? "checked" : ""} /><span>${esc(p.name)}</span></label>`,
+            )
+            .join("") || '<span class="empty">还没有产品</span>'
+        }
+      </div>
+    </div>
+    <div class="field full"><span>可售卡类型（不勾 = 全部类型）</span>
+      <div class="checkbox-list" data-scope-terms>
+        ${[["hour", "按小时"], ["day", "按天"], ["month", "按月"], ["year", "按年"], ["count", "按次数"]]
+          .map(
+            ([v, label]) =>
+              `<label><input type="checkbox" value="${v}" ${pickedTerms.includes(v) ? "checked" : ""} /><span>${label}</span></label>`,
+          )
+          .join("")}
+      </div>
+    </div>
+    <div class="note">代理只能给这里勾选的产品 / 卡类型出卡，并按「代理定价 → 全局默认价」从账户余额扣费。</div>`;
+
+  const accountBlock = account
+    ? `<div class="note">该代理已有登录账号：<strong>${esc(account.email)}</strong>（${account.status === "active" ? "启用" : "停用"}）</div>
+       <div class="form-grid" style="margin-top:12px">
+         <label class="field"><span>重置密码（留空不改）</span><input name="password" type="password" autocomplete="new-password" /></label>
+         <label class="field"><span>账号状态</span>
+           <select name="status">
+             <option value="active" ${account.status === "active" ? "selected" : ""}>启用</option>
+             <option value="disabled" ${account.status !== "active" ? "selected" : ""}>停用</option>
+           </select></label>
+       </div>`
+    : `<div class="note">该代理还没有登录账号。创建后它可登录后台，但只能看自己的卡密与余额。</div>
+       <div class="form-grid" style="margin-top:12px">
+         <label class="field"><span>登录邮箱</span><input name="email" placeholder="agent@example.com" /></label>
+         <label class="field"><span>初始密码（≥8 位）</span><input name="password" type="password" autocomplete="new-password" /></label>
+       </div>`;
+
+  openModal({
+    title: `代理账号：${agent?.name ?? ""}`,
+    wide: true,
+    body: `${accountBlock}${scopeBlock}`,
+    footer: `<button class="btn btn-primary" data-save type="button">保存</button>
+      ${account ? '<button class="btn btn-danger" data-del-account type="button">删除账号</button>' : ""}`,
+    onMount: (m) => {
+      const collect = () => ({
+        product_ids: $$("[data-scope-products] input:checked", m).map((i) => i.value),
+        term_types: $$("[data-scope-terms] input:checked", m).map((i) => i.value),
+      });
+
+      $("[data-save]", m).onclick = async () => {
+        const scope = collect();
+        const pwd = $('[name="password"]', m)?.value?.trim() ?? "";
+        try {
+          if (account) {
+            const payload = { ...scope, status: $('[name="status"]', m).value };
+            if (pwd) payload.password = pwd;
+            await apiPatch(`/admin/api/staff/${account.id}`, payload);
+            toast("账号已更新", "ok");
+          } else {
+            await apiPost("/admin/api/staff", {
+              email: $('[name="email"]', m).value.trim(),
+              password: $('[name="password"]', m).value,
+              role: "agent",
+              agent_id: agentId,
+              ...scope,
+            });
+            toast("账号已创建，可用它登录后台", "ok");
+          }
+          $("#modal-root").innerHTML = "";
+          navigate("agents", true);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+
+      const delBtn = $("[data-del-account]", m);
+      if (delBtn) {
+        delBtn.onclick = async () => {
+          if (!(await confirmDialog(`删除账号 ${account.email}？删除后该代理将无法登录后台。`, { danger: true, okText: "删除" }))) {
+            return;
+          }
+          try {
+            await api("DELETE", `/admin/api/staff/${account.id}`);
+            toast("账号已删除", "ok");
+            $("#modal-root").innerHTML = "";
+            navigate("agents", true);
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        };
+      }
+    },
+  });
+}
+
 async function renderAgents(root) {
   await ensureCatalog();
   const filters = state.agentFilters ?? (state.agentFilters = { q: "", status: "" });
@@ -857,6 +969,7 @@ async function renderAgents(root) {
                           <td class="right">
                             <div class="btn-row" style="justify-content:flex-end">
                               <button class="btn btn-sm" data-credit="${esc(c.id)}" type="button">充值</button>
+                              <button class="btn btn-sm" data-account="${esc(c.id)}" type="button">账号</button>
                               <button class="btn btn-sm" data-pricing="${esc(c.id)}" type="button">定价</button>
                               <button class="btn btn-sm" data-edit="${esc(c.id)}" type="button">编辑</button>
                               <button class="btn btn-sm" data-toggle="${esc(c.id)}" type="button">${c.status === "active" ? "停用" : "启用"}</button>
@@ -875,6 +988,9 @@ async function renderAgents(root) {
     </div>`;
 
   $("[data-new]", root).onclick = () => agentForm();
+  $$("[data-account]", root).forEach((btn) => {
+    btn.onclick = () => agentAccountForm(btn.dataset.account);
+  });
   $$("[data-pricing]", root).forEach((btn) => {
     btn.onclick = () => agentPriceForm(btn.dataset.pricing);
   });
