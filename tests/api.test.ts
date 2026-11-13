@@ -2406,3 +2406,101 @@ test("删除客户：有有效授权时拒绝，全部过期后硬删除并留�
   assert.equal(detail.totals.licenses, 1);
   assert.ok(!("password_hash" in detail.customer), "快照不应包含密码哈希");
 });
+
+test("并卡时的席位：取较大值，续费不会把席位翻倍", async () => {
+  const mint = async (seats: number) => {
+    const r = await api(
+      "POST",
+      "/admin/api/cdks/generate",
+      { product_id: productId, module_ids: [moduleIds[0]], days: 30, seats, count: 1 },
+      adminToken,
+    );
+    assert.equal(r.status, 201);
+    return r.json.data.codes[0];
+  };
+  const activate = async (cdk: string, deviceId: string) =>
+    api("POST", "/api/v1/licenses/activate", {
+      cdk,
+      device_id: deviceId,
+      email: "seats@test.local",
+      password: "SeatPass123",
+    });
+
+  await api("POST", "/api/v1/auth/register", {
+    email: "seats@test.local",
+    password: "SeatPass123",
+    name: "席位测试",
+  });
+
+  const first = await activate(await mint(1), "SEAT-1");
+  assert.equal(first.status, 201);
+  assert.equal(first.json.data.license.seats, 1);
+  const licenseId = first.json.data.license.id;
+
+  // 买了一张 3 席位的卡，并进同一条授权 → 席位数要涨上去
+  const second = await activate(await mint(3), "SEAT-2");
+  assert.equal(second.status, 201);
+  assert.equal(second.json.data.license.id, licenseId, "应并进同一条授权");
+  assert.equal(second.json.data.license.seats, 3, "新卡席位更大时应生效");
+  assert.equal(second.json.data.license_payload.seat, 3, "签发的许可证里席位也要是 3");
+
+  // 续费买 1 席位 → 席位保持 3，不翻倍也不缩水
+  const third = await activate(await mint(1), "SEAT-3");
+  assert.equal(third.status, 201);
+  assert.equal(third.json.data.license.seats, 3, "续费不应降低席位");
+
+  // 席位真的生效：已绑 3 台，第 4 台应该被拦住
+  const overflow = await api("POST", "/api/v1/licenses/enroll", {
+    license_key: third.json.data.license_key,
+    device_id: "SEAT-4",
+  });
+  assert.equal(overflow.status, 409, "超过席位应被拒");
+  assert.equal(overflow.json.error.code, "SEAT_LIMIT");
+  assert.equal(overflow.json.error.details.seats, 3);
+});
+
+
+test("软件参数接口：客户会话和许可证密钥都能取", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 2, count: 1 },
+    adminToken,
+  );
+  const cdk = gen.json.data.codes[0];
+
+  await api("POST", "/api/v1/auth/register", {
+    email: "vars@test.local",
+    password: "VarsPass123",
+    name: "参数测试",
+  });
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk,
+    device_id: "VARS-1",
+    email: "vars@test.local",
+    password: "VarsPass123",
+  });
+  assert.equal(act.status, 201);
+  const licenseKey = act.json.data.license_key;
+
+  // ① 客户会话（老用法）
+  const login = await api("POST", "/api/v1/auth/login", {
+    email: "vars@test.local",
+    password: "VarsPass123",
+  });
+  const sessionToken = login.json.data.session.token;
+  const bySession = await api("GET", "/api/v1/vars", undefined, sessionToken);
+  assert.equal(bySession.status, 200);
+  assert.equal(bySession.json.data.product.code, "app-pro");
+
+  // ② 许可证密钥（客户端实际持有的就是它）
+  const byKey = await api("GET", "/api/v1/vars", undefined, licenseKey);
+  assert.equal(byKey.status, 200, "客户端只拿 license_key 也应该能取到软件参数");
+  assert.equal(byKey.json.data.product.code, "app-pro");
+  assert.equal(byKey.json.data.license.seats, 2, "应返回真实席位");
+  assert.equal(byKey.json.data.license.active_devices, 1);
+
+  // ③ 什么都不带 → 401
+  const anon = await api("GET", "/api/v1/vars");
+  assert.equal(anon.status, 401);
+});

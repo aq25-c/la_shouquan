@@ -86,11 +86,11 @@ const ENTRIES: Record<string, ApiDocEntry> = {
 
   /* ---------------- 客户端 · 试用 ---------------- */
   "GET /api/v1/vars": {
-    title: "远程变量（需登录）",
+    title: "远程变量（客户会话或 license_key）",
     auth: "customer",
-    params: "`product?`（产品编码，留空取该客户第一个有效授权对应的产品）",
-    desc: "返回该产品配置的远程变量 `vars`，值为 text / image / json 三种载荷（json 已解析为对象）。",
-    notes: "未登录直接 401，匿名无法读取；图片通常是 URL 或 data URI 字符串。",
+    params: "`product?`（产品编码，留空取当前授权 / 客户第一个有效授权对应的产品）",
+    desc: "返回该产品配置的远程变量 `vars`，值为 text / image / json 三种载荷（json 已解析为对象）。鉴权二选一：客户登录会话，或直接用 `Authorization: Bearer <license_key>`——客户端一般只有密钥，不需要再登录。用密钥调用时会额外返回 `license`（单号、状态、seats、active_devices、expires_at）。",
+    notes: "两种身份都没有才 401；授权已吊销返回 403 LICENSE_REVOKED；图片通常是 URL 或 data URI 字符串。",
   },
   "GET /api/v1/trial/info": { title: "试用配置", auth: "public", desc: "按模块下发：每个开放试用的模块带自己的 days / mode / value / seats / max_per_customer。`module_codes` 保留为兼容字段。", returns: "`enabled`、`modules[]`（`code`、`name`、`mode`、`value`、`days`、`seats`、`max_per_customer`）、`module_codes`" },
   "GET /api/v1/trial/status": { title: "我的试用额度", auth: "customer", desc: "按产品 → 模块返回已用次数、剩余次数与是否还能试用（`available` / `reason`）。", returns: "`items[].product`、`items[].modules[]`" },
@@ -333,8 +333,8 @@ const EXTRA_DOCS: Record<string, { returns?: string; errors?: string }> = {
     errors: "`403 USAGE_EXHAUSTED`、`409 NOT_COUNT_LICENSE`、`404 DEVICE_NOT_BOUND` / `INVALID_LICENSE_KEY`",
   },
   "GET /api/v1/vars": {
-    returns: "`product`（code/name）、`vars`（对象，json 类型已解析）",
-    errors: "`401 UNAUTHORIZED`（未登录）、`404 PRODUCT_NOT_FOUND`",
+    returns: "`product`（code/name）、`vars`（对象，json 类型已解析）、`license`（仅用 license_key 鉴权时返回：单号/状态/席位/已绑设备/到期）",
+    errors: "`401 UNAUTHORIZED`（两种身份都没有）、`403 LICENSE_REVOKED`、`404 PRODUCT_NOT_FOUND`",
   },
   "POST /admin/api/cdks/generate": {
     returns: "`batch`（含 `term_type` / `term_value` / `count`）、`codes`（卡密明文数组）",

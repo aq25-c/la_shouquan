@@ -14,6 +14,7 @@ import {
 } from "../crypto.ts";
 import {
   badRequest,
+  bearerToken,
   q,
   bodyInt,
   bodyStr,
@@ -79,6 +80,7 @@ import {
   touchLicenseHeartbeat,
   upsertDevice,
   createLicense,
+  updateLicense,
 } from "../store/licensing.ts";
 import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
@@ -287,8 +289,33 @@ export function registerClientRoutes(): void {
    * 不传 product 时默认取该客户名下第一个有效授权对应的产品。
    */
   get("/api/v1/vars", (ctx) => {
-    const customer = requireCustomer(ctx);
     const code = q(ctx, "product");
+
+    // 客户端一般只保存了 license_key，没有客户会话 —— 两种身份都认。
+    // 此前只支持客户会话，客户端调这个接口会拿到 401「请先登录客户账号」，
+    // 表现出来就是客户端「软件参数加载失败」。
+    const raw = bearerToken(ctx.req);
+    const byKey = raw ? findLicenseByKeyHash(sha256hex(raw)) : null;
+    if (byKey) {
+      if (effectiveStatus(byKey) === "revoked") throw locked("授权已被吊销", "LICENSE_REVOKED");
+      const own = findProductById(byKey.product_id);
+      const product = (code ? findProductByCode(code) : null) ?? own;
+      if (!product) throw notFound("没有可读取的产品", "PRODUCT_NOT_FOUND");
+      return ok({
+        product: { code: product.code, name: product.name },
+        vars: varsForClient(product.id),
+        // 顺手把席位相关的事实返回，客户端不用再猜
+        license: {
+          license_no: byKey.license_no,
+          status: effectiveStatus(byKey),
+          seats: byKey.seats,
+          active_devices: activeDeviceCount(byKey.id),
+          expires_at: byKey.expires_at,
+        },
+      });
+    }
+
+    const customer = requireCustomer(ctx);
 
     let product = code ? findProductByCode(code) : null;
     if (!product) {
@@ -623,6 +650,11 @@ export function registerClientRoutes(): void {
         // 叠加到现有授权，并重新签发密钥（旧密钥作废，客户端需保存新的）
         licenseKey = generateLicenseKey();
         rotateLicenseKey(reusable.id, sha256hex(licenseKey));
+        // 席位取较大值：新卡承诺的台数必须生效，续费时也不会把席位翻倍。
+        // （此前合并完全不看 cdk.seats，买了 3 席位的卡仍然只能绑 1 台）
+        if (cdk.seats > reusable.seats) {
+          updateLicense(reusable.id, { seats: cdk.seats });
+        }
         if (isCountTerm) {
           license = addLicenseUsages(reusable.id, newTermValue);
         } else {

@@ -3012,9 +3012,14 @@ async function staffForm(staff, opt) {
 /* ============================ 软件参数 ============================ */
 
 async function renderParams(root) {
+  // 分开 catch，页面能直接说清是哪个接口挂了（此前只有一个笼统的「加载失败」）
   const [productsRes, pricesRes] = await Promise.all([
-    apiGet("/admin/api/products"),
-    apiGet("/admin/api/prices"),
+    apiGet("/admin/api/products").catch((err) => {
+      throw new Error(`产品列表加载失败：${err.message}`);
+    }),
+    apiGet("/admin/api/prices").catch((err) => {
+      throw new Error(`价格列表加载失败：${err.message}`);
+    }),
   ]);
 
   root.innerHTML = `
