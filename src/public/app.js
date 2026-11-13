@@ -33,6 +33,27 @@ function fmtDay(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** 卡类型中文 */
+function termText(t) {
+  return { hour: "按小时", day: "按天", month: "按月", year: "按年", count: "按次数" }[t] ?? t ?? "—";
+}
+
+/** 卡类型计量单位 */
+function termUnit(t) {
+  return { hour: "小时", day: "天", month: "月", year: "年", count: "次" }[t] ?? "单位";
+}
+
+/** 授权的计费展示：时长类给「30 天」，次数类给「3/10（剩 7）」 */
+function licenseTermText(l) {
+  if (l.term_type === "count") {
+    const used = l.used_usages ?? 0;
+    const max = l.max_usages ?? 0;
+    return `次数 ${used}/${max}（剩 ${Math.max(0, max - used)}）`;
+  }
+  if (!l.term_type) return "—";
+  return `${l.term_value ?? ""} ${termUnit(l.term_type)}`;
+}
+
 function relDays(iso) {
   if (!iso) return "—";
   const ms = Date.parse(iso) - Date.now();
@@ -1432,14 +1453,14 @@ async function renderLicenses(root) {
             <option value="7" ${filters.expiring === "7" ? "selected" : ""}>7 天内到期</option>
             <option value="30" ${filters.expiring === "30" ? "selected" : ""}>30 天内到期</option>
           </select>
-          <input data-f-q placeholder="搜索单号 / 客户邮箱" value="${esc(filters.q)}" />
+          <input data-f-q placeholder="搜索单号 / 客户邮箱 / 客户名称" value="${esc(filters.q)}" />
           <button class="btn btn-primary btn-sm" data-new type="button">+ 手动开通</button>
         </div>
       </div>
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>授权单号</th><th>客户</th><th>产品</th><th>状态</th><th>到期时间</th><th>剩余</th><th>设备</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>授权单号</th><th>客户</th><th>产品</th><th>计费</th><th>状态</th><th>到期时间</th><th>剩余</th><th>席位</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
@@ -1449,6 +1470,7 @@ async function renderLicenses(root) {
                           <td class="mono">${esc(l.license_no)}</td>
                           <td>${esc(l.customer_email ?? l.customer_name ?? "—")}</td>
                           <td>${esc(l.product_code)}</td>
+                          <td class="nowrap">${licenseTermText(l)}</td>
                           <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
                           <td class="nowrap">${fmtDay(l.expires_at)}</td>
                           <td class="nowrap">${relDays(l.expires_at)}</td>
@@ -1457,7 +1479,7 @@ async function renderLicenses(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(8, "没有符合条件的授权")
+                  : emptyRow(9, "没有符合条件的授权")
               }
             </tbody>
           </table>
@@ -2498,40 +2520,12 @@ async function staffForm(staff, opt) {
 /* ============================ 软件参数 ============================ */
 
 async function renderParams(root) {
-  const [trial, productsRes, pricesRes] = await Promise.all([
-    apiGet("/admin/api/settings/trial"),
+  const [productsRes, pricesRes] = await Promise.all([
     apiGet("/admin/api/products"),
     apiGet("/admin/api/prices"),
   ]);
-  const c = trial.config;
 
   root.innerHTML = `
-    <div class="card">
-      <div class="card-head">
-        <h3>试用参数</h3>
-        <span class="muted small">试用授权 ${trial.summary.total} 个 · 有效 ${trial.summary.active} 个</span>
-      </div>
-      <div class="card-body">
-        <div class="form-grid">
-          <label class="field"><span>允许新用户自助试用</span>
-            <select name="enabled"><option value="1" ${c.enabled ? "selected" : ""}>开启</option><option value="0" ${!c.enabled ? "selected" : ""}>关闭</option></select></label>
-          <label class="field"><span>试用方式</span>
-            <select name="mode"><option value="day" ${c.mode === "day" ? "selected" : ""}>试用几天</option><option value="count" ${c.mode === "count" ? "selected" : ""}>试用几次</option></select></label>
-          <label class="field"><span>试用量（天 / 次）</span><input name="value" type="number" min="1" max="3650" value="${c.value}" /></label>
-          <label class="field"><span>试用席位数</span><input name="seats" type="number" min="1" max="100" value="${c.seats}" /></label>
-          <label class="field"><span>每客户可试用次数</span><input name="max" type="number" min="1" max="20" value="${c.max_per_customer}" /></label>
-          <label class="field"><span>限定产品</span>
-            <select name="product"><option value="">不限定</option>${productsRes.items.map((p) => `<option value="${esc(p.id)}" ${c.product_id === p.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></label>
-        </div>
-        <div class="note" style="margin-top:12px">
-          只有<b>尚未购买正式授权</b>的客户才能自助试用；试用到期前可在「授权」页延长试用。
-        </div>
-        <div class="form-actions">
-          <button class="btn btn-primary btn-sm" data-save type="button">保存试用参数</button>
-        </div>
-      </div>
-    </div>
-
     <div class="card">
       <div class="card-head"><h3>全局默认卡密价格</h3>
         <span class="muted small">模块留空 = 该产品默认价；单价单位：元 / 单位</span></div>
@@ -2555,22 +2549,33 @@ async function renderParams(root) {
         </div>
         <div class="table-wrap" style="margin-top:12px">
           <table>
-            <thead><tr><th>产品</th><th>模块</th><th>卡类型</th><th>单价</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>产品 / 模块</th><th>卡类型</th><th>单价</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 pricesRes.items.length
-                  ? pricesRes.items
+                  ? Object.entries(
+                      pricesRes.items.reduce((acc, p) => {
+                        (acc[p.product_name] ||= []).push(p);
+                        return acc;
+                      }, {}),
+                    )
                       .map(
-                        (p) => `<tr>
-                          <td>${esc(p.product_name)}</td>
-                          <td>${p.module_name ? esc(p.module_name) : '<span class="muted small">产品默认</span>'}</td>
-                          <td>${esc(p.term_type)}</td>
-                          <td>¥${(p.unit_price / 100).toFixed(2)}</td>
-                          <td class="right"><button class="btn btn-sm" data-del-price="${esc(p.id)}" type="button">删除</button></td>
-                        </tr>`,
+                        ([productName, rows]) => `
+                        <tr class="group-row"><td colspan="4"><strong>${esc(productName)}</strong>
+                          <span class="muted small">共 ${rows.length} 条</span></td></tr>
+                        ${rows
+                          .map(
+                            (p) => `<tr>
+                              <td style="padding-left:26px">${p.module_name ? esc(p.module_name) : '<span class="muted small">产品默认价（全部模块）</span>'}</td>
+                              <td>${termText(p.term_type)}</td>
+                              <td>¥${(p.unit_price / 100).toFixed(2)} / ${termUnit(p.term_type)}</td>
+                              <td class="right"><button class="btn btn-sm" data-del-price="${esc(p.id)}" type="button">删除</button></td>
+                            </tr>`,
+                          )
+                          .join("")}`,
                       )
                       .join("")
-                  : emptyRow(5, "还没有配置价格——代理将无法生成卡密")
+                  : emptyRow(4, "还没有配置价格——代理将无法生成卡密")
               }
             </tbody>
           </table>
@@ -2604,13 +2609,17 @@ async function renderParams(root) {
   });
 
   const priceProduct = $('[name="price_product"]', root);
+  const loadPriceModules = async () => {
+    if (!priceProduct || !priceProduct.value) return;
+    const mods = await apiGet(`/admin/api/products/${priceProduct.value}/modules`).catch(() => ({ items: [] }));
+    $('[name="price_module"]', root).innerHTML =
+      '<option value="">（产品默认价 · 全部模块）</option>' +
+      mods.items.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
+  };
   if (priceProduct) {
-    priceProduct.onchange = async () => {
-      const mods = await apiGet(`/admin/api/products/${priceProduct.value}/modules`).catch(() => ({ items: [] }));
-      $('[name="price_module"]', root).innerHTML =
-        '<option value="">（产品默认价）</option>' +
-        mods.items.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
-    };
+    priceProduct.onchange = loadPriceModules;
+    // 首次进入即加载当前产品的模块，避免"选不到模块"
+    await loadPriceModules();
   }
 
   $$("[data-del-price]", root).forEach((btn) => {
@@ -2626,30 +2635,13 @@ async function renderParams(root) {
     };
   });
 
-  $("[data-save]", root).onclick = async () => {
-    try {
-      await apiPatch("/admin/api/settings/trial", {
-        enabled: $('[name="enabled"]', root).value === "1",
-        mode: $('[name="mode"]', root).value,
-        value: Number($('[name="value"]', root).value),
-        seats: Number($('[name="seats"]', root).value),
-        max_per_customer: Number($('[name="max"]', root).value),
-        product_id: $('[name="product"]', root).value || null,
-      });
-      toast("已保存", "ok");
-      navigate("params", true);
-    } catch (err) {
-      toast(err.message, "error");
-    }
-  };
 }
 
 async function renderSettings(root) {
-  const [key, me, admins, trial, productsRes] = await Promise.all([
+  const [key, me, admins, productsRes] = await Promise.all([
     state.signingKey ? Promise.resolve(state.signingKey) : apiGet("/admin/api/signing-key"),
     apiGet("/admin/api/auth/me"),
     apiGet("/admin/api/admins"),
-    apiGet("/admin/api/settings/trial"),
     apiGet("/admin/api/products"),
   ]);
   state.signingKey = key;
