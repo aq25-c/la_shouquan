@@ -2463,7 +2463,21 @@ async function openCustomerDetail(id) {
         <button class="btn btn-primary btn-sm" data-save type="button">保存</button>
         <button class="btn btn-sm" data-toggle type="button">${c.status === "active" ? "停用账号" : "启用账号"}</button>
         <button class="btn btn-sm" data-reset type="button">重置登录密码</button>
+        ${
+          state.admin?.role === "owner"
+            ? `<button class="btn btn-sm btn-danger" data-purge type="button" ${
+                data.purgeable ? "" : 'disabled title="名下还有未过期或未吊销的授权"'
+              }>删除客户</button>`
+            : ""
+        }
       </div>
+      ${
+        data.purgeable
+          ? ""
+          : `<div class="note warn">暂不能删除：${data.purge_blocking
+              .map((b) => `${b.license_no}（${b.reason}）`)
+              .join("；")}</div>`
+      }
       <div class="card">
         <div class="card-head"><h3>该客户的授权</h3><span class="muted small">共 ${data.licenses.length} 个</span></div>
         <div class="card-body tight">
@@ -2511,6 +2525,29 @@ async function openCustomerDetail(id) {
           toast(err.message, "error");
         }
       };
+      const purgeBtn = $("[data-purge]", modal);
+      if (purgeBtn) {
+        purgeBtn.onclick = async () => {
+          const licCount = data.licenses.length;
+          const devCount = data.licenses.reduce((n, l) => n + l.devices.length, 0);
+          const ok = await confirmDialog(
+            `将永久删除该客户，以及名下 ${licCount} 个授权、${devCount} 台设备记录；相关 CDK 会标为作废但保留记录。删除后无法恢复，只能从审计日志里查快照。确定继续？`,
+            { danger: true, okText: "永久删除" },
+          );
+          if (!ok) return;
+          try {
+            const r = await api("DELETE", `/admin/api/customers/${id}`);
+            toast(
+              `已删除：授权 ${r?.licenses ?? licCount} 个、设备 ${r?.devices ?? devCount} 台`,
+              "ok",
+            );
+            close();
+            navigate("customers", true);
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        };
+      }
       $("[data-toggle]", modal).onclick = async () => {
         try {
           await apiPatch(`/admin/api/customers/${id}`, { status: c.status === "active" ? "disabled" : "active" });

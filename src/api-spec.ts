@@ -242,10 +242,11 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   /* ---------------- 管理 · 客户 ---------------- */
   "GET /admin/api/customers": { title: "客户列表", auth: "admin", params: "`q?`、`status?`、分页", desc: "含授权数、有效授权数与最近到期。" },
   "POST /admin/api/customers": { title: "新增客户", auth: "admin", params: "`email?`、`password?`、`name?`、`company?`、`phone?`、`note?`", desc: "邮箱留空即建「匿名客户」；`password` 留空则该客户不能登录；重复邮箱 409 EMAIL_TAKEN。" },
-  "GET /admin/api/customers/:id": { title: "客户详情", auth: "admin", desc: "客户信息 + 名下授权（各附设备）。" },
+  "GET /admin/api/customers/:id": { title: "客户详情", auth: "admin", desc: "客户信息 + 名下授权（各附设备）+ `purgeable` / `purge_blocking`（能否删除及原因）。" },
   "PATCH /admin/api/customers/:id": { title: "编辑客户", auth: "admin", params: "`name?`、`company?`、`phone?`、`note?`、`status?`", desc: "停用后该客户心跳立即被拒。" },
   "POST /admin/api/customers/:id/reset-password": { title: "重置客户密码", auth: "admin", desc: "生成临时密码（只返回一次），并使其会话全部失效。" },
   "POST /admin/api/customers/:id/adjust-expiry": { title: "按客户调整到期", auth: "admin", params: "`days?` 或 `expires_at?`、`license_ids?`", desc: "批量调整该客户名下授权的到期时间；`days` 正数延长/负数缩短，`license_ids` 省略则作用于全部未吊销授权。" },
+  "DELETE /admin/api/customers/:id": { title: "删除客户（硬删除，仅超级管理员）", auth: "admin", desc: "需要 owner 权限。要求名下授权全部已过期或已吊销（暂停的不算），否则 409 CUSTOMER_HAS_ACTIVE_LICENSE。删除客户、授权、设备、模块记录；CDK 改标 revoked 保留行。删除前会把完整快照写进审计日志（action=customer.delete），日志写不进去则整体回滚。" },
 
   /* ---------------- 管理 · 授权 ---------------- */
   "GET /admin/api/licenses": { title: "授权列表", auth: "admin", params: "`status?`、`kind?`(paid/trial)、`product_id?`、`customer_id?`、`agent_id?`、`expiring_within_days?`、`q?`、分页", desc: "含 `eff_status`（实时计算）、代理与设备数。" },

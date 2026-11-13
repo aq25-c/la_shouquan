@@ -49,6 +49,7 @@ import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
+import { checkCustomerPurgeable, customerPurgeSnapshot, purgeCustomer } from "../store/purge.ts";
 import {
   checkAgentScope,
   deletePrice,
@@ -1478,7 +1479,53 @@ export function registerAdminRoutes(): void {
       ...licenseView(row),
       devices: listDevices(row.id),
     }));
-    return ok({ customer: { ...customer, password_hash: undefined }, licenses });
+    // v13：把「能不能删」一并告诉前端，避免点了才报错
+    const purge = checkCustomerPurgeable(id);
+    return ok({
+      customer: { ...customer, password_hash: undefined },
+      licenses,
+      purgeable: purge.ok,
+      purge_blocking: purge.ok ? [] : purge.blocking,
+    });
+  });
+
+  /**
+   * v13：彻底删除客户（硬删除）。
+   * 前提：名下授权全部过期或已吊销；仅超级管理员可操作。
+   * 先写审计快照再删数据，同一个事务，日志落不了盘就整体回滚。
+   */
+  del(`${P}/customers/:id`, (ctx) => {
+    const staffCtx = requireOwner(ctx);
+    const admin = staffCtx.admin;
+    const id = slash(ctx, "id");
+    if (!findCustomerById(id)) throw notFound("客户不存在", "CUSTOMER_NOT_FOUND");
+
+    const check = checkCustomerPurgeable(id);
+    if (!check.ok) {
+      throw conflict(
+        "该客户还有未过期或未吊销的授权，不能删除",
+        "CUSTOMER_HAS_ACTIVE_LICENSE",
+        { blocking: check.blocking },
+      );
+    }
+
+    const snapshot = customerPurgeSnapshot(id);
+    const result = withTx(() => {
+      audit({
+        actorType: "admin",
+        actorId: admin.id,
+        actorLabel: admin.email,
+        action: "customer.delete",
+        targetType: "customer",
+        targetId: id,
+        ip: ctx.ip,
+        detail: snapshot ?? { customer_id: id },
+        strict: true, // 删除不可逆，日志必须落盘
+      });
+      return purgeCustomer(id);
+    });
+
+    return ok({ deleted: true, ...(result ?? {}) });
   });
 
   patch(`${P}/customers/:id`, async (ctx) => {

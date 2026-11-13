@@ -12,6 +12,8 @@ export type AuditInput = {
   targetId?: string | null;
   ip?: string | null;
   detail?: unknown;
+  /** 日志必须落盘时置 true：写失败会抛异常，让外层事务回滚 */
+  strict?: boolean;
 };
 
 export function audit(input: AuditInput): void {
@@ -34,7 +36,9 @@ export function audit(input: AuditInput): void {
         input.detail === undefined ? null : JSON.stringify(input.detail),
       );
   } catch (err) {
-    // 审计失败不能影响主流程
+    // 审计失败不能影响主流程；但删除这类不可逆操作要求日志必须落盘，
+    // 调用方传 strict: true 时把异常抛出去，让外层事务回滚。
+    if (input.strict) throw err;
     console.error("[audit] 写入失败", err);
   }
 }

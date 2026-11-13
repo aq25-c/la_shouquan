@@ -1093,6 +1093,15 @@ test("员工账号：按菜单/功能权限受限", async () => {
   const ownerList = await api("GET", "/admin/api/staff", undefined, adminToken);
   assert.ok(ownerList.json.data.items.some((s: Json) => s.id === staffId));
 
+  // v13：员工不能删客户（硬删除只给 owner）
+  const customersForStaff = await api("GET", "/admin/api/customers", undefined, adminToken);
+  const anyCustomerId = customersForStaff.json.data.items[0]?.id;
+  if (anyCustomerId) {
+    const purgeDenied = await api("DELETE", `/admin/api/customers/${anyCustomerId}`, undefined, staffToken);
+    assert.equal(purgeDenied.status, 403, "员工不能删除客户");
+    assert.equal(purgeDenied.json.error.code, "FORBIDDEN_OWNER");
+  }
+
   // 停用后会话立即失效
   const disabled = await api("PATCH", `/admin/api/staff/${staffId}`, { status: "disabled" }, adminToken);
   assert.equal(disabled.status, 200);
@@ -2284,4 +2293,95 @@ test("接口兼容：旧的 channel_id 作为 agent_id 仍可正常使用", asyn
     byOther.json.data.items.some((c: Json) => c.code === gen2.json.data.codes[0]),
     "同时传两个字段时应以新字段 agent_id 为准",
   );
+});
+
+
+/* ==================== 删除客户（v13） ==================== */
+
+test("删除客户：有有效授权时拒绝，全部过期后硬删除并留完整快照", async () => {
+  // 造一个独立客户，用一张 30 天卡激活
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, seats: 1, count: 1 },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  const cdk = gen.json.data.codes[0];
+
+  await api("POST", "/api/v1/auth/register", {
+    email: "purge@test.local",
+    password: "PurgePass123",
+    name: "待删除客户",
+  });
+  const act = await api("POST", "/api/v1/licenses/activate", {
+    cdk,
+    device_id: "PURGE-1",
+    email: "purge@test.local",
+    password: "PurgePass123",
+  });
+  assert.equal(act.status, 201);
+  const licenseId = act.json.data.license.id;
+
+  const session = await api("POST", "/api/v1/auth/login", {
+    email: "purge@test.local",
+    password: "PurgePass123",
+  });
+  const custToken = session.json.data.session.token;
+
+  const list = await api("GET", "/admin/api/customers?q=purge@test.local", undefined, adminToken);
+  const custId = list.json.data.items[0].id;
+
+  // ① 仍有有效授权 → 拒绝删除，并给出阻止原因
+  const denied = await api("DELETE", `/admin/api/customers/${custId}`, undefined, adminToken);
+  assert.equal(denied.status, 409);
+  assert.equal(denied.json.error.code, "CUSTOMER_HAS_ACTIVE_LICENSE");
+  assert.ok(denied.json.error.details.blocking.length >= 1);
+
+  const blocked = await api("GET", `/admin/api/customers/${custId}`, undefined, adminToken);
+  assert.equal(blocked.json.data.purgeable, false);
+  assert.ok(blocked.json.data.purge_blocking.length >= 1);
+
+  // ② 让授权过期 → 可以删
+  const past = new Date(Date.now() - 86_400_000).toISOString();
+  await api("PATCH", `/admin/api/licenses/${licenseId}`, { expires_at: past }, adminToken);
+
+  const ready = await api("GET", `/admin/api/customers/${custId}`, undefined, adminToken);
+  assert.equal(ready.json.data.purgeable, true, "全部过期后应可删除");
+
+  const del = await api("DELETE", `/admin/api/customers/${custId}`, undefined, adminToken);
+  assert.equal(del.status, 200);
+  assert.equal(del.json.data.deleted, true);
+  assert.equal(del.json.data.licenses, 1);
+  assert.ok(del.json.data.devices >= 1, "应删掉绑定的设备");
+  assert.equal(del.json.data.cdks, 1, "应处理掉关联的 CDK");
+
+  // ③ 客户与授权都没了
+  const gone = await api("GET", `/admin/api/customers/${custId}`, undefined, adminToken);
+  assert.equal(gone.status, 404);
+  const licGone = await api("GET", `/admin/api/licenses/${licenseId}`, undefined, adminToken);
+  assert.equal(licGone.status, 404);
+
+  // ④ 客户会话立即失效
+  const me = await api("GET", "/api/v1/auth/me", undefined, custToken);
+  assert.equal(me.status, 401, "删除客户后其会话应失效");
+
+  // ⑤ CDK 不删行，改成作废
+  const cdkAfter = await api("GET", `/admin/api/cdks?q=${cdk}`, undefined, adminToken);
+  const row = cdkAfter.json.data.items.find((c: Json) => c.code === cdk);
+  assert.ok(row, "CDK 记录应保留");
+  assert.equal(row.status, "revoked", "CDK 应标记为作废");
+
+  // ⑥ 审计日志里有完整快照
+  const auditList = await api("GET", "/admin/api/audit?action=customer.delete&page_size=50", undefined, adminToken);
+  const entry = auditList.json.data.items.find((a: Json) => a.target_id === custId);
+  assert.ok(entry, "应留下 customer.delete 审计记录");
+  const detail = typeof entry.detail === "string" ? JSON.parse(entry.detail) : entry.detail;
+  assert.equal(detail.customer.email, "purge@test.local");
+  assert.equal(detail.licenses.length, 1);
+  assert.equal(detail.licenses[0].license_no, act.json.data.license.license_no);
+  assert.ok(detail.devices.length >= 1);
+  assert.equal(detail.cdks[0].code, cdk);
+  assert.equal(detail.totals.licenses, 1);
+  assert.ok(!("password_hash" in detail.customer), "快照不应包含密码哈希");
 });
