@@ -1507,10 +1507,16 @@ export function registerAdminRoutes(): void {
     const termValue = bodyInt(ctx, "term_value", { min: 1, max: 100000 });
     if (termValue !== null) patchData.termValue = termValue;
 
+    // 赠送卡（实付 0）不能改：改时间等于凭空造价值，只能删除或作废
+    if (cdk.agent_id && Number(cdk.paid_amount ?? 0) === 0) {
+      throw conflict("赠送卡不能修改，只能删除或作废；需要调整请重新生成", "GIFT_CARD_LOCKED");
+    }
+
     // 代理改卡：按「新价值 − 实付」结算差价（1 天换 1 个月必须补钱）
-    // 赠送卡实付 0，改它不收费
+    // 只改兑换截止时间不动钱；赠送卡已在上面挡掉
+    const valueChanged = termType !== null || termValue !== null || moduleIds !== undefined || seats !== null;
     let settleDiff = 0;
-    if (staffCtx.isAgent && staffCtx.agentId && Number(cdk.paid_amount ?? 0) > 0) {
+    if (valueChanged && staffCtx.isAgent && staffCtx.agentId) {
       const value = cardValue(
         staffCtx.agentId,
         cdk.product_id,
@@ -1932,6 +1938,12 @@ export function registerAdminRoutes(): void {
     }
 
     const result = kind === "cdk" ? batchCdks(ids, opts, apply) : batchLicenses(ids, opts, apply);
+    if (result.blocked) {
+      throw conflict(result.blocked.reason, "BALANCE_INSUFFICIENT", {
+        balance: result.blocked.balance,
+        needed: result.blocked.needed,
+      });
+    }
 
     if (apply && result.changed.length) {
       audit({

@@ -1928,6 +1928,11 @@ async function cdkDetail(cdkId) {
             ? ` <span class="muted small">· 结算单价 ¥${(c.unit_price / 100).toFixed(2)}</span>`
             : ""
         }</dd>
+        <dt>实付</dt><dd>${
+          Number(c.paid_amount ?? 0) > 0
+            ? `<b>¥${(Number(c.paid_amount) / 100).toFixed(2)}</b> <span class="muted small">· 改卡按差价补退、删卡按此金额退</span>`
+            : '<span class="muted">¥0.00（赠送卡，改卡不结算、删卡不退款）</span>'
+        }</dd>
         <dt>当前归属</dt><dd>${
           !activated
             ? '<span class="muted small">未激活，激活后按这张卡归属</span>'
@@ -1948,6 +1953,8 @@ async function cdkDetail(cdkId) {
       ${
         activated
           ? '<div class="note">该 CDK 已被激活，不能再修改或删除。</div>'
+          : c.agent_id && Number(c.paid_amount ?? 0) === 0
+            ? '<div class="note">赠送卡（实付 ¥0.00）不能修改，只能删除或作废；需要不同时长请重新生成。</div>'
           : `<div class="card"><div class="card-head"><h3>修改（仅未激活可改）</h3></div><div class="card-body">
         <div class="form-grid">
           <label class="field"><span>兑换截止时间（留空 = 不限）</span>

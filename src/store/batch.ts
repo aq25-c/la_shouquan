@@ -20,6 +20,7 @@ import {
 import { findModuleById } from "./catalog.ts";
 import { resolvePrice, totalPrice } from "./prices.ts";
 import { changeBalance } from "./ledger.ts";
+import { findAgentById } from "./agents.ts";
 
 /**
  * 一张卡的价值（分）：单价 × 折算数量 × 席位系数。
@@ -56,8 +57,10 @@ export type BatchResult = {
   failed: BatchItemProblem[];
   /** 实际改动的条目（写日志用） */
   changed: BatchChanged[];
-  /** 卡密批量改动涉及的钱：补差 / 退款（分） */
+  /** 卡密批量改动涉及的钱：补差 / 退款（分）；预览时是预计值 */
   money: { charged: number; refunded: number };
+  /** 余额不够整批拒绝时填这里（此时一条都没改） */
+  blocked?: { reason: string; balance: number; needed: number };
 };
 
 export type BatchOptions = {
@@ -124,6 +127,11 @@ function planCdk(
     };
   }
 
+  // 代理名下的赠送卡（实付 0）不能改，只能删除/作废；管理员发的卡不涉及钱，照常可改
+  if (cdk.agent_id && Number(cdk.paid_amount ?? 0) === 0) {
+    return { skip: { id, label, reason: "赠送卡不能修改，只能删除或作废" } };
+  }
+
   const patch: Parameters<typeof updateCdk>[1] = {};
 
   // ① 兑换截止时间
@@ -157,9 +165,10 @@ function planCdk(
   }
 
   // 代理改卡：按「新价值 − 实付」结算差价（改大补钱、改小退钱）
-  // 实付为 0 的是赠送卡，改它不收费也不退钱
+  // 只改兑换截止时间不算价值变化，不结算；实付 0 的赠送卡已在上面挡掉
+  const valueChanged = patch.termType !== undefined || patch.moduleIds !== undefined;
   let settle: { diff: number; newValue: number } | null = null;
-  if (opts.agent_id && Number(cdk.paid_amount ?? 0) > 0) {
+  if (valueChanged && opts.agent_id && Number(cdk.paid_amount ?? 0) > 0) {
     const newModules = patch.moduleIds ?? parseJson<string[]>(cdk.module_ids, []);
     const newTermType = patch.termType ?? cdk.term_type ?? "day";
     const newTermValue = patch.termValue ?? cdk.term_value ?? cdk.days;
@@ -200,56 +209,97 @@ export function batchCdks(ids: string[], opts: BatchOptions, apply: boolean): Ba
     money: { charged: 0, refunded: 0 },
   };
 
+  // 第一阶段：全部先算一遍计划（预览和真正执行用同一份结果）
+  const plans: CdkPlan[] = [];
   for (const id of list) {
     const { plan, skip } = planCdk(id, opts);
     if (skip) {
       result.skipped.push(skip);
       continue;
     }
-    if (!apply) {
-      result.updated += 1;
-      continue;
+    plans.push(plan!);
+    if (plan!.settle && plan!.settle.diff !== 0) {
+      if (plan!.settle.diff > 0) result.money.charged += plan!.settle.diff;
+      else result.money.refunded += -plan!.settle.diff;
     }
+  }
+  result.updated = plans.length;
+
+  if (!apply) return result;
+
+  // 第二阶段：钱要一次性够，否则整批不动（避免改一半卡住）
+  if (opts.agent_id && result.money.charged > 0) {
+    const agent = findAgentById(opts.agent_id);
+    const balance = Number(agent?.balance ?? 0);
+    if (balance < result.money.charged) {
+      result.updated = 0;
+      result.blocked = {
+        reason: `余额不足：本次共需补 ¥${(result.money.charged / 100).toFixed(2)}，当前余额 ¥${(balance / 100).toFixed(2)}`,
+        balance,
+        needed: result.money.charged,
+      };
+      return result;
+    }
+  }
+
+  for (const plan of plans) {
+    const diff = plan.settle?.diff ?? 0;
+    let paid = false;
     try {
-      // 代理改卡先结算差价：补钱时余额不够就这条失败，不动卡
-      if (plan!.settle && plan!.settle.diff !== 0) {
-        const pay = changeBalance(opts.agent_id!, -plan!.settle.diff, {
-          kind: plan!.settle.diff > 0 ? "adjust_up" : "adjust_down",
+      if (diff !== 0) {
+        const pay = changeBalance(opts.agent_id!, -diff, {
+          kind: diff > 0 ? "adjust_up" : "adjust_down",
           refType: "cdk",
-          refId: plan!.id,
-          refLabel: plan!.code,
-          note: plan!.settle.diff > 0 ? "改卡补差价" : "改卡退款",
+          refId: plan.id,
+          refLabel: plan.code,
+          note: diff > 0 ? "批量改卡补差价" : "批量改卡退款",
           actorType: "agent",
         });
         if (!pay.ok) {
-          result.failed.push({
-            id,
-            label: plan!.code,
-            reason: `余额不足，还差 ¥${(plan!.settle.diff / 100).toFixed(2)}`,
-          });
+          result.updated -= 1;
+          result.failed.push({ id: plan.id, label: plan.code, reason: pay.reason ?? "结算失败" });
           continue;
         }
+        paid = true;
       }
-      const updated = updateCdk(plan!.id, plan!.patch);
+      const updated = updateCdk(plan.id, plan.patch);
       if (!updated) {
-        result.failed.push({ id, label: plan!.code, reason: "写入失败" });
+        // 卡没写进去，把钱退回去，别让代理白花钱
+        if (paid) {
+          changeBalance(opts.agent_id!, diff, {
+            kind: diff > 0 ? "adjust_down" : "adjust_up",
+            refType: "cdk",
+            refId: plan.id,
+            refLabel: plan.code,
+            note: "改卡失败，回滚",
+            actorType: "system",
+          });
+        }
+        result.updated -= 1;
+        result.failed.push({ id: plan.id, label: plan.code, reason: "写入失败" });
         continue;
       }
-      result.updated += 1;
-      if (plan!.settle && plan!.settle.diff !== 0) {
-        if (plan!.settle.diff > 0) result.money.charged += plan!.settle.diff;
-        else result.money.refunded += -plan!.settle.diff;
-      }
       result.changed.push({
-        id,
-        label: plan!.code,
-        from: plan!.before.expires_at,
+        id: plan.id,
+        label: plan.code,
+        from: plan.before.expires_at,
         to: updated.expires_at ?? null,
         days: 0,
-        modules: plan!.patch.moduleIds ? plan!.patch.moduleIds.join(",") : null,
+        modules: plan.patch.moduleIds ? plan.patch.moduleIds.join(",") : null,
       });
     } catch (err) {
-      result.failed.push({ id, label: plan!.code, reason: (err as Error).message || "写入失败" });
+      if (paid) {
+        changeBalance(opts.agent_id!, diff, {
+          kind: diff > 0 ? "adjust_down" : "adjust_up",
+          refType: "cdk",
+          refId: plan.id,
+          refLabel: plan.code,
+          note: "改卡失败，回滚",
+          actorType: "system",
+        });
+      }
+      result.updated -= 1;
+      result.failed.push({ id: plan.id, label: plan.code, reason: (err as Error).message || "写入失败" });
     }
   }
   return result;

@@ -3426,13 +3426,28 @@ test("月卡 / 年卡生成后存的是折算天数，CDK 详情带归属代理"
 test("批量操作：卡密批量改时长/模块，代理默认无权限", async () => {
   const ag = await api("POST", "/admin/api/agents", { code: "batch-a", name: "批量代理" }, adminToken);
   const agId = ag.json.data.agent.id;
+  await api("POST", `/admin/api/agents/${agId}/balance`, { amount: 500_000 }, adminToken);
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { agent_id: agId, product_id: productId, module_id: "", term_type: "day", unit_price: 100, seat_ratio: 100 },
+    adminToken,
+  );
+  await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "batch-gen@test.local", password: "BatchGen12345", role: "agent", agent_id: agId },
+    adminToken,
+  );
+  const genToken = (await api("POST", "/admin/api/auth/login", { email: "batch-gen@test.local", password: "BatchGen12345" }))
+    .json.data.token;
 
-  // 两张未激活卡 + 一张已激活卡
+  // 两张未激活卡 + 一张已激活卡（代理自己生成，是付费卡）
   const gen = await api(
     "POST",
     "/admin/api/cdks/generate",
-    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 3, agent_id: agId },
-    adminToken,
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 3 },
+    genToken,
   );
   const [c1, c2, c3] = gen.json.data.codes;
   const reg = await api("POST", "/api/v1/auth/register", { email: "batch-buyer@test.local", password: "BatchBuyer123" });
@@ -3507,8 +3522,8 @@ test("批量操作：卡密批量改时长/模块，代理默认无权限", asyn
     { ids: [idOf(c1)], expire_days: 30 },
     agentToken2,
   );
-  assert.equal(allowed.status, 200);
-  assert.equal(allowed.json.data.updated, 1);
+  assert.equal(allowed.status, 200, JSON.stringify(allowed.json));
+  assert.equal(allowed.json.data.updated, 1, JSON.stringify(allowed.json));
 });
 
 test("批量操作：授权批量延期与改模块，代理超上限会失败并说明", async () => {
@@ -3832,4 +3847,131 @@ test("卡密结算：改档补差价、改小退款、删卡退款、作废不�
   const mine = await api("GET", "/admin/api/agent-home/ledger?page_size=5", undefined, token);
   assert.equal(mine.status, 200);
   assert.ok(mine.json.data.items.every((i: Json) => i.agent_id === agId), "代理只能看自己的流水");
+});
+
+
+test("代理批量改卡按张补差价：预览给金额，余额不够整批不动", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "batch-money", name: "批量结算代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  await api("POST", `/admin/api/agents/${agId}/balance`, { amount: 100_000 }, adminToken);
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { agent_id: agId, product_id: productId, module_id: "", term_type: "day", unit_price: 100, seat_ratio: 100 },
+    adminToken,
+  );
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { agent_id: agId, product_id: productId, module_id: "", term_type: "month", unit_price: 3000, seat_ratio: 100 },
+    adminToken,
+  );
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { agent_id: agId, product_id: productId, module_id: "", term_type: "year", unit_price: 36_500, seat_ratio: 100 },
+    adminToken,
+  );
+  const staff = await api(
+    "POST",
+    "/admin/api/staff",
+    {
+      email: "batch-money@test.local",
+      password: "BatchMoney123",
+      role: "agent",
+      agent_id: agId,
+      features: ["batch.operation"],
+    },
+    adminToken,
+  );
+  assert.equal(staff.status, 201);
+  const token = (await api("POST", "/admin/api/auth/login", { email: "batch-money@test.local", password: "BatchMoney123" }))
+    .json.data.token;
+
+  // 3 张 10 天的卡：每张 1000 分
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 10, count: 3 },
+    token,
+  );
+  assert.equal(gen.status, 201);
+  const cards = (await api("GET", "/admin/api/cdks?page_size=20", undefined, token)).json.data.items;
+  const ids = cards.filter((c: Json) => c.status === "unused").map((c: Json) => c.id);
+  assert.equal(ids.length, 3);
+
+  const bal = async () =>
+    (await api("GET", "/admin/api/agents", undefined, adminToken)).json.data.items.find((a: Json) => a.id === agId).balance;
+  assert.equal(await bal(), 97_000);
+
+  // 预览：只算钱，不动数据
+  const preview = await api(
+    "POST",
+    "/admin/api/cdks/batch/preview",
+    { ids, term_type: "month", term_value: 1 },
+    token,
+  );
+  assert.equal(preview.status, 200);
+  assert.equal(preview.json.data.money.charged, 6000, "3 张 × (3000-1000)");
+  assert.equal(await bal(), 97_000, "预览不能扣钱");
+
+  // 执行：一次扣 6000
+  const apply = await api("POST", "/admin/api/cdks/batch/apply", { ids, term_type: "month", term_value: 1 }, token);
+  assert.equal(apply.status, 200, JSON.stringify(apply.json));
+  assert.equal(apply.json.data.updated, 3);
+  assert.equal(apply.json.data.money.charged, 6000);
+  assert.equal(await bal(), 91_000);
+
+  const one = await api("GET", `/admin/api/cdks/${ids[0]}`, undefined, token);
+  assert.equal(one.json.data.cdk.paid_amount, 3000, "每张卡实付更新为新档位价值");
+
+  // 批量改成年卡：每张 36500，共 109500，余额只有 91000 → 整批拒绝，一条都不改
+  const tooMuch = await api(
+    "POST",
+    "/admin/api/cdks/batch/apply",
+    { ids, term_type: "year", term_value: 1 },
+    token,
+  );
+  assert.equal(tooMuch.status, 409, JSON.stringify(tooMuch.json));
+  assert.equal(tooMuch.json.error.code, "BALANCE_INSUFFICIENT");
+  assert.equal(await bal(), 91_000, "拒绝时不能扣钱");
+  const still = await api("GET", `/admin/api/cdks/${ids[0]}`, undefined, token);
+  assert.equal(still.json.data.cdk.term_type, "month", "被拒绝的卡不能改动");
+  assert.equal(still.json.data.cdk.paid_amount, 3000);
+});
+
+test("代理的赠送卡（实付 0）不能改，只能删除，删了不退钱", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "gift-a", name: "赠送代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  // 管理员直接发给代理的免费卡 = 赠送卡
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 10, count: 1, agent_id: agId },
+    adminToken,
+  );
+  assert.equal(gen.status, 201);
+  const all = (await api("GET", `/admin/api/cdks?agent_id=${agId}&page_size=50`, undefined, adminToken)).json.data.items;
+  const card = all.find((c: Json) => c.code === gen.json.data.codes[0]);
+  assert.ok(card, "发给代理的卡");
+  assert.equal(card.paid_amount, 0, "管理员发的卡实付 0 = 赠送卡");
+  assert.ok(card.agent_id, "卡片归属该代理");
+
+  // 赠送卡不能改，只能删除/作废
+  const patched = await api("PATCH", `/admin/api/cdks/${card.id}`, { term_type: "year", term_value: 1 }, adminToken);
+  assert.equal(patched.status, 409, JSON.stringify(patched.json));
+  assert.equal(patched.json.error.code, "GIFT_CARD_LOCKED");
+
+  // 批量也一样跳过
+  const batch = await api("POST", "/admin/api/cdks/batch/apply", { ids: [card.id], term_type: "year", term_value: 1 }, adminToken);
+  assert.equal(batch.status, 200);
+  assert.equal(batch.json.data.updated, 0);
+  assert.ok(
+    batch.json.data.skipped.some((s: Json) => /赠送卡不能修改/.test(s.reason)),
+    "批量里应跳过赠送卡",
+  );
+
+  const del = await api("DELETE", `/admin/api/cdks/${card.id}`, undefined, adminToken);
+  assert.equal(del.status, 200);
+  assert.equal(del.json.data.refund, 0, "赠送卡删了不退钱");
 });
