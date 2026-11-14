@@ -23,9 +23,9 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v15，新增列齐全", () => {
+test("数据库迁移到 v16，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 15);
+  assert.equal(version, 16);
 
   const dev = columns("devices");
   assert.ok(dev.includes("released_reason"), "devices.released_reason");
@@ -52,6 +52,12 @@ test("数据库迁移到 v15，新增列齐全", () => {
   for (const t of ["cdks", "cdk_batches"]) {
     const cols = columns(t);
     assert.ok(cols.includes("term_type") && cols.includes("term_value"), `${t} 计费类型列`);
+  }
+  // v16：卡密实付金额 + 余额流水表
+  assert.ok(columns("cdks").includes("paid_amount"), "cdks.paid_amount");
+  const ledgerCols = columns("agent_ledger");
+  for (const c of ["agent_id", "kind", "amount", "balance_after", "ref_label", "actor_label"]) {
+    assert.ok(ledgerCols.includes(c), `agent_ledger.${c}`);
   }
 });
 

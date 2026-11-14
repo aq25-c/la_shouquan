@@ -3733,3 +3733,103 @@ test("上限逻辑：数据已经超上限时，代理仍然可以往回缩短",
   assert.equal(short.status, 200);
   assert.equal(short.json.data.updated, 1, "缩短应放行");
 });
+
+
+test("卡密结算：改档补差价、改小退款、删卡退款、作废不退，全部进余额流水", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "money-a", name: "结算代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  await api("POST", `/admin/api/agents/${agId}/balance`, { amount: 1_000_000 }, adminToken); // ¥10000
+
+  // 给这个代理配两天/月两个档位
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { agent_id: agId, product_id: productId, module_id: "", term_type: "day", unit_price: 100, seat_ratio: 100 },
+    adminToken,
+  );
+  await api(
+    "POST",
+    "/admin/api/prices",
+    { agent_id: agId, product_id: productId, module_id: "", term_type: "month", unit_price: 2000, seat_ratio: 100 },
+    adminToken,
+  );
+
+  await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "money-agent@test.local", password: "MoneyAgent123", role: "agent", agent_id: agId },
+    adminToken,
+  );
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "money-agent@test.local",
+    password: "MoneyAgent123",
+  });
+  const token = login.json.data.token;
+
+  // 代理生成 1 张 10 天的卡：100 × 10 = 1000 分
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 10, count: 1 },
+    token,
+  );
+  assert.equal(gen.status, 201);
+  const cdkId = gen.json.data.batch.id && gen.json.data.codes[0];
+  const list0 = await api("GET", "/admin/api/cdks?page_size=10", undefined, token);
+  const card = list0.json.data.items.find((c: Json) => c.code === cdkId);
+  assert.equal(card.paid_amount, 1000, "实付 = 单价 × 天数");
+
+  const bal = async () => (await api("GET", "/admin/api/agents", undefined, adminToken)).json.data.items.find((a: Json) => a.id === agId).balance;
+  assert.equal(await bal(), 1_000_000 - 1000);
+
+  // 10 天 → 1 个月：补 2000 - 1000 = 1000
+  const up = await api("PATCH", `/admin/api/cdks/${card.id}`, { term_type: "month", term_value: 1 }, token);
+  assert.equal(up.status, 200, JSON.stringify(up.json));
+  assert.equal(await bal(), 998_000, "改大应扣差价");
+  const afterUp = await api("GET", `/admin/api/cdks/${card.id}`, undefined, token);
+  assert.equal(afterUp.json.data.cdk.paid_amount, 2000, "实付金额要更新");
+
+  // 1 个月 → 5 天：退 2000 - 500 = 1500
+  const down = await api("PATCH", `/admin/api/cdks/${card.id}`, { term_type: "day", term_value: 5 }, token);
+  assert.equal(down.status, 200);
+  assert.equal(await bal(), 999_500, "改小应退款");
+
+  // 删卡：退剩下的 500
+  const del = await api("DELETE", `/admin/api/cdks/${card.id}`, undefined, token);
+  assert.equal(del.status, 200);
+  assert.equal(del.json.data.refund, 500);
+  assert.equal(await bal(), 1_000_000, "删卡应退回实付款");
+
+  // 作废不退钱
+  const gen2 = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 10, count: 1 },
+    token,
+  );
+  const card2 = (await api("GET", "/admin/api/cdks?page_size=10", undefined, token)).json.data.items.find(
+    (c: Json) => c.code === gen2.json.data.codes[0],
+  );
+  const rev = await api("POST", `/admin/api/cdks/${card2.id}/revoke`, { reason: "测试" }, token);
+  assert.equal(rev.status, 200);
+  assert.equal(await bal(), 999_000, "作废不退钱");
+
+  // 余额明细：管理员看得到，代理也看得到
+  const ledger = await api("GET", `/admin/api/agents/${agId}/ledger?page_size=50`, undefined, adminToken);
+  assert.equal(ledger.status, 200);
+  const kinds = ledger.json.data.items.map((i: Json) => i.kind);
+  // opening 只有「升级前就存在的代理」才有，这里新建的代理从 0 开始
+  for (const k of ["recharge", "consume", "adjust_up", "adjust_down", "refund_delete"]) {
+    assert.ok(kinds.includes(k), `流水里应有 ${k}`);
+  }
+  assert.equal(ledger.json.data.summary.balance, 999_000);
+  assert.equal(ledger.json.data.summary.recharge, 1_000_000);
+  assert.equal(ledger.json.data.summary.consume, -2000, "两张卡各 1000");
+  assert.equal(ledger.json.data.summary.adjust_up, -1000);
+  assert.equal(ledger.json.data.summary.adjust_down, 1500);
+  assert.equal(ledger.json.data.summary.refund_delete, 500);
+
+  const mine = await api("GET", "/admin/api/agent-home/ledger?page_size=5", undefined, token);
+  assert.equal(mine.status, 200);
+  assert.ok(mine.json.data.items.every((i: Json) => i.agent_id === agId), "代理只能看自己的流水");
+});

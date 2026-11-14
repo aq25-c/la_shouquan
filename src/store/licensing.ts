@@ -65,6 +65,8 @@ export function createCdkBatch(input: {
   /** v4：计费类型（hour/day/month/year/count），未传按 day + days */
   termType?: TermType;
   termValue?: number | null;
+  /** 每张卡的实付金额（分）；赠送 / 管理员生成 = 0 */
+  paidPerCard?: number;
 }): { batch: CdkBatchRow; codes: string[] } {
   return withTx(() => {
     const batchId = newId("cdb");
@@ -97,8 +99,8 @@ export function createCdkBatch(input: {
     const insert = db().prepare(
       `INSERT OR IGNORE INTO cdks
          (id, code, batch_id, product_id, module_ids, days, seats, status, expires_at, note, created_by, created_at,
-          term_type, term_value)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'unused', ?, ?, ?, ?, ?, ?)`,
+          term_type, term_value, paid_amount)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'unused', ?, ?, ?, ?, ?, ?, ?)`,
     );
     const codes: string[] = [];
     let attempts = 0;
@@ -120,6 +122,7 @@ export function createCdkBatch(input: {
         at,
         term.termType,
         term.termValue,
+        Math.max(0, Math.trunc(input.paidPerCard ?? 0)),
       );
       if (Number(res.changes) > 0) codes.push(code);
     }
@@ -1187,6 +1190,7 @@ export function updateCdk(
     note?: string | null;
     termType?: TermType;
     termValue?: number;
+    paidAmount?: number;
   },
 ): CdkRow | null {
   const sets: string[] = [];
@@ -1207,6 +1211,10 @@ export function updateCdk(
   if (patch.note !== undefined) {
     sets.push("note = ?");
     params.push(nz(patch.note));
+  }
+  if (typeof patch.paidAmount === "number") {
+    sets.push("paid_amount = ?");
+    params.push(Math.max(0, Math.trunc(patch.paidAmount)));
   }
   if (patch.termType || typeof patch.termValue === "number") {
     // 改了计费类型/数量，days 要按折算后的真实天数一起更新（1 年 = 365 天）

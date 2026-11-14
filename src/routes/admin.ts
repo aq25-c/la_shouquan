@@ -51,7 +51,8 @@ import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { db, withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget, listAuditByTargets } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
-import { batchCdks, batchLicenses } from "../store/batch.ts";
+import { batchCdks, batchLicenses, cardValue } from "../store/batch.ts";
+import { changeBalance, ledgerSummary, listLedger } from "../store/ledger.ts";
 import type { BatchOptions } from "../store/batch.ts";
 
 /** 代理只能看/碰自己出的卡密（管理员不受限） */
@@ -358,6 +359,21 @@ export function registerAdminRoutes(): void {
     });
   });
 
+  /** 代理看自己的余额明细 */
+  get(`${P}/agent-home/ledger`, (ctx) => {
+    const staffCtx = requireStaff(ctx);
+    if (!staffCtx.agentId) throw forbidden("代理账号未绑定代理", "AGENT_NOT_BOUND");
+    const { page, pageSize } = paging(ctx);
+    const result = listLedger(staffCtx.agentId, { page, pageSize });
+    return ok({
+      items: result.items,
+      total: result.total,
+      page,
+      page_size: pageSize,
+      summary: ledgerSummary(staffCtx.agentId),
+    });
+  });
+
   /**
    * 代理首页：只返回「我自己名下」的数据。
    * 管理员带 ?agent_id= 也可以查某个代理的首页。
@@ -369,6 +385,22 @@ export function registerAdminRoutes(): void {
     const data = agentHome(agentId);
     if (!data.agent) throw notFound("代理不存在", "AGENT_NOT_FOUND");
     return ok(data);
+  });
+
+  /** 代理余额明细（管理员查看任意代理） */
+  get(`${P}/agents/:id/ledger`, (ctx) => {
+    requireAdmin(ctx);
+    const id = slash(ctx, "id");
+    if (!findAgentById(id)) throw notFound("代理不存在", "AGENT_NOT_FOUND");
+    const { page, pageSize } = paging(ctx);
+    const result = listLedger(id, { page, pageSize });
+    return ok({
+      items: result.items,
+      total: result.total,
+      page,
+      page_size: pageSize,
+      summary: ledgerSummary(id),
+    });
   });
 
   /* ---------------------------- 员工与代理 ---------------------------- */
@@ -791,7 +823,14 @@ export function registerAdminRoutes(): void {
     const amount = needInt(ctx, "amount", { min: -100_000_000, max: 100_000_000 });
     if (amount === 0) throw badRequest("金额不能为 0", "INVALID_FIELD");
 
-    const updated = rechargeBalance(id, amount);
+    changeBalance(id, amount, {
+      kind: "recharge",
+      note: "管理员充值",
+      actorType: "admin",
+      actorLabel: admin.email,
+      ip: ctx.ip,
+    });
+    const updated = findAgentById(id);
     audit({
       actorType: "admin",
       actorId: admin.id,
@@ -818,7 +857,14 @@ export function registerAdminRoutes(): void {
 
     let updated = 0;
     for (const id of targets) {
-      if (rechargeBalance(id, amount)) updated += 1;
+      const r = changeBalance(id, amount, {
+        kind: "recharge",
+        note: "管理员批量充值",
+        actorType: "admin",
+        actorLabel: admin.email,
+        ip: ctx.ip,
+      });
+      if (r.ok) updated += 1;
     }
     audit({
       actorType: "admin",
@@ -1245,7 +1291,9 @@ export function registerAdminRoutes(): void {
     const priced = resolvePrice(productId, moduleIds, termInfo.termType, agentId);
     const unitPrice = priced?.unit_price ?? 0;
     const seatRatio = priced?.seat_ratio ?? 100;
-    const amount = priced ? totalPrice(unitPrice, termInfo.termValue, count, seats, seatRatio) : 0;
+    // 单张卡的价值（退/补差都以它为准），总扣费 = 单卡价 × 张数
+    const perCard = priced ? totalPrice(unitPrice, termInfo.termValue, 1, seats, seatRatio) : 0;
+    const amount = perCard * count;
 
     const result = withTx(() => {
       // 代理生成：校验可售范围 → 按价格扣账户余额（金额）
@@ -1265,7 +1313,15 @@ export function registerAdminRoutes(): void {
             term_type: termInfo.termType,
           });
         }
-        const paid = consumeBalance(agentId, amount);
+        const paid = changeBalance(agentId, -amount, {
+          kind: "consume",
+          refType: "batch",
+          refLabel: `${product.code} · ${termInfo.termValue}${{ hour: "小时", day: "天", month: "月", year: "年", count: "次" }[termInfo.termType]} × ${count} 张`,
+          note: `生成卡密 ${count} 张`,
+          actorType: staffCtx.isAgent ? "agent" : "admin",
+          actorLabel: admin.email,
+          ip: ctx.ip,
+        });
         if (!paid.ok) {
           throw conflict(
             `账户余额不足（当前 ¥${(paid.balance / 100).toFixed(2)}，本次需要 ¥${(amount / 100).toFixed(2)}）`,
@@ -1290,6 +1346,8 @@ export function registerAdminRoutes(): void {
         unitPrice,
         termType: (termTypeInput ?? "day") as TermType,
         termValue: termValueInput ?? undefined,
+        // 代理生成才记实付；管理员赠送为 0（删卡/改卡都不涉及钱）
+        paidPerCard: staffCtx.isAgent ? perCard : 0,
       });
     });
 
@@ -1449,6 +1507,45 @@ export function registerAdminRoutes(): void {
     const termValue = bodyInt(ctx, "term_value", { min: 1, max: 100000 });
     if (termValue !== null) patchData.termValue = termValue;
 
+    // 代理改卡：按「新价值 − 实付」结算差价（1 天换 1 个月必须补钱）
+    // 赠送卡实付 0，改它不收费
+    let settleDiff = 0;
+    if (staffCtx.isAgent && staffCtx.agentId && Number(cdk.paid_amount ?? 0) > 0) {
+      const value = cardValue(
+        staffCtx.agentId,
+        cdk.product_id,
+        patchData.moduleIds ?? parseJson<string[]>(cdk.module_ids, []),
+        patchData.termType ?? cdk.term_type ?? "day",
+        patchData.termValue ?? cdk.term_value ?? cdk.days,
+        patchData.seats ?? cdk.seats,
+      );
+      if (value === null) {
+        throw conflict("该卡类型还没有定价，不能改；请联系管理员先配价", "PRICE_NOT_CONFIGURED", {
+          term_type: patchData.termType ?? cdk.term_type,
+        });
+      }
+      settleDiff = value - Number(cdk.paid_amount ?? 0);
+      patchData.paidAmount = value;
+      if (settleDiff !== 0) {
+        const pay = changeBalance(staffCtx.agentId, -settleDiff, {
+          kind: settleDiff > 0 ? "adjust_up" : "adjust_down",
+          refType: "cdk",
+          refId: id,
+          refLabel: cdk.code,
+          note: settleDiff > 0 ? "改卡补差价" : "改卡退款",
+          actorType: "agent",
+          actorLabel: admin.email,
+          ip: ctx.ip,
+        });
+        if (!pay.ok) {
+          throw conflict(`余额不足，还差 ¥${(settleDiff / 100).toFixed(2)}`, "BALANCE_INSUFFICIENT", {
+            balance: pay.balance,
+            needed: settleDiff,
+          });
+        }
+      }
+    }
+
     const updated = updateCdk(id, patchData);
     audit({
       actorType: "admin",
@@ -1458,9 +1555,12 @@ export function registerAdminRoutes(): void {
       targetType: "cdk",
       targetId: id,
       ip: ctx.ip,
-      detail: { code: cdk.code, ...patchData },
+      detail: { code: cdk.code, ...patchData, settle_diff: settleDiff || undefined },
     });
-    return ok({ cdk: { ...updated, module_ids: parseJson<string[]>((updated ?? cdk).module_ids, []) } });
+    return ok({
+      cdk: { ...updated, module_ids: parseJson<string[]>((updated ?? cdk).module_ids, []) },
+      settle_diff: settleDiff || 0,
+    });
   });
 
   /** 删除 CDK：只有未激活的可以删（已作废但没激活的也能删） */
@@ -1474,7 +1574,21 @@ export function registerAdminRoutes(): void {
     if (cdk.status === "used" || cdk.customer_id) {
       throw conflict("该 CDK 已被激活，不能删除（只能作废）", "CDK_ACTIVATED");
     }
+    const refund = Number(cdk.paid_amount ?? 0);
     deleteCdk(id);
+    // 删卡退钱：按这张卡的实付金额退回（赠送卡实付 0，不退）
+    if (refund > 0 && cdk.agent_id) {
+      changeBalance(cdk.agent_id, refund, {
+        kind: "refund_delete",
+        refType: "cdk",
+        refId: id,
+        refLabel: cdk.code,
+        note: "删除未激活卡密退款",
+        actorType: staffCtx.isAgent ? "agent" : "admin",
+        actorLabel: admin.email,
+        ip: ctx.ip,
+      });
+    }
     audit({
       actorType: "admin",
       actorId: admin.id,
@@ -1483,9 +1597,9 @@ export function registerAdminRoutes(): void {
       targetType: "cdk",
       targetId: id,
       ip: ctx.ip,
-      detail: { code: cdk.code, status: cdk.status },
+      detail: { code: cdk.code, status: cdk.status, refund },
     });
-    return ok({ deleted: true });
+    return ok({ deleted: true, refund });
   });
 
   post(`${P}/cdks/:id/revoke`, (ctx) => {

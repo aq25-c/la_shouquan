@@ -8,7 +8,7 @@
  *   - 授权延期受 max_expires_at 限制；管理员延长时自动抬高上限
  */
 import { db } from "../db.ts";
-import { DAY, toMs } from "../util.ts";
+import { DAY, parseJson, toMs } from "../util.ts";
 import {
   findCdkById,
   findLicenseById,
@@ -18,6 +18,25 @@ import {
   updateLicense,
 } from "./licensing.ts";
 import { findModuleById } from "./catalog.ts";
+import { resolvePrice, totalPrice } from "./prices.ts";
+import { changeBalance } from "./ledger.ts";
+
+/**
+ * 一张卡的价值（分）：单价 × 折算数量 × 席位系数。
+ * 没配价返回 null（改卡时说明该档位还没定价）。
+ */
+export function cardValue(
+  agentId: string | null | undefined,
+  productId: string,
+  moduleIds: string[],
+  termType: string,
+  termValue: number,
+  seats: number,
+): number | null {
+  const price = resolvePrice(productId, moduleIds, termType, agentId ?? null);
+  if (!price) return null;
+  return totalPrice(price.unit_price, termValue, 1, Math.max(1, seats), price.seat_ratio);
+}
 
 export type BatchItemProblem = { id: string; label: string; reason: string };
 
@@ -37,6 +56,8 @@ export type BatchResult = {
   failed: BatchItemProblem[];
   /** 实际改动的条目（写日志用） */
   changed: BatchChanged[];
+  /** 卡密批量改动涉及的钱：补差 / 退款（分） */
+  money: { charged: number; refunded: number };
 };
 
 export type BatchOptions = {
@@ -78,6 +99,8 @@ type CdkPlan = {
   productId: string;
   patch: Parameters<typeof updateCdk>[1];
   before: { expires_at: string | null; term_type: string | null; term_value: number | null; module_ids: string };
+  /** 代理改卡时的差价（正=要补，负=要退）；null = 不涉及钱 */
+  settle: { diff: number; newValue: number } | null;
 };
 
 function planCdk(
@@ -133,6 +156,22 @@ function planCdk(
     return { skip: { id, label, reason: "没有要改的内容" } };
   }
 
+  // 代理改卡：按「新价值 − 实付」结算差价（改大补钱、改小退钱）
+  // 实付为 0 的是赠送卡，改它不收费也不退钱
+  let settle: { diff: number; newValue: number } | null = null;
+  if (opts.agent_id && Number(cdk.paid_amount ?? 0) > 0) {
+    const newModules = patch.moduleIds ?? parseJson<string[]>(cdk.module_ids, []);
+    const newTermType = patch.termType ?? cdk.term_type ?? "day";
+    const newTermValue = patch.termValue ?? cdk.term_value ?? cdk.days;
+    const value = cardValue(opts.agent_id, cdk.product_id, newModules, newTermType, newTermValue, cdk.seats);
+    if (value === null) {
+      return { skip: { id, label, reason: "该卡类型还没定价，改不了" } };
+    }
+    const diff = value - Number(cdk.paid_amount ?? 0);
+    settle = { diff, newValue: value };
+    patch.paidAmount = value;
+  }
+
   return {
     plan: {
       id,
@@ -145,13 +184,21 @@ function planCdk(
         term_value: cdk.term_value,
         module_ids: cdk.module_ids,
       },
+      settle,
     },
   };
 }
 
 export function batchCdks(ids: string[], opts: BatchOptions, apply: boolean): BatchResult {
   const list = ids.slice(0, MAX_ITEMS);
-  const result: BatchResult = { total: list.length, updated: 0, skipped: [], failed: [], changed: [] };
+  const result: BatchResult = {
+    total: list.length,
+    updated: 0,
+    skipped: [],
+    failed: [],
+    changed: [],
+    money: { charged: 0, refunded: 0 },
+  };
 
   for (const id of list) {
     const { plan, skip } = planCdk(id, opts);
@@ -164,12 +211,35 @@ export function batchCdks(ids: string[], opts: BatchOptions, apply: boolean): Ba
       continue;
     }
     try {
+      // 代理改卡先结算差价：补钱时余额不够就这条失败，不动卡
+      if (plan!.settle && plan!.settle.diff !== 0) {
+        const pay = changeBalance(opts.agent_id!, -plan!.settle.diff, {
+          kind: plan!.settle.diff > 0 ? "adjust_up" : "adjust_down",
+          refType: "cdk",
+          refId: plan!.id,
+          refLabel: plan!.code,
+          note: plan!.settle.diff > 0 ? "改卡补差价" : "改卡退款",
+          actorType: "agent",
+        });
+        if (!pay.ok) {
+          result.failed.push({
+            id,
+            label: plan!.code,
+            reason: `余额不足，还差 ¥${(plan!.settle.diff / 100).toFixed(2)}`,
+          });
+          continue;
+        }
+      }
       const updated = updateCdk(plan!.id, plan!.patch);
       if (!updated) {
         result.failed.push({ id, label: plan!.code, reason: "写入失败" });
         continue;
       }
       result.updated += 1;
+      if (plan!.settle && plan!.settle.diff !== 0) {
+        if (plan!.settle.diff > 0) result.money.charged += plan!.settle.diff;
+        else result.money.refunded += -plan!.settle.diff;
+      }
       result.changed.push({
         id,
         label: plan!.code,
@@ -265,7 +335,14 @@ function planLicense(
 
 export function batchLicenses(ids: string[], opts: BatchOptions, apply: boolean): BatchResult {
   const list = ids.slice(0, MAX_ITEMS);
-  const result: BatchResult = { total: list.length, updated: 0, skipped: [], failed: [], changed: [] };
+  const result: BatchResult = {
+    total: list.length,
+    updated: 0,
+    skipped: [],
+    failed: [],
+    changed: [],
+    money: { charged: 0, refunded: 0 },
+  };
 
   for (const id of list) {
     const { plan, skip } = planLicense(id, opts);

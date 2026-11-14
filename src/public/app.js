@@ -504,6 +504,17 @@ async function openBatchModal(kind, ids) {
 
       const renderResult = (res, applied) => {
         const lines = [`<b>${applied ? "已执行" : "预计影响"}：可改 ${res.updated} 条</b>`];
+        const charged = Number(res.money?.charged ?? 0);
+        const refunded = Number(res.money?.refunded ?? 0);
+        if (charged || refunded) {
+          lines.push(
+            `<div class="small">${
+              charged ? `需补差价 <b>¥${(charged / 100).toFixed(2)}</b>` : ""
+            }${charged && refunded ? " · " : ""}${
+              refunded ? `退款 <b>¥${(refunded / 100).toFixed(2)}</b> 回余额` : ""
+            }</div>`,
+          );
+        }
         if (res.skipped.length) {
           lines.push(`<div class="muted small">跳过 ${res.skipped.length} 条：${
             res.skipped.slice(0, 8).map((s) => `${s.label}（${s.reason}）`).join("、")
@@ -761,7 +772,8 @@ async function renderAgentHome(root) {
     <div class="stat-grid">
       <div class="stat accent"><div class="stat-label">账户余额</div>
         <div class="stat-value">${money(d.agent?.balance ?? 0)}</div>
-        <div class="stat-hint">生成卡密时按定价扣这里</div></div>
+        <div class="stat-hint">生成卡密时按定价扣这里</div>
+        <button class="btn btn-sm" data-my-ledger type="button" style="margin-top:8px">查看明细</button></div>
       <div class="stat"><div class="stat-label">卡密总数</div><div class="stat-value">${cdk.total}</div>
         <div class="stat-hint">未用 ${cdk.unused} · 已用 ${cdk.used}${cdk.revoked ? ` · 作废 ${cdk.revoked}` : ""}</div></div>
       <div class="stat${cust.in_7d > 0 ? " warn" : ""}"><div class="stat-label">名下客户</div>
@@ -801,6 +813,8 @@ async function renderAgentHome(root) {
     }`;
 
   $("[data-go-cdk]", root).onclick = () => navigate("cdks");
+  const ledgerBtn = $("[data-my-ledger]", root);
+  if (ledgerBtn) ledgerBtn.onclick = () => openLedgerModal(null, true);
 }
 
 async function renderOverview(root) {
@@ -1422,6 +1436,106 @@ async function agentPriceForm(agentId) {
   });
 }
 
+/* ============================ 余额明细 ============================ */
+
+const LEDGER_KINDS = {
+  opening: ["期初余额", "badge-info"],
+  recharge: ["充值", "badge-ok"],
+  consume: ["生成卡密", "badge"],
+  adjust_up: ["改卡补差", "badge-warn"],
+  adjust_down: ["改卡退款", "badge-ok"],
+  refund_delete: ["删卡退款", "badge-ok"],
+  manual: ["手工调整", "badge"],
+};
+
+/** 代理余额明细：管理员看任意代理，代理只能看自己（self = true） */
+async function openLedgerModal(agentId, self) {
+  let page = 1;
+  const url = (p) =>
+    `${self ? "/admin/api/agent-home/ledger" : `/admin/api/agents/${agentId}/ledger`}?page=${p}&page_size=20`;
+
+  const body = `<div data-ledger-body><div class="muted small">加载中…</div></div>`;
+
+  openModal({
+    title: self ? "我的余额明细" : "余额明细",
+    wide: true,
+    body,
+    footer: `<button class="btn" data-close2 type="button">关闭</button>`,
+    onMount(modal, close) {
+      $("[data-close2]", modal).onclick = close;
+      const box = $("[data-ledger-body]", modal);
+
+      const render = async () => {
+        let data;
+        try {
+          data = await apiGet(url(page));
+        } catch (err) {
+          box.innerHTML = `<div class="note danger-note">${esc(err.message)}</div>`;
+          return;
+        }
+        const s = data.summary ?? {};
+        const yuan = (v) => `${v < 0 ? "-" : ""}¥${(Math.abs(Number(v) || 0) / 100).toFixed(2)}`;
+        const rows = data.items ?? [];
+        const pages = Math.max(1, Math.ceil((data.total ?? 0) / 20));
+
+        box.innerHTML = `
+          <div class="stat-grid" style="margin-bottom:12px">
+            <div class="stat"><div class="stat-label">当前余额</div><div class="stat-value">${yuan(s.balance ?? 0)}</div>
+              <div class="stat-hint">共 ${s.entries ?? 0} 笔流水</div></div>
+            <div class="stat"><div class="stat-label">累计充值</div><div class="stat-value">${yuan(s.recharge ?? 0)}</div>
+              <div class="stat-hint">期初 ${yuan(s.opening ?? 0)}</div></div>
+            <div class="stat"><div class="stat-label">生成扣费</div><div class="stat-value">${yuan(Math.abs(s.consume ?? 0))}</div>
+              <div class="stat-hint">改卡补差 ${yuan(Math.abs(s.adjust_up ?? 0))}</div></div>
+            <div class="stat"><div class="stat-label">累计退款</div>
+              <div class="stat-value">${yuan((s.adjust_down ?? 0) + (s.refund_delete ?? 0))}</div>
+              <div class="stat-hint">删卡 ${yuan(s.refund_delete ?? 0)} · 改卡 ${yuan(s.adjust_down ?? 0)}</div></div>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>时间</th><th>类型</th><th>金额</th><th>变动后余额</th><th>关联</th><th>操作人</th><th>备注</th></tr></thead>
+              <tbody>
+                ${
+                  rows.length
+                    ? rows
+                        .map((r) => {
+                          const [label, tone] = LEDGER_KINDS[r.kind] ?? [r.kind, "badge"];
+                          const amt = Number(r.amount ?? 0);
+                          return `<tr>
+                            <td class="nowrap small">${fmtTime(r.at)}</td>
+                            <td><span class="badge ${tone}">${esc(label)}</span></td>
+                            <td class="nowrap" style="color:${amt < 0 ? "var(--danger)" : "var(--ok)"}">${amt > 0 ? "+" : ""}${yuan(amt)}</td>
+                            <td class="nowrap">${yuan(r.balance_after ?? 0)}</td>
+                            <td class="mono small">${esc(r.ref_label ?? "—")}</td>
+                            <td class="small">${esc(r.actor_label ?? r.actor_type ?? "—")}</td>
+                            <td class="small muted">${esc(r.note ?? "—")}</td>
+                          </tr>`;
+                        })
+                        .join("")
+                    : emptyRow(7, "还没有流水")
+                }
+              </tbody>
+            </table>
+          </div>
+
+          <div class="btn-row" style="justify-content:flex-end;margin-top:10px">
+            <span class="muted small" style="margin-right:auto">第 ${page} / ${pages} 页 · 共 ${data.total ?? 0} 笔</span>
+            <button class="btn btn-sm" data-prev type="button" ${page <= 1 ? "disabled" : ""}>上一页</button>
+            <button class="btn btn-sm" data-next type="button" ${page >= pages ? "disabled" : ""}>下一页</button>
+          </div>`;
+
+        enhanceTables(box);
+        const prev = $("[data-prev]", box);
+        const next = $("[data-next]", box);
+        if (prev) prev.onclick = () => { if (page > 1) { page -= 1; render(); } };
+        if (next) next.onclick = () => { if (page < pages) { page += 1; render(); } };
+      };
+
+      render();
+    },
+  });
+}
+
 /** 代理登录账号：没有则创建，有则改密码 / 停用 / 调整可售范围 */
 async function agentAccountForm(agentId) {
   const [staffRes, agentRes, productsRes] = await Promise.all([
@@ -1611,6 +1725,7 @@ async function renderAgents(root) {
                           <td class="right">
                             <div class="btn-row" style="justify-content:flex-end">
                               <button class="btn btn-sm" data-credit="${esc(c.id)}" type="button">充值</button>
+                              <button class="btn btn-sm" data-ledger="${esc(c.id)}" type="button">明细</button>
                               <button class="btn btn-sm" data-account="${esc(c.id)}" type="button">账号</button>
                               <button class="btn btn-sm" data-pricing="${esc(c.id)}" type="button">定价</button>
                               <button class="btn btn-sm" data-edit="${esc(c.id)}" type="button">编辑</button>
@@ -1632,6 +1747,9 @@ async function renderAgents(root) {
   $("[data-new]", root).onclick = () => agentForm();
   $$("[data-account]", root).forEach((btn) => {
     btn.onclick = () => agentAccountForm(btn.dataset.account);
+  });
+  $$("[data-ledger]", root).forEach((btn) => {
+    btn.onclick = () => openLedgerModal(btn.dataset.ledger, false);
   });
   $$("[data-pricing]", root).forEach((btn) => {
     btn.onclick = () => agentPriceForm(btn.dataset.pricing);
@@ -1877,8 +1995,11 @@ async function cdkDetail(cdkId) {
           expires_at: expVal ? new Date(expVal).toISOString() : null,
         };
         try {
-          await apiPatch(`/admin/api/cdks/${cdkId}`, payload);
-          toast("已保存", "ok");
+          const res = await apiPatch(`/admin/api/cdks/${cdkId}`, payload);
+          const diff = Number(res?.settle_diff ?? 0);
+          if (diff > 0) toast(`已保存，本次补差价 ¥${(diff / 100).toFixed(2)}`, "ok");
+          else if (diff < 0) toast(`已保存，退款 ¥${(Math.abs(diff) / 100).toFixed(2)} 到余额`, "ok");
+          else toast("已保存", "ok");
           close();
           navigate("cdks", true);
         } catch (err) {
@@ -1891,8 +2012,9 @@ async function cdkDetail(cdkId) {
         delBtn.onclick = async () => {
           if (!(await confirmDialog(`删除 CDK ${c.code}？删除后不可恢复。`, { danger: true, okText: "删除" }))) return;
           try {
-            await api("DELETE", `/admin/api/cdks/${cdkId}`);
-            toast("已删除", "ok");
+            const delRes = await api("DELETE", `/admin/api/cdks/${cdkId}`);
+            const back = Number(delRes?.refund ?? 0);
+            toast(back > 0 ? `已删除，¥${(back / 100).toFixed(2)} 已退回余额` : "已删除", "ok");
             close();
             navigate("cdks", true);
           } catch (err) {

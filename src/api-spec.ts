@@ -91,6 +91,19 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     params: "同上",
     desc: "逐条执行。代理延长时受 `max_expires_at` 限制，超了这条失败并说明「最多只能到 X」；管理员延长会自动抬高上限。到期变动会同步所有模块，模块整体覆盖会重建模块记录。每条都会写一条授权操作日志（标 `batch: true`）。",
   },
+  "GET /admin/api/agents/:id/ledger": {
+    title: "代理余额明细（管理员）",
+    auth: "admin",
+    params: "路径参数 `id` 为代理 id；`page`、`page_size`",
+    desc: "按时间倒序返回该代理的余额流水，并附带汇总（充值 / 生成扣费 / 改卡补差 / 改卡退款 / 删卡退款 / 手工调整 / 期初）。每笔都有 `balance_after`，可以直接对账。",
+    notes: "kind：opening、recharge、consume、adjust_up、adjust_down、refund_delete、manual；amount 正负表示加减。",
+  },
+  "GET /admin/api/agent-home/ledger": {
+    title: "我的余额明细（代理）",
+    auth: "agent",
+    params: "`page`、`page_size`",
+    desc: "代理只能看自己的余额流水，字段与管理员接口一致。",
+  },
   "GET /admin/api/agent-home": {
     title: "代理首页（余额 / 卡密 / 客户到期）",
     auth: "agent / admin",

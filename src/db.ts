@@ -15,7 +15,7 @@ let database: DatabaseSync | null = null;
  * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
  * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
  */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
 let migration: { from: number; to: number } = { from: 0, to: 0 };
@@ -420,6 +420,39 @@ ALTER TABLE agent_prices ADD COLUMN seat_ratio INTEGER NOT NULL DEFAULT 100;
  *   - 这里按计费类型重新折算：年 ≈ 365 天，月 ≈ 30.44 天，小时按天向上取整
  *   - 次数卡不动（days 对它没有意义）
  */
+/**
+ * v16：卡密实付金额 + 代理余额流水
+ *   - cdks.paid_amount：这张卡实际花了多少钱（分），赠送/管理员生成 = 0
+ *   - agent_ledger：每一笔余额变化都留痕，升级时给现有代理补一条「期初余额」
+ */
+const SCHEMA_V16 = `
+ALTER TABLE cdks ADD COLUMN paid_amount INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS agent_ledger (
+  id            TEXT PRIMARY KEY,
+  agent_id      TEXT NOT NULL,
+  at            TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  amount        INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL,
+  ref_type      TEXT,
+  ref_id        TEXT,
+  ref_label     TEXT,
+  note          TEXT,
+  actor_type    TEXT,
+  actor_label   TEXT,
+  ip            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_ledger_agent ON agent_ledger(agent_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_ledger_at ON agent_ledger(at DESC);
+
+INSERT INTO agent_ledger (id, agent_id, at, kind, amount, balance_after, ref_type, ref_id, ref_label, note, actor_type, actor_label)
+SELECT 'led_open_' || a.id, a.id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'opening', a.balance, a.balance,
+       NULL, NULL, NULL, '期初余额（升级前的历史充值/消费未逐笔记录）', 'system', '系统升级'
+  FROM agents a
+ WHERE a.balance <> 0;
+`;
+
 const SCHEMA_V15 = `
 UPDATE cdks SET days = CASE term_type
     WHEN 'year'  THEN CAST(ROUND(term_value * 365.25) AS INTEGER)
@@ -524,6 +557,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 13) runMigration(db, SCHEMA_V13, 13);
   if (version < 14) runMigration(db, SCHEMA_V14, 14);
   if (version < 15) runMigration(db, SCHEMA_V15, 15);
+  if (version < 16) runMigration(db, SCHEMA_V16, 16);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

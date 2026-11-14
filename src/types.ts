@@ -87,6 +87,25 @@ export type CdkBatchRow = {
 };
 
 /** 代理 / 分销商 */
+/** 代理余额流水 */
+export type AgentLedgerRow = {
+  id: string;
+  agent_id: string;
+  at: string;
+  /** opening / recharge / consume / adjust_up / adjust_down / refund_delete / manual */
+  kind: string;
+  /** 变动金额（分），负数表示扣款 */
+  amount: number;
+  balance_after: number;
+  ref_type: string | null;
+  ref_id: string | null;
+  ref_label: string | null;
+  note: string | null;
+  actor_type: string | null;
+  actor_label: string | null;
+  ip: string | null;
+};
+
 export type AgentRow = {
   id: string;
   code: string;
@@ -125,6 +144,8 @@ export type CdkRow = {
   /** v4：计费类型与数量（生成时从批次继承） */
   term_type: string;
   term_value: number | null;
+  /** v16：这张卡的实付金额（分），赠送 = 0 */
+  paid_amount: number;
 };
 
 export type LicenseRow = {
