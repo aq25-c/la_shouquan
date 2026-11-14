@@ -3957,13 +3957,37 @@ test("代理的赠送卡（实付 0）不能改，只能删除，删了不退钱
   assert.equal(card.paid_amount, 0, "管理员发的卡实付 0 = 赠送卡");
   assert.ok(card.agent_id, "卡片归属该代理");
 
-  // 赠送卡不能改，只能删除/作废
-  const patched = await api("PATCH", `/admin/api/cdks/${card.id}`, { term_type: "year", term_value: 1 }, adminToken);
-  assert.equal(patched.status, 409, JSON.stringify(patched.json));
-  assert.equal(patched.json.error.code, "GIFT_CARD_LOCKED");
+  // 管理员改赠送卡：不结算，照常能改
+  const adminPatch = await api("PATCH", `/admin/api/cdks/${card.id}`, { term_type: "year", term_value: 1 }, adminToken);
+  assert.equal(adminPatch.status, 200, JSON.stringify(adminPatch.json));
+  assert.equal(adminPatch.json.data.settle_diff, 0, "赠送卡不结算");
 
-  // 批量也一样跳过
-  const batch = await api("POST", "/admin/api/cdks/batch/apply", { ids: [card.id], term_type: "year", term_value: 1 }, adminToken);
+  // 代理改同一张卡：拒绝
+  await api(
+    "POST",
+    "/admin/api/staff",
+    {
+      email: "gift-agent@test.local",
+      password: "GiftAgent123",
+      role: "agent",
+      agent_id: agId,
+      features: ["batch.operation"],
+    },
+    adminToken,
+  );
+  const agentToken = (await api("POST", "/admin/api/auth/login", { email: "gift-agent@test.local", password: "GiftAgent123" }))
+    .json.data.token;
+  const denied = await api("PATCH", `/admin/api/cdks/${card.id}`, { term_type: "day", term_value: 5 }, agentToken);
+  assert.equal(denied.status, 409, JSON.stringify(denied.json));
+  assert.equal(denied.json.error.code, "GIFT_CARD_LOCKED");
+
+  // 代理批量：跳过并说明原因
+  const batch = await api(
+    "POST",
+    "/admin/api/cdks/batch/apply",
+    { ids: [card.id], term_type: "day", term_value: 5 },
+    agentToken,
+  );
   assert.equal(batch.status, 200);
   assert.equal(batch.json.data.updated, 0);
   assert.ok(

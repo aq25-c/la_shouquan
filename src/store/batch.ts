@@ -127,8 +127,8 @@ function planCdk(
     };
   }
 
-  // 代理名下的赠送卡（实付 0）不能改，只能删除/作废；管理员发的卡不涉及钱，照常可改
-  if (cdk.agent_id && Number(cdk.paid_amount ?? 0) === 0) {
+  // 代理名下的赠送卡（实付 0）代理不能改；管理员可以改任何卡
+  if (opts.agent_id && cdk.agent_id && Number(cdk.paid_amount ?? 0) === 0) {
     return { skip: { id, label, reason: "赠送卡不能修改，只能删除或作废" } };
   }
 

@@ -1507,9 +1507,9 @@ export function registerAdminRoutes(): void {
     const termValue = bodyInt(ctx, "term_value", { min: 1, max: 100000 });
     if (termValue !== null) patchData.termValue = termValue;
 
-    // 赠送卡（实付 0）不能改：改时间等于凭空造价值，只能删除或作废
-    if (cdk.agent_id && Number(cdk.paid_amount ?? 0) === 0) {
-      throw conflict("赠送卡不能修改，只能删除或作废；需要调整请重新生成", "GIFT_CARD_LOCKED");
+    // 赠送卡（实付 0）：代理不能改（改时间等于凭空造价值），管理员可以改任何卡
+    if (staffCtx.isAgent && cdk.agent_id && Number(cdk.paid_amount ?? 0) === 0) {
+      throw conflict("赠送卡不能修改，只能删除或作废；需要调整请联系管理员", "GIFT_CARD_LOCKED");
     }
 
     // 代理改卡：按「新价值 − 实付」结算差价（1 天换 1 个月必须补钱）
