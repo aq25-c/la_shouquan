@@ -62,10 +62,11 @@ test("权限模型：owner / agent / staff", () => {
   assert.ok(perm.hasFeature(owner, "staff.manage"));
 
   const agent = perm.parsePermissions(null, "agent");
-  assert.deepEqual(agent.menus, ["overview", "cdks", "customers"], "代理可看首页、CDK 与客户页");
+  assert.deepEqual(agent.menus, ["overview", "cdks", "licenses", "customers"], "代理可看首页、CDK、自己的授权与客户");
   assert.ok(perm.hasFeature(agent, "cdk.generate"));
   assert.equal(perm.hasFeature(agent, "staff.manage"), false, "代理不能管理员工");
-  assert.equal(perm.hasMenu(agent, "licenses"), false);
+  assert.equal(perm.hasMenu(agent, "licenses"), true, "代理可以看自己名下的授权");
+  assert.equal(perm.hasMenu(agent, "agents"), false, "代理不能看代理管理页");
 
   // 序列化会过滤掉不存在的菜单/功能
   const staffStr = perm.serializePermissions({

@@ -1139,8 +1139,8 @@ test("代理账号：绑定代理、权限固定、只能碰卡密", async () =>
   assert.equal(created.json.data.staff.agent_id, agentId);
   assert.deepEqual(
     created.json.data.staff.permissions.menus,
-    ["overview", "cdks", "customers"],
-    "代理可看首页、卡密页与自己名下的客户",
+    ["overview", "cdks", "licenses", "customers"],
+    "代理可看首页、卡密、自己的授权与客户",
   );
 
   const login = await api("POST", "/admin/api/auth/login", {
@@ -3420,4 +3420,175 @@ test("月卡 / 年卡生成后存的是折算天数，CDK 详情带归属代理"
   const direct = await api("GET", `/admin/api/cdks/${monthRow.id}`, undefined, adminToken);
   assert.equal(direct.status, 200);
   assert.equal(direct.json.data.agent, null, "直销卡归属应为空");
+});
+
+
+test("批量操作：卡密批量改时长/模块，代理默认无权限", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "batch-a", name: "批量代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+
+  // 两张未激活卡 + 一张已激活卡
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 3, agent_id: agId },
+    adminToken,
+  );
+  const [c1, c2, c3] = gen.json.data.codes;
+  const reg = await api("POST", "/api/v1/auth/register", { email: "batch-buyer@test.local", password: "BatchBuyer123" });
+  await api("POST", "/api/v1/licenses/activate", { cdk: c3, bind_device: false }, reg.json.data.session.token);
+
+  const list = await api("GET", `/admin/api/cdks?agent_id=${agId}&page_size=50`, undefined, adminToken);
+  const idOf = (code: string) => list.json.data.items.find((c: Json) => c.code === code).id;
+  const ids = [idOf(c1), idOf(c2), idOf(c3)];
+
+  // 预览：两张未激活能改，已激活那张被跳过
+  const preview = await api(
+    "POST",
+    "/admin/api/cdks/batch/preview",
+    { ids, term_type: "year", term_value: 1, module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  assert.equal(preview.status, 200);
+  assert.equal(preview.json.data.updated, 2);
+  assert.equal(preview.json.data.skipped.length, 1);
+  assert.match(preview.json.data.skipped[0].reason, /已激活/);
+
+  // 执行：卡内时长改成 1 年、模块整体覆盖
+  const apply = await api(
+    "POST",
+    "/admin/api/cdks/batch/apply",
+    { ids, term_type: "year", term_value: 1, module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  assert.equal(apply.status, 200);
+  assert.equal(apply.json.data.updated, 2);
+
+  const after = await api("GET", `/admin/api/cdks?agent_id=${agId}&page_size=50`, undefined, adminToken);
+  const row = after.json.data.items.find((c: Json) => c.code === c1);
+  assert.equal(row.term_type, "year");
+  assert.equal(row.term_value, 1);
+  assert.equal(row.days, 365, "年卡应折算成 365 天");
+
+  // 代理默认没有批量权限
+  await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "batch-agent@test.local", password: "BatchAgent123", role: "agent", agent_id: agId },
+    adminToken,
+  );
+  const login = await api("POST", "/admin/api/auth/login", { email: "batch-agent@test.local", password: "BatchAgent123" });
+  const agentToken = login.json.data.token;
+  const denied = await api(
+    "POST",
+    "/admin/api/cdks/batch/preview",
+    { ids: [idOf(c1)], expire_days: 10 },
+    agentToken,
+  );
+  assert.equal(denied.status, 403, "代理默认不能用批量操作");
+
+  // 开通后可用，且只能动自己的卡
+  const me = await api("GET", "/admin/api/auth/me", undefined, agentToken);
+  await api(
+    "PATCH",
+    `/admin/api/staff/${me.json.data.admin.id}`,
+    { features: ["batch.operation"] },
+    adminToken,
+  );
+  const relogin = await api("POST", "/admin/api/auth/login", { email: "batch-agent@test.local", password: "BatchAgent123" });
+  const agentToken2 = relogin.json.data.token;
+  assert.ok(
+    relogin.json.data.admin.permissions.features.includes("batch.operation"),
+    "开通后登录态里应带上批量权限",
+  );
+  const allowed = await api(
+    "POST",
+    "/admin/api/cdks/batch/apply",
+    { ids: [idOf(c1)], expire_days: 30 },
+    agentToken2,
+  );
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.json.data.updated, 1);
+});
+
+test("批量操作：授权批量延期与改模块，代理超上限会失败并说明", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "batch-lic", name: "授权批量代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  const cdk = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 2, agent_id: agId },
+    adminToken,
+  );
+  const reg = await api("POST", "/api/v1/auth/register", { email: "batchlic@test.local", password: "BatchLic123" });
+  const token = reg.json.data.session.token;
+  const act = await api("POST", "/api/v1/licenses/activate", { cdk: cdk.json.data.codes[0], bind_device: false }, token);
+  const licIds: string[] = [act.json.data.license.id];
+
+  // 第二条授权用「手动开通」造（同产品会被并卡，这里要的是两条独立的授权）
+  const second = await api(
+    "POST",
+    "/admin/api/licenses",
+    {
+      customer_id: reg.json.data.customer.id,
+      product_id: productId,
+      module_ids: [moduleIds[0]],
+      days: 30,
+      agent_id: agId,
+    },
+    adminToken,
+  );
+  assert.equal(second.status, 201);
+  licIds.push(second.json.data.license.id);
+
+  // 管理员批量 +10 天（不受上限，且上限会被抬高）
+  const plus = await api(
+    "POST",
+    "/admin/api/licenses/batch/apply",
+    { ids: licIds, expire_days: 10 },
+    adminToken,
+  );
+  assert.equal(plus.status, 200);
+  assert.equal(plus.json.data.updated, 2);
+
+  const one = await api("GET", `/admin/api/licenses/${licIds[0]}`, undefined, adminToken);
+  const before = one.json.data.license.expires_at;
+
+  // 代理批量 +30 天会超上限 → 这条失败，并说明原因
+  const staff = await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "batchlic-agent@test.local", password: "BatchLicAgent123", role: "agent", agent_id: agId, features: ["batch.operation"] },
+    adminToken,
+  );
+  assert.equal(staff.status, 201);
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "batchlic-agent@test.local",
+    password: "BatchLicAgent123",
+  });
+  const agentToken = login.json.data.token;
+
+  const over = await api(
+    "POST",
+    "/admin/api/licenses/batch/apply",
+    { ids: licIds, expire_days: 30 },
+    agentToken,
+  );
+  assert.equal(over.status, 200);
+  assert.equal(over.json.data.updated, 0);
+  assert.equal(over.json.data.skipped.length, 2);
+  assert.match(over.json.data.skipped[0].reason, /最多只能调整到/);
+
+  // 批量改模块：整体覆盖
+  const mods = await api(
+    "POST",
+    "/admin/api/licenses/batch/apply",
+    { ids: [licIds[0]], module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  assert.equal(mods.status, 200);
+  assert.equal(mods.json.data.updated, 1);
+  const after = await api("GET", `/admin/api/licenses/${licIds[0]}`, undefined, adminToken);
+  assert.equal(after.json.data.license.expires_at, before, "只改模块不应改到期");
+  assert.ok(after.json.data.license.module_ids.includes(moduleIds[0]));
 });

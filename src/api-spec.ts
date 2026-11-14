@@ -66,6 +66,31 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     desc: "返回本次要花多少钱：`unit_price`、`seat_ratio`、`seat_factor`、`billable_units`、`total_price`、`balance`、`shortfall`、`sufficient`，以及该产品已定价的档位 `tiers`（代理端只用这些档位）。管理员调用时 `payable=false`（赠送不扣费）。",
     notes: "结算单价一律取定价表；请求里传 `unit_price` 会被忽略。",
   },
+  "POST /admin/api/cdks/batch/preview": {
+    title: "批量操作卡密：预览",
+    auth: "admin / 已开通 batch.operation 的代理",
+    params:
+      "`ids`✅（≤500）、`expire_days?`（兑换截止加减天）、`expires_at?`（直接设定，优先）、`term_type?`+`term_value?`（卡内时长）、`module_ids?`（整体覆盖）",
+    desc: "只算影响面不落库：返回能改多少条、哪些会被跳过（已激活 / 已作废 / 不属于自己）。",
+  },
+  "POST /admin/api/cdks/batch/apply": {
+    title: "批量操作卡密：执行",
+    auth: "admin / 已开通 batch.operation 的代理",
+    params: "同上",
+    desc: "逐条执行，单条失败不影响其它条；返回 `updated`、`skipped[]`、`failed[]`（含原因）。代理只能改自己批次下、未激活的卡；改卡内时长会同时更新折算天数。",
+  },
+  "POST /admin/api/licenses/batch/preview": {
+    title: "批量操作授权：预览",
+    auth: "admin / 已开通 batch.operation 的代理",
+    params: "`ids`✅（≤500）、`expire_days?`、`expires_at?`、`module_ids?`（整体覆盖）",
+    desc: "只算影响面：能改多少条、哪些会被跳过（已吊销 / 超上限 / 不属于自己）。",
+  },
+  "POST /admin/api/licenses/batch/apply": {
+    title: "批量操作授权：执行",
+    auth: "admin / 已开通 batch.operation 的代理",
+    params: "同上",
+    desc: "逐条执行。代理延长时受 `max_expires_at` 限制，超了这条失败并说明「最多只能到 X」；管理员延长会自动抬高上限。到期变动会同步所有模块，模块整体覆盖会重建模块记录。每条都会写一条授权操作日志（标 `batch: true`）。",
+  },
   "GET /admin/api/agent-home": {
     title: "代理首页（余额 / 卡密 / 客户到期）",
     auth: "agent / admin",

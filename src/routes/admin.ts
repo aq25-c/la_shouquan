@@ -38,6 +38,7 @@ import { adminTtl, grantSession, requireAdmin, requireFeature, requireOwner, req
 import type { StaffContext } from "../auth.ts";
 import { currentSession } from "../auth.ts";
 import {
+  AGENT_GRANTABLE,
   AGENT_PERMISSIONS,
   FEATURES,
   MENUS,
@@ -50,6 +51,8 @@ import { publicKeyInfo, signingKeys } from "../keys.ts";
 import { withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget, listAuditByTargets } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
+import { batchCdks, batchLicenses } from "../store/batch.ts";
+import type { BatchOptions } from "../store/batch.ts";
 
 /** 代理只能看/碰自己名下客户的授权（管理员不受限） */
 function assertAgentCanSeeLicense(staffCtx: StaffContext, license: { customer_id: string }): void {
@@ -409,10 +412,12 @@ export function registerAdminRoutes(): void {
       });
     }
 
-    // 代理权限固定（只看自己的卡密），员工按勾选配置
+    // 代理：基础权限固定，只接受白名单里的额外功能（批量操作）；员工按勾选配置
     const permissions =
       roleInput === "agent"
-        ? serializePermissions(AGENT_PERMISSIONS)
+        ? JSON.stringify({
+            features: (bodyStrArray(ctx, "features") ?? []).filter((f) => AGENT_GRANTABLE.includes(f)),
+          })
         : serializePermissions({
             menus: bodyStrArray(ctx, "menus") ?? [],
             features: bodyStrArray(ctx, "features") ?? [],
@@ -485,6 +490,12 @@ export function registerAdminRoutes(): void {
           module_ids: moduleIds ?? current.module_ids,
           term_types: termTypes ?? current.term_types,
         });
+      }
+      // 代理默认权限写死，只有白名单里的功能可以单独开通（目前是批量操作）
+      const grantFeatures = bodyStrArray(ctx, "features");
+      if (grantFeatures) {
+        const granted = grantFeatures.filter((f) => AGENT_GRANTABLE.includes(f));
+        patchData.permissions = JSON.stringify({ features: granted });
       }
     } else if (target.role !== "owner") {
       const menus = bodyStrArray(ctx, "menus");
@@ -1751,6 +1762,85 @@ export function registerAdminRoutes(): void {
       })),
     });
   });
+
+  /* ---------------------------- 批量操作 ---------------------------- */
+
+  /**
+   * 批量延期 / 批量改模块。
+   * - preview 只算影响面，不落库
+   * - apply 逐条执行，失败的单条返回原因，不影响其它条
+   * - 代理需要单独开通 batch.operation 权限，且只能动自己名下的数据
+   */
+  const runBatch = (ctx: Ctx, kind: "cdk" | "license", apply: boolean) => {
+    const staffCtx = requireStaff(ctx);
+    const admin = staffCtx.admin;
+    const ids = (bodyStrArray(ctx, "ids") ?? []).slice(0, 500);
+    if (!ids.length) throw badRequest("请先选择要操作的记录", "MISSING_FIELD", { field: "ids" });
+
+    const opts: BatchOptions = {
+      expire_days: bodyInt(ctx, "expire_days", { min: -3650, max: 3650 }),
+      expires_at: isoOrNull(ctx, "expires_at"),
+      term_type: bodyStr(ctx, "term_type", { max: 20 }),
+      term_value: bodyInt(ctx, "term_value", { min: 1, max: 100000 }),
+      module_ids: bodyStrArray(ctx, "module_ids"),
+      agent_id: staffCtx.isAgent ? (staffCtx.agentId ?? "__none__") : null,
+    };
+    if (!opts.expire_days && !opts.expires_at && !opts.term_type && !opts.term_value && !opts.module_ids) {
+      throw badRequest("请至少填写一项要修改的内容", "MISSING_FIELD");
+    }
+
+    const result = kind === "cdk" ? batchCdks(ids, opts, apply) : batchLicenses(ids, opts, apply);
+
+    if (apply && result.changed.length) {
+      audit({
+        actorType: "admin",
+        actorId: admin.id,
+        actorLabel: admin.email,
+        action: kind === "cdk" ? "cdk.batch_update" : "license.batch_update",
+        targetType: kind === "cdk" ? "cdk_batch" : "license",
+        targetId: null,
+        ip: ctx.ip,
+        detail: {
+          updated: result.updated,
+          skipped: result.skipped.length,
+          failed: result.failed.length,
+          expire_days: opts.expire_days ?? null,
+          expires_at: opts.expires_at ?? null,
+          term_type: opts.term_type ?? null,
+          term_value: opts.term_value ?? null,
+          modules: opts.module_ids ?? null,
+          by_agent: staffCtx.isAgent ? staffCtx.agentId : null,
+        },
+      });
+      // 逐条留痕，授权详情里的操作记录能看到「批量 +30 天」
+      for (const ch of result.changed) {
+        audit({
+          actorType: "admin",
+          actorId: admin.id,
+          actorLabel: admin.email,
+          action: kind === "cdk" ? "cdk.update" : "license.adjust_expiry",
+          targetType: kind === "cdk" ? "cdk" : "license",
+          targetId: ch.id,
+          ip: ctx.ip,
+          detail: {
+            batch: true,
+            days: ch.days || undefined,
+            from_expires_at: ch.from,
+            to_expires_at: ch.to,
+            modules: ch.modules ?? undefined,
+            by: staffCtx.isAgent ? "agent" : "admin",
+          },
+        });
+      }
+    }
+
+    return ok({ applied: apply, ...result });
+  };
+
+  post(`${P}/cdks/batch/preview`, (ctx) => runBatch(ctx, "cdk", false));
+  post(`${P}/cdks/batch/apply`, (ctx) => runBatch(ctx, "cdk", true));
+  post(`${P}/licenses/batch/preview`, (ctx) => runBatch(ctx, "license", false));
+  post(`${P}/licenses/batch/apply`, (ctx) => runBatch(ctx, "license", true));
 
   /* ---------------------------- 授权 ---------------------------- */
 

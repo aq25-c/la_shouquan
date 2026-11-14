@@ -123,6 +123,10 @@ const state = {
   pages: {},
   /** 当前登录账号的权限（后端下发） */
   permissions: { menus: [], features: [] },
+  /** 批量操作：勾选的卡密 / 授权 id，以及每条所属产品（批量改模块要用） */
+  selCdk: new Set(),
+  selLic: new Set(),
+  selMeta: new Map(),
 };
 
 /** 员工权限：只显示被授权的菜单 */
@@ -335,6 +339,229 @@ function pageNav(key, total, pageSize, onGo) {
     onGo();
   };
   return node;
+}
+
+/* ============================ 批量操作 ============================ */
+
+/** 绑定列表里的勾选：全选、单选、批量按钮的可用状态 */
+function bindBatchSelect(root, kind, pageIds) {
+  if (!hasFeature("batch.operation")) return;
+  const set = kind === "cdk" ? state.selCdk : state.selLic;
+  // 清掉不在当前页的旧选择，避免"看不见却算进去"
+  for (const id of [...set]) if (!pageIds.includes(id)) set.delete(id);
+
+  const btn = $("[data-batch-open]", root);
+  const countEl = $("[data-sel-count]", root);
+  const all = $("[data-sel-all]", root);
+
+  const sync = () => {
+    if (countEl) countEl.textContent = set.size ? `（${set.size}）` : "";
+    if (btn) btn.disabled = set.size === 0;
+    if (all) {
+      const boxes = $$("[data-sel]", root);
+      all.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+      all.indeterminate = boxes.some((b) => b.checked) && !all.checked;
+    }
+    const pageBtn = $("[data-sel-page]", root);
+    if (pageBtn) {
+      const boxes = $$("[data-sel]", root);
+      pageBtn.textContent = boxes.length && boxes.every((b) => b.checked) ? "取消全选" : "全选本页";
+    }
+  };
+
+  const remember = (box, on) => {
+    if (on) {
+      set.add(box.dataset.sel);
+      state.selMeta.set(box.dataset.sel, box.dataset.product ?? null);
+    } else {
+      set.delete(box.dataset.sel);
+      state.selMeta.delete(box.dataset.sel);
+    }
+  };
+
+  $$("[data-sel]", root).forEach((box) => {
+    box.onchange = () => {
+      remember(box, box.checked);
+      sync();
+    };
+  });
+
+  if (all) {
+    all.onchange = () => {
+      $$("[data-sel]", root).forEach((box) => {
+        box.checked = all.checked;
+        remember(box, all.checked);
+      });
+      sync();
+    };
+  }
+
+  const pageBtn = $("[data-sel-page]", root);
+  if (pageBtn) {
+    pageBtn.onclick = () => {
+      const boxes = $$("[data-sel]", root);
+      const allChecked = boxes.length > 0 && boxes.every((b) => b.checked);
+      boxes.forEach((b) => {
+        b.checked = !allChecked;
+        remember(b, !allChecked);
+      });
+      sync();
+    };
+  }
+
+  if (btn) {
+    btn.onclick = () => openBatchModal(kind, [...set]);
+  }
+  sync();
+}
+
+const BATCH_MODULE_CACHE = new Map();
+
+/** 批量操作弹窗：卡密（未激活）与授权共用，按 kind 显示不同字段 */
+async function openBatchModal(kind, ids) {
+  if (!ids.length) return;
+  const isCdk = kind === "cdk";
+
+  // 模块列表：批量改模块要求选中的是同一个产品（勾选时已记住每条的产品）
+  const products = [...new Set(ids.map((id) => state.selMeta.get(id)).filter(Boolean))];
+  const productOf = { pid: products[0] ?? null, multi: products.length > 1, count: ids.length };
+
+  let modules = [];
+  if (productOf.pid && !productOf.multi) {
+    if (!BATCH_MODULE_CACHE.has(productOf.pid)) {
+      const res = await apiGet(`/admin/api/products/${productOf.pid}/modules`).catch(() => ({ items: [] }));
+      BATCH_MODULE_CACHE.set(productOf.pid, res.items ?? []);
+    }
+    modules = BATCH_MODULE_CACHE.get(productOf.pid);
+  }
+
+  const moduleBlock = productOf.multi
+    ? `<div class="note warn">选中的记录来自多个产品，不能批量改模块；请按产品分别勾选。</div>`
+    : `<div class="field full"><span>模块（整体覆盖，不勾=不改）</span>
+        <div class="checkbox-list" data-bmods>
+          ${modules.map((m) => `<label><input type="checkbox" value="${esc(m.id)}" /><span>${esc(m.name)}</span></label>`).join("") || '<span class="empty">该产品没有模块</span>'}
+        </div>
+        <div class="muted small">勾了就会把选中的记录改成这几个模块（至少 1 个）；一个都不勾表示不动模块。</div>
+      </div>`;
+
+  openModal({
+    title: isCdk ? `批量操作卡密（已选 ${ids.length} 条）` : `批量操作授权（已选 ${ids.length} 条）`,
+    wide: true,
+    body: `
+      <div class="note">
+        ${isCdk
+          ? "只处理<b>未激活</b>的卡密；已激活/已作废的会被跳过并列出原因。"
+          : "只处理<b>未吊销</b>的授权；代理延长受「最多可到」限制，超出的那条会失败并说明原因。"}
+      </div>
+
+      <div class="form-grid">
+        <label class="field"><span>${isCdk ? "兑换截止：按天调整（正数延后 / 负数提前）" : "授权到期：按天调整（正数延长 / 负数缩短）"}</span>
+          <input name="days" type="number" placeholder="例如 30" /></label>
+        <label class="field"><span>或直接设定时间（优先）</span>
+          <input name="expires_at" type="datetime-local" /></label>
+        ${isCdk
+          ? `<label class="field"><span>卡内时长：计费类型</span>
+               <select name="term_type">
+                 <option value="">不改</option>
+                 <option value="day">按天</option><option value="month">按月</option>
+                 <option value="year">按年</option><option value="hour">按小时</option>
+                 <option value="count">按次数</option>
+               </select></label>
+             <label class="field"><span>卡内时长：数量</span>
+               <input name="term_value" type="number" min="1" placeholder="例如 12" /></label>`
+          : ""}
+      </div>
+      ${moduleBlock}
+      <div class="note" data-batch-result></div>`,
+    footer: `<button class="btn" data-cancel type="button">取消</button>
+      <button class="btn" data-preview type="button">预览</button>
+      <button class="btn btn-primary" data-apply type="button">执行</button>`,
+    onMount(modal, close) {
+      const box = $("[data-batch-result]", modal);
+      $("[data-cancel]", modal).onclick = close;
+
+      const collect = () => {
+        const payload = { ids };
+        const dt = $('[name="expires_at"]', modal).value;
+        const days = $('[name="days"]', modal).value;
+        if (dt) payload.expires_at = new Date(dt).toISOString();
+        else if (days !== "" && Number(days) !== 0) payload.expire_days = Number(days);
+        if (isCdk) {
+          const tt = $('[name="term_type"]', modal)?.value;
+          const tv = Number($('[name="term_value"]', modal)?.value ?? 0);
+          if (tt && tv > 0) {
+            payload.term_type = tt;
+            payload.term_value = tv;
+          }
+        }
+        const mods = $$("[data-bmods] input:checked", modal).map((i) => i.value);
+        if (mods.length) {
+          if (!productOf.multi) payload.module_ids = mods;
+        }
+        if (Object.keys(payload).length === 1) return null;
+        return payload;
+      };
+
+      const renderResult = (res, applied) => {
+        const lines = [`<b>${applied ? "已执行" : "预计影响"}：可改 ${res.updated} 条</b>`];
+        if (res.skipped.length) {
+          lines.push(`<div class="muted small">跳过 ${res.skipped.length} 条：${
+            res.skipped.slice(0, 8).map((s) => `${s.label}（${s.reason}）`).join("、")
+          }${res.skipped.length > 8 ? " …" : ""}</div>`);
+        }
+        if (res.failed?.length) {
+          lines.push(`<div class="small" style="color:var(--danger)">失败 ${res.failed.length} 条：${
+            res.failed.slice(0, 8).map((s) => `${s.label}（${s.reason}）`).join("、")
+          }</div>`);
+        }
+        box.className = res.failed?.length ? "note danger-note" : "note";
+        box.innerHTML = lines.join("");
+      };
+
+      const call = async (apply) => {
+        const payload = collect();
+        if (!payload) {
+          toast("请至少填写一项要修改的内容", "error");
+          return null;
+        }
+        return apiPost(`/admin/api/${isCdk ? "cdks" : "licenses"}/batch/${apply ? "apply" : "preview"}`, payload);
+      };
+
+      $("[data-preview]", modal).onclick = async () => {
+        try {
+          const res = await call(false);
+          if (res) renderResult(res, false);
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+
+      $("[data-apply]", modal).onclick = async () => {
+        const btn = $("[data-apply]", modal);
+        btn.disabled = true;
+        try {
+          const res = await call(true);
+          if (!res) {
+            btn.disabled = false;
+            return;
+          }
+          renderResult(res, true);
+          const set = isCdk ? state.selCdk : state.selLic;
+          for (const id of ids) state.selMeta.delete(id);
+          set.clear();
+          toast(`已处理 ${res.updated} 条${res.failed.length ? `，失败 ${res.failed.length} 条` : ""}`, res.failed.length ? "error" : "ok");
+          btn.disabled = false;
+          if (!res.failed.length) {
+            close();
+            navigate(isCdk ? "cdks" : "licenses", true);
+          }
+        } catch (err) {
+          btn.disabled = false;
+          toast(err.message, "error");
+        }
+      };
+    },
+  });
 }
 
 /** 卡密时长显示：月/年/次数按原单位显示，后面附折算天数 */
@@ -1231,7 +1458,14 @@ async function agentAccountForm(agentId) {
           .join("")}
       </div>
     </div>
-    <div class="note">代理只能给这里勾选的产品 / 卡类型出卡，并按「代理定价 → 全局默认价」从账户余额扣费。</div>`;
+    <div class="note">代理只能给这里勾选的产品 / 卡类型出卡，并按「代理定价 → 全局默认价」从账户余额扣费。</div>
+    <div class="field full" style="margin-top:14px"><span>额外功能（默认关闭）</span>
+      <div class="checkbox-list" data-agent-feats>
+        <label><input type="checkbox" value="batch.operation" ${(account?.permissions?.features ?? []).includes("batch.operation") ? "checked" : ""} />
+          <span>批量操作（批量延期 / 批量改模块）</span></label>
+      </div>
+      <div class="muted small">开启后，该代理只能批量操作「自己名下客户的授权」和「自己出的未激活卡」。</div>
+    </div>`;
 
   const accountBlock = account
     ? `<div class="note">该代理已有登录账号：<strong>${esc(account.email)}</strong>（${account.status === "active" ? "启用" : "停用"}）</div>
@@ -1259,6 +1493,7 @@ async function agentAccountForm(agentId) {
       const collect = () => ({
         product_ids: $$("[data-scope-products] input:checked", m).map((i) => i.value),
         term_types: $$("[data-scope-terms] input:checked", m).map((i) => i.value),
+        features: $$("[data-agent-feats] input:checked", m).map((i) => i.value),
       });
 
       $("[data-save]", m).onclick = async () => {
@@ -1685,6 +1920,8 @@ async function renderCdks(root) {
     apiGet(`/admin/api/cdks?${query}`),
     apiGet("/admin/api/cdk-batches"),
   ]);
+  const canBatch = hasFeature("batch.operation");
+  const pageCdkIds = list.items.map((c) => c.id);
 
   const isAgent = state.role === "agent";
   const TERM_LABEL = { hour: "按小时", day: "按天", month: "按月", year: "按年", count: "按次数" };
@@ -1744,19 +1981,21 @@ async function renderCdks(root) {
             ${state.agents.map((c) => `<option value="${esc(c.id)}" ${filters.agent_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
           </select>
           <input data-f-q placeholder="搜索 CDK / 备注 / 客户邮箱" value="${esc(filters.q)}" />
+          ${canBatch ? '<button class="btn btn-sm" data-sel-page type="button">全选本页</button><button class="btn btn-sm" data-batch-open type="button" disabled>批量操作 <span data-sel-count>0</span></button>' : ""}
           <button class="btn btn-sm" data-export type="button">导出 CSV</button>
         </div>
       </div>
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>CDK</th><th>产品</th><th>代理</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>到期时间</th><th>生成时间</th><th class="right">操作</th></tr></thead>
+            <thead><tr>${canBatch ? '<th class="chk"><input type="checkbox" data-sel-all type="checkbox" /></th>' : ""}<th>CDK</th><th>产品</th><th>代理</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>到期时间</th><th>生成时间</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
                   ? list.items
                       .map(
                         (c) => `<tr>
+                          ${canBatch ? `<td class="chk"><input type="checkbox" data-sel="${esc(c.id)}" data-product="${esc(c.product_id)}" ${state.selCdk.has(c.id) ? "checked" : ""} /></td>` : ""}
                           <td class="mono"><button class="btn btn-ghost btn-sm" data-copy="${esc(c.code)}" type="button" title="点击复制">${esc(c.code)}</button></td>
                           <td>${esc(c.product_code)}</td>
                           <td>${c.agent_code ? `<span class="badge badge-info">${esc(c.agent_name ?? c.agent_code)}</span>` : '<span class="muted small">直销</span>'}</td>
@@ -1776,7 +2015,7 @@ async function renderCdks(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(10, "没有符合条件的 CDK")
+                  : emptyRow(canBatch ? 11 : 10, "没有符合条件的 CDK")
               }
             </tbody>
           </table>
@@ -1784,6 +2023,7 @@ async function renderCdks(root) {
       </div>
     </div>`;
 
+  bindBatchSelect(root, "cdk", pageCdkIds);
   const productSelect = $('[name="product_id"]', root);
   const termSelect = $('[name="term_type"]', root);
   const estimateBox = $("[data-estimate]", root);
@@ -2078,12 +2318,16 @@ async function renderLicenses(root) {
   if (filters.expiring) query.set("expiring_within_days", filters.expiring);
 
   const list = await apiGet(`/admin/api/licenses?${query}`);
+  const canBatch = hasFeature("batch.operation");
+  // 只保留当前页还在的选中项，切页不会串
+  const pageIds = list.items.map((l) => l.id);
 
   root.innerHTML = `
     <div class="card">
       <div class="card-head">
         <h3>授权列表</h3>
         <div class="toolbar">
+          ${canBatch ? '<button class="btn btn-sm" data-sel-page type="button">全选本页</button><button class="btn btn-sm" data-batch-open type="button" disabled>批量操作 <span data-sel-count>0</span></button>' : ""}
           <select data-f-status>
             ${["", "active", "expired", "pending", "suspended", "revoked"]
               .map((s) => `<option value="${s}" ${filters.status === s ? "selected" : ""}>${s === "" ? "全部状态" : LICENSE_STATUS[s][0]}</option>`)
@@ -2105,13 +2349,14 @@ async function renderLicenses(root) {
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>授权单号</th><th>客户</th><th>产品</th><th>计费</th><th>状态</th><th>到期时间</th><th>剩余</th><th>席位</th><th class="right">操作</th></tr></thead>
+            <thead><tr>${canBatch ? '<th class="chk"><input type="checkbox" data-sel-all type="checkbox" /></th>' : ""}<th>授权单号</th><th>客户</th><th>产品</th><th>计费</th><th>状态</th><th>到期时间</th><th>剩余</th><th>席位</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
                   ? list.items
                       .map(
                         (l) => `<tr>
+                          ${canBatch ? `<td class="chk"><input type="checkbox" data-sel="${esc(l.id)}" data-product="${esc(l.product_id)}" ${state.selLic.has(l.id) ? "checked" : ""} /></td>` : ""}
                           <td class="mono">${esc(l.license_no)}</td>
                           <td>${customerCell(l.customer_name, l.customer_email)}</td>
                           <td>${esc(l.product_code)}</td>
@@ -2120,11 +2365,11 @@ async function renderLicenses(root) {
                           <td class="nowrap">${fmtDay(l.expires_at)}</td>
                           <td class="nowrap">${relDays(l.expires_at)}</td>
                           <td>${l.active_devices}/${l.seats}</td>
-                          <td class="right"><button class="btn btn-sm" data-license="${esc(l.id)}" type="button">管理</button></td>
+                          <td class="right"><button class="btn btn-sm" data-license="${esc(l.id)}" type="button">${state.role === "agent" ? "设备与日志" : "管理"}</button></td>
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(9, "没有符合条件的授权")
+                  : emptyRow(canBatch ? 10 : 9, "没有符合条件的授权")
               }
             </tbody>
           </table>
@@ -2132,6 +2377,7 @@ async function renderLicenses(root) {
       </div>
     </div>`;
 
+  bindBatchSelect(root, "lic", pageIds);
   $("[data-f-status]", root).onchange = (e) => {
     filters.status = e.target.value;
     state.pages[pageKey] = 1;
@@ -2157,7 +2403,9 @@ async function renderLicenses(root) {
   $("[data-new]", root).onclick = () => manualLicenseForm();
 
   $$("[data-license]", root).forEach((btn) => {
-    btn.onclick = () => openLicenseDetail(btn.dataset.license);
+    // 代理只有设备 / 日志 / 解绑这些权限，用精简弹窗
+    btn.onclick = () =>
+      state.role === "agent" ? openLicenseMini(btn.dataset.license) : openLicenseDetail(btn.dataset.license);
   });
 
   const pager = pageNav(pageKey, list.total, 20, () => navigate("licenses", true));

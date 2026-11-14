@@ -1195,13 +1195,18 @@ export function updateCdk(
     sets.push("note = ?");
     params.push(nz(patch.note));
   }
-  if (patch.termType) {
-    sets.push("term_type = ?");
-    params.push(patch.termType);
-  }
-  if (typeof patch.termValue === "number") {
-    sets.push("term_value = ?", "days = ?");
-    params.push(patch.termValue, patch.termValue);
+  if (patch.termType || typeof patch.termValue === "number") {
+    // 改了计费类型/数量，days 要按折算后的真实天数一起更新（1 年 = 365 天）
+    const cur = db()
+      .prepare("SELECT term_type, term_value, days FROM cdks WHERE id = ?")
+      .get(id) as { term_type: string | null; term_value: number | null; days: number | null } | undefined;
+    const term = normalizeTerm(
+      patch.termType ?? cur?.term_type ?? null,
+      typeof patch.termValue === "number" ? patch.termValue : (cur?.term_value ?? null),
+      cur?.days ?? 1,
+    );
+    sets.push("term_type = ?", "term_value = ?", "days = ?");
+    params.push(term.termType, term.termValue, term.days);
   }
 
   if (sets.length) {

@@ -539,6 +539,10 @@ tr.group-row td { background: var(--surface-soft); font-size: 12.5px; }
 .badge-danger { background: var(--danger-soft); color: var(--danger); }
 .badge-info { background: var(--primary-soft); color: var(--primary-dark); }
 
+/* 批量勾选列 */
+th.chk, td.chk { width: 34px; padding-right: 0; text-align: center; }
+th.chk input, td.chk input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
+
 /* 生成卡密的价格预估 */
 .estimate-amount { font-size: 17px; font-weight: 700; color: var(--text); }
 .estimate-danger { font-size: 22px; font-weight: 800; color: var(--danger); letter-spacing: 0.2px; }

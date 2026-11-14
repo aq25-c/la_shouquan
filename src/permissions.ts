@@ -39,6 +39,7 @@ export const FEATURES = [
   { id: "trial.config", label: "修改试用配置" },
   { id: "staff.manage", label: "员工与代理管理" },
   { id: "audit.view", label: "查看审计日志" },
+  { id: "batch.operation", label: "批量操作（批量延期 / 批量改模块）" },
 ] as const;
 
 export const ALL_MENUS: string[] = MENUS.map((m) => m.id);
@@ -48,17 +49,31 @@ export const OWNER_PERMISSIONS: Permissions = { menus: ALL_MENUS, features: ALL_
 
 /** 代理：只看自己的卡密页、只能生成卡密 */
 export const AGENT_PERMISSIONS: Permissions = {
-  // 代理：首页 + 卡密 + 自己名下的客户
-  menus: ["overview", "cdks", "customers"],
+  // 代理：首页 + 卡密 + 授权（只看自己名下）+ 客户
+  menus: ["overview", "cdks", "licenses", "customers"],
   // license.device 只用于「看设备 + 解绑」，绑定接口本身要求超级管理员
   features: ["cdk.generate", "cdk.revoke", "customer.manage", "customer.expiry", "license.device"],
 };
 
+/** 允许单独给某个代理额外开通的功能（白名单，防止顺手把菜单权限也放开） */
+export const AGENT_GRANTABLE: string[] = ["batch.operation"];
+
 export function parsePermissions(raw: string | null | undefined, role: StaffRole): Permissions {
   if (role === "owner") return OWNER_PERMISSIONS;
   if (role === "agent") {
-    // 代理权限固定，避免误配成能看别人的数据
-    return AGENT_PERMISSIONS;
+    // 代理基础权限固定，只有白名单里的功能可以单独开通（如批量操作）
+    let granted: string[] = [];
+    try {
+      const parsed = raw ? (JSON.parse(raw) as { features?: unknown }) : null;
+      const list = Array.isArray(parsed?.features) ? parsed?.features : [];
+      granted = list.filter((f): f is string => typeof f === "string" && AGENT_GRANTABLE.includes(f));
+    } catch {
+      granted = [];
+    }
+    return {
+      menus: AGENT_PERMISSIONS.menus,
+      features: [...new Set([...AGENT_PERMISSIONS.features, ...granted])],
+    };
   }
   let parsed: unknown = null;
   try {
@@ -191,6 +206,7 @@ const ADMIN_FEATURE_RULES: { pattern: RegExp; feature: string }[] = [
   { pattern: /^PATCH \/admin\/api\/settings\/trial$/, feature: "trial.config" },
   { pattern: /^(GET|POST|PATCH|DELETE) \/admin\/api\/staff(\/.*)?$/, feature: "staff.manage" },
   { pattern: /^(GET|POST) \/admin\/api\/admins$/, feature: "staff.manage" },
+  { pattern: /^POST \/admin\/api\/(cdks|licenses)\/batch\/(preview|apply)$/, feature: "batch.operation" },
 ];
 
 /** 返回该管理接口所需的功能权限；null 表示登录即可访问 */
