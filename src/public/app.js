@@ -2343,7 +2343,7 @@ async function renderLicenses(root) {
             <option value="30" ${filters.expiring === "30" ? "selected" : ""}>30 天内到期</option>
           </select>
           <input data-f-q placeholder="搜索单号 / 客户邮箱 / 客户名称" value="${esc(filters.q)}" />
-          <button class="btn btn-primary btn-sm" data-new type="button">+ 手动开通</button>
+          ${hasFeature("license.create") ? '<button class="btn btn-primary btn-sm" data-new type="button">+ 手动开通</button>' : ""}
         </div>
       </div>
       <div class="card-body tight">
@@ -2400,7 +2400,8 @@ async function renderLicenses(root) {
       navigate("licenses", true);
     }
   };
-  $("[data-new]", root).onclick = () => manualLicenseForm();
+  const newBtn = $("[data-new]", root);
+  if (newBtn) newBtn.onclick = () => manualLicenseForm();
 
   $$("[data-license]", root).forEach((btn) => {
     // 代理只有设备 / 日志 / 解绑这些权限，用精简弹窗

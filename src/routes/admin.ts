@@ -48,11 +48,22 @@ import {
 import type { StaffRole, TermType } from "../permissions.ts";
 import { buildLicenseFile, licenseView } from "../issuer.ts";
 import { publicKeyInfo, signingKeys } from "../keys.ts";
-import { withTx } from "../db.ts";
+import { db, withTx } from "../db.ts";
 import { audit, listAudit, listAuditByTarget, listAuditByTargets } from "../store/audit.ts";
 import { buildApiDocs } from "../api-spec.ts";
 import { batchCdks, batchLicenses } from "../store/batch.ts";
 import type { BatchOptions } from "../store/batch.ts";
+
+/** 代理只能看/碰自己出的卡密（管理员不受限） */
+function assertAgentCanSeeCdk(
+  staffCtx: { isAgent: boolean; agentId: string | null },
+  cdk: { agent_id: string | null },
+): void {
+  if (!staffCtx.isAgent) return;
+  if (cdk.agent_id !== (staffCtx.agentId ?? "__none__")) {
+    throw forbidden("该卡密不属于你的代理", "FORBIDDEN_AGENT_SCOPE");
+  }
+}
 
 /** 代理只能看/碰自己名下客户的授权（管理员不受限） */
 function assertAgentCanSeeLicense(staffCtx: StaffContext, license: { customer_id: string }): void {
@@ -1320,8 +1331,8 @@ export function registerAdminRoutes(): void {
       batchId: q(ctx, "batch_id"),
       status: q(ctx, "status"),
       q: q(ctx, "q"),
-      // 代理只能看到自己代理的卡密
-      agentId: staffCtx.isAgent ? staffCtx.agentId : q(ctx, "agent_id"),
+      // 代理只能看到自己代理的卡密（没绑代理的账号看到空，而不是全部）
+      agentId: staffCtx.isAgent ? (staffCtx.agentId ?? "__none__") : q(ctx, "agent_id"),
       page,
       pageSize,
     });
@@ -1334,17 +1345,26 @@ export function registerAdminRoutes(): void {
   });
 
   get(`${P}/cdk-batches`, (ctx) => {
-    requireAdmin(ctx);
-    return ok({ items: listBatches(q(ctx, "product_id")) });
+    const staffCtx = requireStaff(ctx);
+    return ok({
+      items: listBatches(q(ctx, "product_id"), staffCtx.isAgent ? (staffCtx.agentId ?? "__none__") : null),
+    });
   });
 
   /** CDK 详情：含产品、模块（名称）、绑定客户与批次 */
   get(`${P}/cdks/export`, (ctx) => {
-    requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
     const batchId = q(ctx, "batch_id");
     const productId = q(ctx, "product_id");
     const status = q(ctx, "status");
-    const rows = listCdks({ batchId, productId, status, page: 1, pageSize: 5000 }).items;
+    const rows = listCdks({
+      batchId,
+      productId,
+      status,
+      agentId: staffCtx.isAgent ? (staffCtx.agentId ?? "__none__") : null,
+      page: 1,
+      pageSize: 5000,
+    }).items;
     const filename = batchId ? `cdks-batch-${batchId}.csv` : "cdks.csv";
     const csv = `\ufeff${["code", "product", "days", "seats", "modules", "note", "created_at"]
       .join(",")}\n${rows
@@ -1366,10 +1386,11 @@ export function registerAdminRoutes(): void {
   });
 
   get(`${P}/cdks/:id`, (ctx) => {
-    requireStaff(ctx);
+    const staffCtx = requireStaff(ctx);
     const id = slash(ctx, "id");
     const cdk = findCdkById(id);
     if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    assertAgentCanSeeCdk(staffCtx, cdk);
     const product = findProductById(cdk.product_id);
     const customer = cdk.customer_id ? findCustomerById(cdk.customer_id) : null;
     // 归属：卡属于哪个代理（生成时定的）；已激活的话再给出授权当前的归属
@@ -1393,10 +1414,12 @@ export function registerAdminRoutes(): void {
 
   /** 修改 CDK：只有未激活的卡可以改（模块至少保留 1 个） */
   patch(`${P}/cdks/:id`, (ctx) => {
-    const admin = requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
+    const admin = staffCtx.admin;
     const id = slash(ctx, "id");
     const cdk = findCdkById(id);
     if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    assertAgentCanSeeCdk(staffCtx, cdk);
     if (cdk.status === "used" || cdk.customer_id) {
       throw conflict("该 CDK 已被激活，不能修改", "CDK_ACTIVATED");
     }
@@ -1442,10 +1465,12 @@ export function registerAdminRoutes(): void {
 
   /** 删除 CDK：只有未激活的可以删（已作废但没激活的也能删） */
   del(`${P}/cdks/:id`, (ctx) => {
-    const admin = requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
+    const admin = staffCtx.admin;
     const id = slash(ctx, "id");
     const cdk = findCdkById(id);
     if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    assertAgentCanSeeCdk(staffCtx, cdk);
     if (cdk.status === "used" || cdk.customer_id) {
       throw conflict("该 CDK 已被激活，不能删除（只能作废）", "CDK_ACTIVATED");
     }
@@ -1464,10 +1489,12 @@ export function registerAdminRoutes(): void {
   });
 
   post(`${P}/cdks/:id/revoke`, (ctx) => {
-    const admin = requireAdmin(ctx);
+    const staffCtx = requireStaff(ctx);
+    const admin = staffCtx.admin;
     const id = slash(ctx, "id");
     const cdk = findCdkById(id);
     if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
+    assertAgentCanSeeCdk(staffCtx, cdk);
     if (cdk.status !== "unused") throw conflict("只有未使用的 CDK 可以作废", "CDK_NOT_UNUSED");
     const reason = bodyStr(ctx, "reason", { max: 500 });
     revokeCdk(id, reason);
@@ -1774,7 +1801,8 @@ export function registerAdminRoutes(): void {
   const runBatch = (ctx: Ctx, kind: "cdk" | "license", apply: boolean) => {
     const staffCtx = requireStaff(ctx);
     const admin = staffCtx.admin;
-    const ids = (bodyStrArray(ctx, "ids") ?? []).slice(0, 500);
+    // bodyStrArray 默认最多 200 个，这里放宽到 500
+    const ids = (bodyStrArray(ctx, "ids", 500) ?? []).slice(0, 500);
     if (!ids.length) throw badRequest("请先选择要操作的记录", "MISSING_FIELD", { field: "ids" });
 
     const opts: BatchOptions = {
@@ -1953,6 +1981,14 @@ export function registerAdminRoutes(): void {
 
     const updated = updateLicense(id, patchData as Partial<LicenseRow>);
 
+    // 管理员直接改到期：超过原上限就把上限一起抬高（否则代理之后无法正常续期）
+    if (expiresAt && updated?.expires_at) {
+      const cap = license.max_expires_at ? Date.parse(license.max_expires_at) : null;
+      if (!cap || Date.parse(updated.expires_at) > cap) {
+        db().prepare("UPDATE licenses SET max_expires_at = ? WHERE id = ?").run(updated.expires_at, id);
+      }
+    }
+
     // v11：模块到期是权威来源。管理员改授权到期时同步到所有模块，
     //      需要单独控制某个模块时用下面的 module_expiries 覆盖。
     if (expiresAt) syncModuleExpiry(id, expiresAt);
@@ -1995,6 +2031,13 @@ export function registerAdminRoutes(): void {
     const days = needInt(ctx, "days", { min: -3650, max: 3650 });
     const fromNow = Boolean(ctx.body.from_now);
     const updated = extendLicense(id, days, fromNow);
+    // 管理员加时超过原上限时同步抬高上限，代理之后才能继续续期
+    if (updated?.expires_at) {
+      const cap = license.max_expires_at ? Date.parse(license.max_expires_at) : null;
+      if (!cap || Date.parse(updated.expires_at) > cap) {
+        db().prepare("UPDATE licenses SET max_expires_at = ? WHERE id = ?").run(updated.expires_at, id);
+      }
+    }
     audit({
       actorType: "admin",
       actorId: admin.id,

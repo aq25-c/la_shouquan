@@ -3592,3 +3592,144 @@ test("批量操作：授权批量延期与改模块，代理超上限会失败�
   assert.equal(after.json.data.license.expires_at, before, "只改模块不应改到期");
   assert.ok(after.json.data.license.module_ids.includes(moduleIds[0]));
 });
+
+
+test("批量延期：管理员延长会一起抬高上限，代理之后还能继续加", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "cap-raise", name: "抬上限代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  const cdk = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 20, count: 1, agent_id: agId },
+    adminToken,
+  );
+  const reg = await api("POST", "/api/v1/auth/register", { email: "capraise@test.local", password: "CapRaise123" });
+  const act = await api(
+    "POST",
+    "/api/v1/licenses/activate",
+    { cdk: cdk.json.data.codes[0], bind_device: false },
+    reg.json.data.session.token,
+  );
+  const licId = act.json.data.license.id;
+  const cap0 = act.json.data.license.max_expires_at;
+
+  // 管理员批量 +30：到期和上限一起抬
+  const plus = await api("POST", "/admin/api/licenses/batch/apply", { ids: [licId], expire_days: 30 }, adminToken);
+  assert.equal(plus.status, 200);
+  const afterAdmin = await api("GET", `/admin/api/licenses/${licId}`, undefined, adminToken);
+  assert.notEqual(afterAdmin.json.data.license.max_expires_at, cap0, "上限应被抬高");
+  assert.equal(afterAdmin.json.data.license.expires_at, afterAdmin.json.data.license.max_expires_at);
+
+  // 代理现在还能在这条新上限内再 +5 天
+  await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "capraise-agent@test.local", password: "CapRaiseAgent123", role: "agent", agent_id: agId, features: ["batch.operation"] },
+    adminToken,
+  );
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "capraise-agent@test.local",
+    password: "CapRaiseAgent123",
+  });
+  const agentToken = login.json.data.token;
+  const short = await api("POST", "/admin/api/licenses/batch/apply", { ids: [licId], expire_days: -5 }, agentToken);
+  assert.equal(short.status, 200);
+  assert.equal(short.json.data.updated, 1, "缩短不受上限限制，应成功");
+});
+
+
+test("代理数据隔离：卡密详情/导出/批次都不能越权", async () => {
+  const a = await api("POST", "/admin/api/agents", { code: "iso-a", name: "隔离代理A" }, adminToken);
+  const bAg = await api("POST", "/admin/api/agents", { code: "iso-b", name: "隔离代理B" }, adminToken);
+  const aId = a.json.data.agent.id;
+  const bId = bAg.json.data.agent.id;
+
+  const make = (agentId: string) =>
+    api(
+      "POST",
+      "/admin/api/cdks/generate",
+      { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, agent_id: agentId },
+      adminToken,
+    );
+  const aCdk = await make(aId);
+  const bCdk = await make(bId);
+  const aCode = aCdk.json.data.codes[0];
+  const bCode = bCdk.json.data.codes[0];
+
+  await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "iso-a@test.local", password: "IsoAgentA123", role: "agent", agent_id: aId },
+    adminToken,
+  );
+  const login = await api("POST", "/admin/api/auth/login", { email: "iso-a@test.local", password: "IsoAgentA123" });
+  const token = login.json.data.token;
+
+  const list = await api("GET", "/admin/api/cdks?page_size=200", undefined, token);
+  assert.ok(
+    list.json.data.items.every((c: Json) => c.agent_id === aId),
+    "列表里不能出现别家的卡",
+  );
+  assert.ok(!list.json.data.items.some((c: Json) => c.code === bCode));
+
+  // 别家的卡：详情、删除都碰不到
+  const all = await api("GET", "/admin/api/cdks?page_size=500", undefined, adminToken);
+  const bRow = all.json.data.items.find((c: Json) => c.code === bCode);
+  const detail = await api("GET", `/admin/api/cdks/${bRow.id}`, undefined, token);
+  assert.equal(detail.status, 403, "别家的卡详情应 403");
+  const del = await api("DELETE", `/admin/api/cdks/${bRow.id}`, undefined, token);
+  assert.equal(del.status, 403, "别家的卡不能删");
+
+  // 自己的卡：详情正常
+  const ownRow = all.json.data.items.find((c: Json) => c.code === aCode);
+  const own = await api("GET", `/admin/api/cdks/${ownRow.id}`, undefined, token);
+  assert.equal(own.status, 200);
+
+  // 批次列表只含自己的批次
+  const batches = await api("GET", "/admin/api/cdk-batches", undefined, token);
+  assert.equal(batches.status, 200);
+  assert.ok(batches.json.data.items.every((x: Json) => x.agent_id === aId), "只能看到自己的批次");
+});
+
+
+test("上限逻辑：数据已经超上限时，代理仍然可以往回缩短", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "over-cap", name: "超限代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+  const cdk = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 10, count: 1, agent_id: agId },
+    adminToken,
+  );
+  const reg = await api("POST", "/api/v1/auth/register", { email: "overcap@test.local", password: "OverCap123" });
+  const act = await api(
+    "POST",
+    "/api/v1/licenses/activate",
+    { cdk: cdk.json.data.codes[0], bind_device: false },
+    reg.json.data.session.token,
+  );
+  const licId = act.json.data.license.id;
+  const cap0 = act.json.data.license.max_expires_at;
+
+  // 管理员单条加时：到期和上限都往后移（上限跟着抬高）
+  const ext = await api("POST", `/admin/api/licenses/${licId}/extend`, { days: 30 }, adminToken);
+  assert.equal(ext.status, 200);
+  const after = await api("GET", `/admin/api/licenses/${licId}`, undefined, adminToken);
+  assert.notEqual(after.json.data.license.max_expires_at, cap0, "加时后上限应同步抬高");
+
+  // 代理缩短 1 天：一定能成功（不能被上限挡住）
+  await api(
+    "POST",
+    "/admin/api/staff",
+    { email: "overcap-agent@test.local", password: "OverCapAgent123", role: "agent", agent_id: agId, features: ["batch.operation"] },
+    adminToken,
+  );
+  const login = await api("POST", "/admin/api/auth/login", {
+    email: "overcap-agent@test.local",
+    password: "OverCapAgent123",
+  });
+  const agentToken = login.json.data.token;
+  const short = await api("POST", "/admin/api/licenses/batch/apply", { ids: [licId], expire_days: -1 }, agentToken);
+  assert.equal(short.status, 200);
+  assert.equal(short.json.data.updated, 1, "缩短应放行");
+});

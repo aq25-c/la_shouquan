@@ -7,6 +7,7 @@
  *   - 代理只能操作自己名下：卡密看批次归属，授权看 authorization.agent_id
  *   - 授权延期受 max_expires_at 限制；管理员延长时自动抬高上限
  */
+import { db } from "../db.ts";
 import { DAY, toMs } from "../util.ts";
 import {
   findCdkById,
@@ -109,10 +110,13 @@ function planCdk(
     patch.expiresAt = shiftExpiry(cdk.expires_at, opts.expire_days);
   }
 
-  // ② 卡内时长
+  // ② 卡内时长（选了类型就必须给数量，否则算不出天数）
   if (opts.term_type) {
+    if (!opts.term_value || opts.term_value < 1) {
+      return { skip: { id, label, reason: "填了计费类型但没填数量" } };
+    }
     patch.termType = opts.term_type as never;
-    patch.termValue = Math.max(1, Math.trunc(opts.term_value ?? 1));
+    patch.termValue = Math.trunc(opts.term_value);
   } else if (typeof opts.term_value === "number" && opts.term_value > 0) {
     patch.termType = (cdk.term_type ?? "day") as never;
     patch.termValue = Math.trunc(opts.term_value);
@@ -224,7 +228,10 @@ function planLicense(
     // 代理受上限约束；管理员延长时同步抬高上限
     if (opts.agent_id) {
       const cap = lic.max_expires_at ?? null;
-      if (cap && toMs(to) > toMs(cap)) {
+      // 只有「往后延且超过上限」才拦；缩短（哪怕当前已经超了）一律放行，
+      // 否则数据里一旦超上限，代理连往回改都改不了
+      const isExtend = from ? toMs(to) > toMs(from) : true;
+      if (cap && isExtend && toMs(to) > toMs(cap)) {
         return {
           skip: {
             id,
@@ -278,7 +285,8 @@ export function batchLicenses(ids: string[], opts: BatchOptions, apply: boolean)
         continue;
       }
       if (p.raiseCap && updated.expires_at) {
-        updateLicense(p.id, { expires_at: updated.expires_at });
+        // 管理员延长超过原上限时，把上限一起抬高，否则代理之后再调整会被老上限卡住
+        db().prepare("UPDATE licenses SET max_expires_at = ? WHERE id = ?").run(updated.expires_at, p.id);
       }
       // 模块与到期联动：到期变了同步所有模块；模块变了补建/清理记录
       if (p.patch.expires_at) syncModuleExpiry(p.id, p.patch.expires_at);

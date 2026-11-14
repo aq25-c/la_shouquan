@@ -186,9 +186,22 @@ export function listBatchCdks(batchId: string): CdkRow[] {
   return db().prepare("SELECT * FROM cdks WHERE batch_id = ? ORDER BY code ASC").all(batchId) as unknown as CdkRow[];
 }
 
-export function listBatches(productId?: string | null): (CdkBatchRow & { product_code: string; product_name: string; used_count: number })[] {
-  const where = productId ? "WHERE b.product_id = ?" : "";
-  const params = productId ? [productId] : [];
+export function listBatches(
+  productId?: string | null,
+  agentId?: string | null,
+): (CdkBatchRow & { product_code: string; product_name: string; used_count: number })[] {
+  const cond: string[] = [];
+  const params: string[] = [];
+  if (productId) {
+    cond.push("b.product_id = ?");
+    params.push(productId);
+  }
+  // 代理只看自己的批次，别把别家的卡密/单价带出来
+  if (agentId) {
+    cond.push("b.agent_id = ?");
+    params.push(agentId);
+  }
+  const where = cond.length ? `WHERE ${cond.join(" AND ")}` : "";
   return db()
     .prepare(
       `SELECT b.*, p.code AS product_code, p.name AS product_name,
