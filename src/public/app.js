@@ -259,12 +259,62 @@ function downloadText(filename, text, mime = "text/csv;charset=utf-8") {
 }
 
 async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast("已复制到剪贴板", "ok");
-  } catch {
-    toast("复制失败，请手动选择文本", "error");
+  const value = String(text ?? "");
+  if (!value) {
+    toast("没有内容可复制", "error");
+    return;
   }
+
+  // 1) 优先用异步剪贴板：只有 https 或 localhost 才有这个 API
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast("已复制到剪贴板", "ok");
+      return;
+    } catch {
+      /* 权限被拒或非安全上下文，落到下面的兜底方案 */
+    }
+  }
+
+  // 2) http 访问（例如家里的 NAS）用隐藏 textarea + execCommand 复制
+  let ta = null;
+  try {
+    ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.left = "0";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    const ok = document.execCommand("copy");
+    if (ok) {
+      toast("已复制到剪贴板", "ok");
+      return;
+    }
+  } catch {
+    /* 继续报错 */
+  } finally {
+    if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+  }
+
+  // 3) 实在不行就把内容弹出来让用户手选
+  toast("复制失败，请在弹窗里手动选择文本复制", "error");
+  openModal({
+    title: "手动复制",
+    body: `<div class="note">浏览器拦截了自动复制，请全选下面的内容后按 Ctrl+C（手机长按复制）。</div>
+      <textarea readonly style="width:100%;height:140px;font-family:var(--mono);font-size:13px">${esc(value)}</textarea>`,
+    footer: `<button class="btn" data-close2 type="button">关闭</button>`,
+    onMount(modal, close) {
+      $("[data-close2]", modal).onclick = close;
+      const box = $("textarea", modal);
+      box.focus();
+      box.select();
+    },
+  });
 }
 
 function pageNav(key, total, pageSize, onGo) {
@@ -285,6 +335,16 @@ function pageNav(key, total, pageSize, onGo) {
     onGo();
   };
   return node;
+}
+
+/** 卡密时长显示：月/年/次数按原单位显示，后面附折算天数 */
+function cdkTermCell(row) {
+  const t = row.term_type ?? "day";
+  const v = row.term_value ?? row.days;
+  const unit = { hour: "小时", day: "天", month: "个月", year: "年", count: "次" }[t] ?? "天";
+  const days = Number(row.days ?? 0);
+  const tail = t === "count" ? "" : `<div class="muted small">${days > 0 ? `${days} 天` : "—"}</div>`;
+  return `${v} ${unit}${t === "day" ? "" : tail}`;
 }
 
 function emptyRow(cols, text = "暂无数据") {
@@ -1501,10 +1561,31 @@ async function cdkDetail(cdkId) {
     wide: true,
     body: `
       <div class="kv">
+        <dt>卡密</dt><dd><span class="mono">${esc(c.code)}</span> <button class="btn btn-sm" data-copy="${esc(c.code)}" type="button">复制</button></dd>
         <dt>状态</dt><dd>${statusBadgeHtml}</dd>
         <dt>产品</dt><dd>${esc(data.product?.name ?? "—")} <span class="muted mono">${esc(data.product?.code ?? "")}</span></dd>
-        <dt>计费</dt><dd>${licenseTermText({ term_type: c.term_type, term_value: c.term_value, max_usages: null, used_usages: 0 })}</dd>
+        <dt>计费</dt><dd>${cdkTermCell(c)}</dd>
         <dt>席位</dt><dd>${c.seats}</dd>
+        <dt>归属</dt><dd>${
+          data.agent
+            ? `<span class="badge badge-info">${esc(data.agent.name)}</span> <span class="muted mono small">${esc(data.agent.code)}</span>`
+            : '<span class="muted">直销（无代理）</span>'
+        }${
+          data.agent && c.unit_price
+            ? ` <span class="muted small">· 结算单价 ¥${(c.unit_price / 100).toFixed(2)}</span>`
+            : ""
+        }</dd>
+        <dt>当前归属</dt><dd>${
+          !activated
+            ? '<span class="muted small">未激活，激活后按这张卡归属</span>'
+            : data.license_agent
+              ? `<span class="badge badge-info">${esc(data.license_agent.name)}</span> <span class="muted mono small">${esc(data.license_agent.code)}</span>`
+              : '<span class="muted">直销</span>'
+        }${
+          activated && data.license_agent && c.agent_id && data.license_agent.id !== c.agent_id
+            ? ' <span class="badge badge-warn">已按最后一次激活转移</span>'
+            : ""
+        }</dd>
         <dt>兑换截止</dt><dd>${c.expires_at ? fmtTime(c.expires_at) : "不限"}</dd>
         <dt>绑定客户</dt><dd>${data.customer ? esc(data.customer.email ?? data.customer.name ?? "—") : "—"}</dd>
         <dt>生成时间</dt><dd>${fmtTime(c.created_at)}</dd>
@@ -1541,6 +1622,9 @@ async function cdkDetail(cdkId) {
         close();
         navigate("cdks", true);
       };
+      $$("[data-copy]", modal).forEach((btn) => {
+        btn.onclick = () => copyText(btn.dataset.copy);
+      });
       if (activated) return;
 
       $("[data-save]", modal).onclick = async () => {
@@ -1676,7 +1760,7 @@ async function renderCdks(root) {
                           <td class="mono"><button class="btn btn-ghost btn-sm" data-copy="${esc(c.code)}" type="button" title="点击复制">${esc(c.code)}</button></td>
                           <td>${esc(c.product_code)}</td>
                           <td>${c.agent_code ? `<span class="badge badge-info">${esc(c.agent_name ?? c.agent_code)}</span>` : '<span class="muted small">直销</span>'}</td>
-                          <td>${c.days} 天</td>
+                          <td>${cdkTermCell(c)}</td>
                           <td>${c.seats}</td>
                           <td>${statusBadge(CDK_STATUS, c.status)}</td>
                           <td>${customerCell(c.customer_name, c.customer_email)}</td>
@@ -1966,7 +2050,7 @@ function showGeneratedCodes(res) {
     title: `已生成 ${res.codes.length} 个 CDK`,
     wide: true,
     body: `
-      <div class="note">产品 <strong>${esc(res.product.name)}</strong> · ${res.batch.days} 天 · ${res.batch.seats} 席位<br />
+      <div class="note">产品 <strong>${esc(res.product.name)}</strong> · ${cdkTermCell(res.batch)} · ${res.batch.seats} 席位<br />
         模块：${res.module_codes.map((c) => `<code>${esc(c)}</code>`).join(" ") || "（无）"}</div>
       <div class="code-block">${res.codes.map(esc).join("\n")}</div>`,
     footer: `<button class="btn" data-copy-all type="button">复制全部</button>
@@ -2780,7 +2864,7 @@ async function renderCustomers(root) {
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>客户</th><th>授权</th><th>最近到期</th><th>状态</th><th>注册时间</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>客户</th><th>归属</th><th>授权</th><th>最近到期</th><th>状态</th><th>注册时间</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
@@ -2795,6 +2879,11 @@ async function renderCustomers(root) {
                             )}
                             ${!c.email ? '<span class="cell-sub">无登录账号（CDK 匿名激活）</span>' : ""}
                           </td>
+                          <td>${
+                            c.owner_agent_name
+                              ? `<span class="badge badge-info">${esc(c.owner_agent_name)}</span>`
+                              : '<span class="muted small">直销</span>'
+                          }</td>
                           <td>${c.license_count} 个（有效 ${c.active_license_count}）</td>
                           <td class="nowrap">${fmtDay(c.last_expires_at)}</td>
                           <td>${c.status === "active" ? '<span class="badge badge-ok">正常</span>' : '<span class="badge badge-warn">已停用</span>'}</td>
@@ -2808,7 +2897,7 @@ async function renderCustomers(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(6, "没有客户")
+                  : emptyRow(7, "没有客户")
               }
             </tbody>
           </table>

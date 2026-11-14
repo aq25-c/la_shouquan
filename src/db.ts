@@ -15,7 +15,7 @@ let database: DatabaseSync | null = null;
  * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
  * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
  */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
 let migration: { from: number; to: number } = { from: 0, to: 0 };
@@ -415,6 +415,27 @@ ALTER TABLE agent_prices ADD COLUMN seat_ratio INTEGER NOT NULL DEFAULT 100;
 `;
 
 /**
+ * v15：修正历史卡密的 days
+ *   - 以前生成月卡/年卡时，days 存的是「12」「1」这种原始数量，导致列表显示成 12 天 / 1 天
+ *   - 这里按计费类型重新折算：年 ≈ 365 天，月 ≈ 30.44 天，小时按天向上取整
+ *   - 次数卡不动（days 对它没有意义）
+ */
+const SCHEMA_V15 = `
+UPDATE cdks SET days = CASE term_type
+    WHEN 'year'  THEN CAST(ROUND(term_value * 365.25) AS INTEGER)
+    WHEN 'month' THEN CAST(ROUND(term_value * 30.44) AS INTEGER)
+    WHEN 'hour'  THEN MAX(1, CAST(ROUND(term_value / 24.0) AS INTEGER))
+    ELSE days END
+  WHERE term_type IN ('year', 'month', 'hour');
+UPDATE cdk_batches SET days = CASE term_type
+    WHEN 'year'  THEN CAST(ROUND(term_value * 365.25) AS INTEGER)
+    WHEN 'month' THEN CAST(ROUND(term_value * 30.44) AS INTEGER)
+    WHEN 'hour'  THEN MAX(1, CAST(ROUND(term_value / 24.0) AS INTEGER))
+    ELSE days END
+  WHERE term_type IN ('year', 'month', 'hour');
+`;
+
+/**
  * v8：授权到期上限
  *   - licenses.max_expires_at：该授权允许的最大到期时间（= CDK 激活时算出的实际到期时间）
  *     代理调整到期时间可以缩短、也可以恢复，但不能超过这个上限；管理员不受此限制。
@@ -502,6 +523,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 12) runMigration(db, SCHEMA_V12, 12);
   if (version < 13) runMigration(db, SCHEMA_V13, 13);
   if (version < 14) runMigration(db, SCHEMA_V14, 14);
+  if (version < 15) runMigration(db, SCHEMA_V15, 15);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

@@ -139,16 +139,27 @@ export function computeExpiry(termType: TermType, termValue: number, startMs: nu
   }
 }
 
+/**
+ * 把「计费类型 + 数量」折算成天数（用于展示、CSV、老代码的 days 字段）。
+ * 月/年按自然月累加，所以 12 个月 ≈ 365 天，而不是 12 天。
+ */
+export function termToDays(termType: TermType, termValue: number, refMs = Date.now()): number {
+  if (termType === "count") return 0;
+  const ms = computeExpiry(termType, termValue, refMs) - refMs;
+  const days = ms / DAY;
+  return termType === "hour" ? Math.max(1, Math.ceil(days)) : Math.round(days);
+}
+
 /** 归一化计费类型：兼容只有 days 的老数据 */
 export function normalizeTerm(
   termType: string | null | undefined,
   termValue: number | null | undefined,
   fallbackDays: number,
-): { termType: TermType; termValue: number } {
+): { termType: TermType; termValue: number; days: number } {
   const valid: TermType[] = ["hour", "day", "month", "year", "count"];
   const t = (termType && valid.includes(termType as TermType) ? termType : "day") as TermType;
   const v = Number.isFinite(termValue as number) && (termValue as number) > 0 ? (termValue as number) : fallbackDays;
-  return { termType: t, termValue: v };
+  return { termType: t, termValue: v, days: termToDays(t, v) };
 }
 
 export function termLabel(termType: string, termValue: number | null | undefined): string {

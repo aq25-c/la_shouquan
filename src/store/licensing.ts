@@ -81,7 +81,8 @@ export function createCdkBatch(input: {
         batchId,
         input.productId,
         input.count,
-        input.days,
+        // 存折算后的真实天数（12 个月 = 365 天），别再存「12」
+        term.days,
         input.seats,
         toJson(input.moduleIds),
         nz(input.note),
@@ -111,7 +112,7 @@ export function createCdkBatch(input: {
         batchId,
         input.productId,
         toJson(input.moduleIds),
-        input.days,
+        term.days,
         input.seats,
         nz(input.expiresAt),
         nz(input.note),

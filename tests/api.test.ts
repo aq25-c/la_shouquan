@@ -162,7 +162,8 @@ test("批量生成 CDK 并导出 CSV", async () => {
   codes = gen.json.data.codes;
   assert.equal(codes.length, 3);
   assert.match(codes[0], /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/);
-  assert.match(gen.json.data.csv, /code,product,days,seats,modules,note/);
+  // CSV 现在带计费类型与折算天数
+  assert.match(gen.json.data.csv, /code,product,term,value,days,seats,modules,note/);
 
   const batchId = gen.json.data.batch.id;
   const exported = await api("GET", `/admin/api/cdks/export?batch_id=${batchId}`, undefined, adminToken);
@@ -3318,4 +3319,105 @@ test("设备在同软件的多条授权之间共享，从任意一条都能解�
     after.json.data.devices.find((d: Json) => d.device_id === "XLIC-DEV-1").status,
     "released",
   );
+});
+
+
+test("客户列表带归属代理：有代理显示代理名，没有就是直销", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "owner-a", name: "归属代理 A" }, adminToken);
+  const agId = ag.json.data.agent.id;
+
+  // 有代理的客户：用该代理的卡激活
+  const cdk = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, agent_id: agId },
+    adminToken,
+  );
+  const own = await api("POST", "/api/v1/auth/register", {
+    email: "owned@test.local",
+    password: "OwnedPass123",
+  });
+  await api(
+    "POST",
+    "/api/v1/licenses/activate",
+    { cdk: cdk.json.data.codes[0], bind_device: false },
+    own.json.data.session.token,
+  );
+
+  // 直销客户：管理员直接开通，不带代理
+  const direct = await api("POST", "/api/v1/auth/register", {
+    email: "direct@test.local",
+    password: "DirectPass123",
+  });
+  await api(
+    "POST",
+    "/admin/api/licenses",
+    {
+      customer_id: direct.json.data.customer.id,
+      product_id: productId,
+      module_ids: [moduleIds[0]],
+      days: 30,
+    },
+    adminToken,
+  );
+
+  const list = await api("GET", "/admin/api/customers?page_size=200", undefined, adminToken);
+  assert.equal(list.status, 200);
+  const owned = list.json.data.items.find((c: Json) => c.email === "owned@test.local");
+  const plain = list.json.data.items.find((c: Json) => c.email === "direct@test.local");
+  assert.equal(owned.owner_agent_id, agId);
+  assert.equal(owned.owner_agent_name, "归属代理 A");
+  assert.equal(plain.owner_agent_id, null);
+  assert.equal(plain.owner_agent_name, null, "没有代理就是直销");
+});
+
+
+test("月卡 / 年卡生成后存的是折算天数，CDK 详情带归属代理", async () => {
+  const ag = await api("POST", "/admin/api/agents", { code: "cdk-own", name: "卡密归属代理" }, adminToken);
+  const agId = ag.json.data.agent.id;
+
+  const year = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "year", term_value: 1, count: 1, agent_id: agId },
+    adminToken,
+  );
+  assert.equal(year.status, 201);
+  assert.equal(year.json.data.batch.days, 365, "年卡必须存 365 天，不是 1");
+  assert.equal(year.json.data.batch.term_type, "year");
+  assert.equal(year.json.data.batch.term_value, 1);
+
+  const month = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "month", term_value: 12, count: 1 },
+    adminToken,
+  );
+  assert.equal(month.status, 201);
+  assert.ok(
+    month.json.data.batch.days >= 364 && month.json.data.batch.days <= 366,
+    `12 个月应约 365 天，实际 ${month.json.data.batch.days}`,
+  );
+  assert.equal(month.json.data.batch.term_value, 12);
+
+  // 列表里也带 term 字段，前端按 12 个月显示
+  const list = await api("GET", "/admin/api/cdks?page_size=5", undefined, adminToken);
+  const yearRow = list.json.data.items.find((c: Json) => c.code === year.json.data.codes[0]);
+  assert.equal(yearRow.term_type, "year");
+  assert.equal(yearRow.term_value, 1);
+  assert.equal(yearRow.days, 365);
+
+  // CDK 详情：归属代理是「卡密归属代理」，不是直销
+  const detail = await api("GET", `/admin/api/cdks/${yearRow.id}`, undefined, adminToken);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.json.data.agent.code, "cdk-own");
+  assert.equal(detail.json.data.agent.name, "卡密归属代理");
+
+  // 直销卡：agent 为 null
+  const monthList = await api("GET", "/admin/api/cdks?page_size=5", undefined, adminToken);
+  const monthRow = monthList.json.data.items.find((c: Json) => c.code === month.json.data.codes[0]);
+  assert.equal(monthRow.agent_id, null);
+  const direct = await api("GET", `/admin/api/cdks/${monthRow.id}`, undefined, adminToken);
+  assert.equal(direct.status, 200);
+  assert.equal(direct.json.data.agent, null, "直销卡归属应为空");
 });

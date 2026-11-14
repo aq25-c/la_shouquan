@@ -1295,7 +1295,7 @@ export function registerAdminRoutes(): void {
     return created({
       batch: result.batch,
       codes: result.codes,
-      csv: buildCdkCsv(result.codes, product.code, days, seats, moduleCodesFor(moduleIds), note),
+      csv: buildCdkCsv(result.codes, product.code, termInfo.days, seats, moduleCodesFor(moduleIds), note, termInfo),
       product: { code: product.code, name: product.name },
       module_codes: moduleCodesFor(moduleIds),
     });
@@ -1361,8 +1361,15 @@ export function registerAdminRoutes(): void {
     if (!cdk) throw notFound("CDK 不存在", "CDK_NOT_FOUND");
     const product = findProductById(cdk.product_id);
     const customer = cdk.customer_id ? findCustomerById(cdk.customer_id) : null;
+    // 归属：卡属于哪个代理（生成时定的）；已激活的话再给出授权当前的归属
+    const cdkAgent = cdk.agent_id ? findAgentById(cdk.agent_id) : null;
+    const lic = cdk.license_id ? findLicenseById(cdk.license_id) : null;
+    const licAgent = lic?.agent_id ? findAgentById(lic.agent_id) : null;
     return ok({
       cdk: { ...cdk, module_ids: parseJson<string[]>(cdk.module_ids, []) },
+      agent: cdkAgent ? { id: cdkAgent.id, code: cdkAgent.code, name: cdkAgent.name, unit_price: cdk.unit_price } : null,
+      license_agent: licAgent ? { id: licAgent.id, code: licAgent.code, name: licAgent.name } : null,
+      license_agent_is_direct: Boolean(lic && !lic.agent_id),
       product: product ? { id: product.id, code: product.code, name: product.name } : null,
       modules: moduleIdsOf(cdk).map((mid) => {
         const m = findModuleById(mid);
@@ -2384,10 +2391,20 @@ function buildCdkCsv(
   seats: number,
   moduleCodes: string[],
   note: string | null,
+  term?: { termType: string; termValue: number },
 ): string {
-  const header = "code,product,days,seats,modules,note";
+  const header = "code,product,term,value,days,seats,modules,note";
   const rows = codes.map((code) =>
-    [csvCell(code), csvCell(productCode), csvCell(days), csvCell(seats), csvCell(moduleCodes.join("|")), csvCell(note ?? "")].join(","),
+    [
+      csvCell(code),
+      csvCell(productCode),
+      csvCell(term?.termType ?? "day"),
+      csvCell(term?.termValue ?? days),
+      csvCell(days),
+      csvCell(seats),
+      csvCell(moduleCodes.join("|")),
+      csvCell(note ?? ""),
+    ].join(","),
   );
   return `\ufeff${header}\n${rows.join("\n")}\n`;
 }

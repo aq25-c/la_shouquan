@@ -24,6 +24,38 @@ const state = {
 
 /* ============================ 工具 ============================ */
 
+/** 复制：https 用异步剪贴板，http（内网 NAS）退回 textarea + execCommand */
+async function copyText(text) {
+  const value = String(text ?? "");
+  if (!value) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      /* 走兜底 */
+    }
+  }
+  let ta = null;
+  try {
+    ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+  }
+}
+
 function toast(message, type = "") {
   const root = $("#toast-root");
   const el = document.createElement("div");
@@ -756,18 +788,17 @@ function showLicenseKey(data) {
   $$("[data-close]", root).forEach((b) => (b.onclick = close));
   $("#copy-key", root).onclick = async () => {
     const key = $("#lic-key", root).textContent;
-    try {
-      await navigator.clipboard.writeText(key);
+    if (await copyText(key)) {
       toast("已复制", "ok");
-    } catch {
-      // 非 https 或旧浏览器：退回选中文本
-      const range = document.createRange();
-      range.selectNodeContents($("#lic-key", root));
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-      toast("请手动复制选中的密钥", "error");
+      return;
     }
+    // 实在复制不了：选中密钥让用户手动复制
+    const range = document.createRange();
+    range.selectNodeContents($("#lic-key", root));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    toast("请手动复制选中的密钥", "error");
   };
 }
 

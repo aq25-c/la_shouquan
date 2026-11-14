@@ -23,9 +23,9 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v14，新增列齐全", () => {
+test("数据库迁移到 v15，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 14);
+  assert.equal(version, 15);
 
   const dev = columns("devices");
   assert.ok(dev.includes("released_reason"), "devices.released_reason");
@@ -109,10 +109,15 @@ test("计费类型：小时 / 天 / 月 / 年 / 次数", () => {
 
 test("计费类型：旧数据兼容与展示", () => {
   // term_value 为空时回落到 days
-  assert.deepEqual(perm.normalizeTerm(null, null, 30), { termType: "day", termValue: 30 });
-  assert.deepEqual(perm.normalizeTerm("month", 3, 30), { termType: "month", termValue: 3 });
-  assert.deepEqual(perm.normalizeTerm("weird", 5, 30), { termType: "day", termValue: 5 });
-  assert.deepEqual(perm.normalizeTerm("count", 0, 100), { termType: "count", termValue: 100 });
+  assert.deepEqual(perm.normalizeTerm(null, null, 30), { termType: "day", termValue: 30, days: 30 });
+  const m3 = perm.normalizeTerm("month", 3, 30);
+  assert.equal(m3.termType, "month");
+  assert.equal(m3.termValue, 3);
+  assert.ok(m3.days >= 89 && m3.days <= 92, `3 个月应折算成 89~92 天，实际 ${m3.days}`);
+  assert.deepEqual(perm.normalizeTerm("weird", 5, 30), { termType: "day", termValue: 5, days: 5 });
+  assert.deepEqual(perm.normalizeTerm("count", 0, 100), { termType: "count", termValue: 100, days: 0 });
+  // 年卡必须折算成 365 天，而不是 1
+  assert.equal(perm.normalizeTerm("year", 1, 1).days, 365);
 
   assert.equal(perm.termLabel("month", 3), "3 个月");
   assert.equal(perm.termLabel("count", 100), "100 次");

@@ -166,6 +166,9 @@ export type CustomerListItem = CustomerRow & {
   license_count: number;
   active_license_count: number;
   last_expires_at: string | null;
+  /** 客户归属：最近一次激活的卡挂在哪个代理名下（null = 直销） */
+  owner_agent_id: string | null;
+  owner_agent_name: string | null;
 };
 
 export function listCustomers(opts: {
@@ -198,7 +201,14 @@ export function listCustomers(opts: {
       `SELECT c.*,
               (SELECT COUNT(*) FROM licenses l WHERE l.customer_id = c.id) AS license_count,
               (SELECT COUNT(*) FROM licenses l WHERE l.customer_id = c.id AND l.status = 'active' AND l.expires_at > ?) AS active_license_count,
-              (SELECT MAX(l.expires_at) FROM licenses l WHERE l.customer_id = c.id) AS last_expires_at
+              (SELECT MAX(l.expires_at) FROM licenses l WHERE l.customer_id = c.id) AS last_expires_at,
+              -- 客户归属：最近一次激活的那条授权挂在谁名下；没代理就是直销
+              (SELECT l.agent_id FROM licenses l
+                WHERE l.customer_id = c.id AND l.status != 'revoked'
+                ORDER BY l.updated_at DESC LIMIT 1) AS owner_agent_id,
+              (SELECT ch.name FROM licenses l JOIN agents ch ON ch.id = l.agent_id
+                WHERE l.customer_id = c.id AND l.status != 'revoked' AND l.agent_id IS NOT NULL
+                ORDER BY l.updated_at DESC LIMIT 1) AS owner_agent_name
        FROM customers c
        ${clause}
        ORDER BY c.created_at DESC
