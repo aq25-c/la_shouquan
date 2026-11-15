@@ -198,7 +198,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     title: "开通试用",
     auth: "customer",
     params: "`device_id`✅、`device_name?`、`platform?`、`product_code?`、`module_codes?`（不传 = 全部可试用模块）",
-    desc: "按试用配置创建 `kind=trial` 授权并绑定设备，返回结构与激活一致。",
+    desc: "按试用配置创建 `kind=trial` 授权并绑定设备，返回结构与激活一致。**v17 起客户端登录已自动开试用**，这个接口保留给需要手动开通/指定模块的场景。",
     notes: "403 TRIAL_DISABLED / TRIAL_ALREADY_USED / TRIAL_PRODUCT_LIMIT。",
   },
 
@@ -210,7 +210,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "PATCH /admin/api/entry": { title: "修改后台入口", auth: "admin", params: "`path`✅", desc: "仅超级管理员。小写字母 / 数字 / 中划线，2-32 位，且不能是保留字；改完立即生效，旧地址马上失效。400 INVALID_ENTRY_PATH。" },
   "POST /admin/api/auth/password": { title: "修改密码", auth: "admin", params: "`current_password`、`new_password`", desc: "改完所有会话失效，需重新登录。" },
   "GET /admin/api/admins": { title: "管理员列表", auth: "admin", desc: "全部管理员账号（旧接口，等同 /staff）。" },
-  "POST /admin/api/admins": { title: "新增管理员", auth: "admin", params: "`email`、`password`(≥10位)、`name?`", desc: "创建管理端账号（旧接口，建议改用 /staff 以便配置权限）。" },
+  "POST /admin/api/admins": { title: "新增管理员", auth: "admin", params: "`username`、`password`(≥10位)、`name?`", desc: "创建管理端账号（旧接口，建议改用 /staff 以便配置权限）。" },
 
   /* ---------------- 管理 · 员工与代理 ---------------- */
   "GET /admin/api/staff/options": {
@@ -222,7 +222,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /admin/api/staff": {
     title: "新增员工 / 代理",
     auth: "admin",
-    params: "`email`✅、`password`✅(≥8位)、`name?`、`role`(staff|agent)、`menus[]`、`features[]`、`agent_id?`",
+    params: "`username`✅、`password`✅(≥6位)、`name?`、`role`(staff|agent)、`menus[]`、`features[]`、`agent_id?`",
     desc: "role=staff 时按 menus/features 授权；role=agent 必须绑定 agent_id，权限固定为「只看卡密页」。仅超级管理员可调用。",
     notes: "400 MISSING_FIELD（代理缺代理）/ INVALID_FIELD（role 非法）/ WEAK_PASSWORD；409 EMAIL_TAKEN；403 FORBIDDEN_OWNER。",
   },
@@ -344,7 +344,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
 
   /* ---------------- 管理 · 客户 ---------------- */
   "GET /admin/api/customers": { title: "客户列表", auth: "admin", params: "`q?`、`status?`、分页", desc: "含授权数、有效授权数与最近到期。" },
-  "POST /admin/api/customers": { title: "新增客户", auth: "admin", params: "`email?`、`password?`、`name?`、`company?`、`phone?`、`note?`", desc: "邮箱留空即建「匿名客户」；`password` 留空则该客户不能登录；重复邮箱 409 EMAIL_TAKEN。" },
+  "POST /admin/api/customers": { title: "新增客户", auth: "admin", params: "`username?`、`password?`、`name?`、`company?`、`phone?`、`note?`", desc: "用户名留空即建「无登录账号的客户」（仅后台代管）；`password` 留空则该客户不能登录；用户名重复返回 409 `USERNAME_TAKEN`。" },
   "GET /admin/api/customers/:id": { title: "客户详情", auth: "admin", desc: "客户信息 + 名下授权（各附设备）+ `purgeable` / `purge_blocking`（能否删除及原因）。" },
   "PATCH /admin/api/customers/:id": { title: "编辑客户", auth: "admin", params: "`name?`、`company?`、`phone?`、`note?`、`status?`", desc: "停用后该客户心跳立即被拒。" },
   "POST /admin/api/customers/:id/reset-password": { title: "重置客户密码", auth: "admin", desc: "生成临时密码（只返回一次），并使其会话全部失效。" },
@@ -353,7 +353,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
 
   /* ---------------- 管理 · 授权 ---------------- */
   "GET /admin/api/licenses": { title: "授权列表", auth: "admin", params: "`status?`、`kind?`(paid/trial)、`product_id?`、`customer_id?`、`agent_id?`、`expiring_within_days?`、`q?`、分页", desc: "含 `eff_status`（实时计算）、代理与设备数。" },
-  "POST /admin/api/licenses": { title: "手动开通授权", auth: "admin", params: "`product_id`✅、`customer_id` 或 `customer_email`、`days`✅、`seats?`、`module_ids?`、`note?`、`agent_id?`、`unit_price?`", desc: "不走 CDK 直接开授权，返回 `license_key`（只显示一次）。" },
+  "POST /admin/api/licenses": { title: "手动开通授权", auth: "admin", params: "`product_id`✅、`customer_id` 或 `customer_email`（这里填客户**用户名**）、`days`✅、`seats?`、`module_ids?`、`note?`、`agent_id?`、`unit_price?`", desc: "不走 CDK 直接开授权，返回 `license_key`（只显示一次）。" },
   "GET /admin/api/licenses/:id": { title: "授权详情", auth: "admin", desc: "授权 + 设备列表 + 模块编码 + 客户信息。每台设备带 `status` 与 `released_reason`（`manual` = 手动解绑；`expired` = 授权到期自动释放，续费后可自动复位）。" },
   "PATCH /admin/api/licenses/:id": { title: "编辑授权", auth: "admin", params: "`status?`、`expires_at?`、`starts_at?`、`seats?`、`module_ids?`、`offline_grace_days?`、`note?`", desc: "改到期时间后，客户端下次心跳即同步。" },
   "POST /admin/api/licenses/:id/extend": { title: "延长 / 缩短到期", auth: "admin", params: "`days`（可为负）、`from_now?`", desc: "试用延长也用这个接口；`from_now=true` 从当前时间起算。" },
@@ -386,14 +386,15 @@ const GROUP_RULES: { name: string; test: (m: string, p: string) => boolean }[] =
   { name: "客户端 · 账号", test: (_m, p) => p.startsWith("/api/v1/auth") },
   { name: "客户端 · 授权", test: (_m, p) => p.startsWith("/api/v1/licenses") || p.startsWith("/api/v1/cdks") },
   { name: "客户端 · 试用", test: (_m, p) => p.startsWith("/api/v1/trial") },
+  { name: "客户端 · 我的与变量", test: (_m, p) => p.startsWith("/api/v1/me") || p === "/api/v1/vars" },
   { name: "管理 · 认证", test: (_m, p) => p.startsWith("/admin/api/auth") },
-  { name: "管理 · 员工与代理", test: (_m, p) => p.includes("/staff") || p.includes("/admins") },
+  { name: "管理 · 员工与代理", test: (_m, p) => p.startsWith("/admin/api/staff") || p.startsWith("/admin/api/admins") },
   { name: "管理 · 概览", test: (_m, p) => p === "/admin/api/overview" },
-  { name: "管理 · 代理", test: (_m, p) => p.includes("/agents") || p.includes("/prices") },
-  { name: "管理 · 产品与模块", test: (_m, p) => p.includes("/products") || p.includes("/modules") },
-  { name: "管理 · CDK", test: (_m, p) => p.includes("/cdks") || p.includes("/cdk-batches") },
-  { name: "管理 · 客户", test: (_m, p) => p.includes("/customers") },
-  { name: "管理 · 授权", test: (_m, p) => p.includes("/licenses") },
+  { name: "管理 · 代理", test: (_m, p) => p.startsWith("/admin/api/agents") || p.startsWith("/admin/api/prices") },
+  { name: "管理 · 产品与模块", test: (_m, p) => p.startsWith("/admin/api/products") || p.startsWith("/admin/api/modules") },
+  { name: "管理 · CDK", test: (_m, p) => p.startsWith("/admin/api/cdks") || p.includes("/cdk-batches") },
+  { name: "管理 · 客户", test: (_m, p) => p.startsWith("/admin/api/customers") },
+  { name: "管理 · 授权", test: (_m, p) => p.startsWith("/admin/api/licenses") },
   { name: "管理 · 试用配置", test: (_m, p) => p.includes("/settings/trial") },
   { name: "管理 · 审计与密钥", test: (_m, p) => p.includes("/audit") || p.includes("/signing-key") || p.includes("/heartbeat-health") },
 ];
@@ -415,9 +416,9 @@ export type ApiDocs = {
 const EXTRA_DOCS: Record<string, { returns?: string; errors?: string }> = {
   "POST /api/v1/licenses/activate": {
     returns:
-      "`license`、`license_key`（仅返回这一次，客户端必须本地保存）、`license_file`（离线许可证）、`license_payload`、`offline_expires_at`、`expires_at`、`days_left`、`module_codes`、`merged`（true=同类型卡叠加续费）、`session`（新客户时附带）",
+      "`license`、`license_key`（仅返回这一次，客户端必须本地保存）、`license_file`（离线许可证）、`license_payload`、`offline_expires_at`、`expires_at`、`days_left`、`module_codes`、`merged`（true=同类型卡叠加续费）",
     errors:
-      "`404 CDK_NOT_FOUND`、`409 CDK_ALREADY_USED` / `CDK_REVOKED` / `CDK_EXPIRED` / `SEAT_LIMIT` / `TERM_CONFLICT`、`400 MODULE_NOT_ALLOWED`（模块超出 CDK 范围）/ `MISSING_FIELD`、`403 LICENSE_*`",
+      "`404 CDK_NOT_FOUND`、`409 CDK_ALREADY_USED` / `CDK_REVOKED` / `CDK_EXPIRED` / `SEAT_LIMIT` / `TERM_CONFLICT`、`400 MODULE_NOT_ALLOWED`（模块超出 CDK 范围）/ `MISSING_FIELD`、`403 LICENSE_*`、`401 LOGIN_REQUIRED`（未登录激活）",
   },
   "POST /api/v1/licenses/heartbeat": {
     returns: "`license`、`modules`（每个模块的 `expires_at` / `days_left` / `active`）、`status`（active / expired）、`expired`（全部模块到期时为 true，仍是 200）、`license_file`（滚动续期）、`offline_expires_at`、`expires_at`、`days_left`、`heartbeat_interval_hours`",
@@ -428,8 +429,8 @@ const EXTRA_DOCS: Record<string, { returns?: string; errors?: string }> = {
     errors: "`404 CDK_NOT_FOUND`",
   },
   "POST /api/v1/auth/login": {
-    returns: "`customer`、`session.token`、`licenses`（含 `modules` 逐模块到期）、`active_license`（优先正式授权，其次试用，都没有为 null）",
-    errors: "`401 INVALID_CREDENTIALS`、`403 CUSTOMER_DISABLED`",
+    returns: "`customer`、`session.token`、`licenses`（含 `modules` 逐模块到期）、`active_license`（优先正式授权，其次试用，都没有为 null）；带 `product_code` 时另有 `client{product,trial_started,device_bound,seats,active_devices}`",
+    errors: "`401 INVALID_CREDENTIALS`、`403 CUSTOMER_DISABLED`、`403 SEATS_FULL`（席位已满且设备没绑过）",
   },
   "POST /api/v1/licenses/consume": {
     returns: "`consumed`、`remaining`、`max`、`used`、`license_file`（含最新 `usage`）",
@@ -445,7 +446,7 @@ const EXTRA_DOCS: Record<string, { returns?: string; errors?: string }> = {
   },
   "POST /admin/api/staff": {
     returns: "`staff`（含 `role` / `permissions` / `agent_id` / `agent_profile`）",
-    errors: "`409 EMAIL_TAKEN`、`400 MISSING_FIELD`（代理缺 agent_id）/ `INVALID_FIELD`（role 非法）/ `WEAK_PASSWORD`、`403 FORBIDDEN`（非 owner）",
+    errors: "`409 USERNAME_TAKEN`、`400 MISSING_FIELD`（代理缺 agent_id）/ `INVALID_FIELD`（role 非法）/ `WEAK_PASSWORD`、`403 FORBIDDEN`（非 owner）",
   },
   "POST /admin/api/agents": {
     returns: "`agent`（`code` / `name` / `credit` / `balance`）",
@@ -516,6 +517,10 @@ export function buildApiDocs(): ApiDocs {
       { title: "鉴权", text: "客户端接口用客户会话 token，管理接口用管理员 token，均放在请求头 `Authorization: Bearer <token>`。" },
       { title: "时间与金额", text: "时间为 ISO-8601 UTC 字符串；金额单位统一为「分」（整数）。" },
       { title: "分页", text: "`?page=1&page_size=20`，`page_size` 上限 200。" },
+      {
+        title: "登录流程（v17 起）",
+        text: "① 用 `username` + `password` 注册/登录；② 客户端登录带 `product_code` + `device_id`，服务端自动开试用（有试用配置且没买过）、自动绑设备、席位满了直接 403 `SEATS_FULL`；③ 激活 CDK 必须先登录（401 `LOGIN_REQUIRED`）；④ 激活后本地保存 `license_key`，之后用心跳续期。",
+      },
       { title: "心跳与到期同步", text: "客户端每次心跳都会拿到最新 `expires_at`、逐模块的 `modules[]` 与重新签名的 `license_file`，因此后台改到期后最迟一个心跳周期生效。到期是软状态：心跳仍返回 200，只是 `expired=true`、过期模块 `active=false`，账号与授权信息照常可读。" },
       {
         title: "错误码",
@@ -532,7 +537,9 @@ export function buildApiDocs(): ApiDocs {
           "404 DEVICE_NOT_BOUND",
           "409 SEAT_LIMIT",
           "409 CODE_TAKEN",
-          "409 EMAIL_TAKEN",
+          "409 USERNAME_TAKEN",
+          "403 SEATS_FULL",
+          "401 LOGIN_REQUIRED",
           "409 AGENT_IN_USE",
           "409 BALANCE_INSUFFICIENT",
           "409 TERM_CONFLICT",
@@ -707,13 +714,14 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
       <table class="offline-table">
         <thead><tr><th>步骤</th><th>调用</th><th>说明</th></tr></thead>
         <tbody>
-          <tr><td>1</td><td><code>POST /api/v1/auth/register</code></td><td>用「用户名 + 密码」注册；**激活前必须登录**</td></tr>
-          <tr><td>2</td><td><code>POST /api/v1/cdks/inspect</code></td><td>(可选) 预检卡密：看产品、模块、时长、是否可用，不核销</td></tr>
-          <tr><td>3</td><td><code>POST /api/v1/licenses/activate</code></td><td>用 CDK 激活，<b>必须联网一次</b>；可用 <code>module_ids</code> 只开通部分模块。返回 <code>license_file</code>（离线许可证）+ <code>license_key</code>（本地保存）</td></tr>
-          <tr><td>4</td><td>本地验签</td><td>每次启动用内置公钥验签 <code>license_file</code>，完全离线（详见下方「离线验证使用说明」）</td></tr>
-          <tr><td>5</td><td><code>POST /api/v1/licenses/heartbeat</code></td><td>按 <code>heartbeat_interval_hours</code>（默认 24 小时）续期，拿新的 <code>license_file</code></td></tr>
-          <tr><td>6</td><td><code>POST /api/v1/licenses/consume</code></td><td>次数卡每使用一次扣一次（需联网）</td></tr>
-          <tr><td>7</td><td><code>GET /api/v1/vars</code></td><td>(可选) 读远程变量（公告/图片/JSON 配置），需登录</td></tr>
+          <tr><td>1</td><td><code>POST /api/v1/auth/register</code></td><td>用「用户名 + 密码」注册（不再需要邮箱）</td></tr>
+          <tr><td>2</td><td><code>POST /api/v1/auth/login</code></td><td>客户端登录时带 <code>product_code</code> + <code>device_id</code>：服务端自动开试用（该产品没授权且有试用配置）、自动绑设备；席位满了返回 403 <code>SEATS_FULL</code></td></tr>
+          <tr><td>3</td><td><code>POST /api/v1/cdks/inspect</code></td><td>(可选) 预检卡密：看产品、模块、时长、是否可用，不核销，<b>可以匿名调用</b></td></tr>
+          <tr><td>4</td><td><code>POST /api/v1/licenses/activate</code></td><td>用 CDK 激活，<b>必须先登录</b>（401 <code>LOGIN_REQUIRED</code>），<b>必须联网一次</b>；可用 <code>module_ids</code> 只开通部分模块。返回 <code>license_file</code>（离线许可证）+ <code>license_key</code>（本地保存）。试用没到期时，同模块从试用结束时间接着算</td></tr>
+          <tr><td>5</td><td>本地验签</td><td>每次启动用内置公钥验签 <code>license_file</code>，完全离线（详见下方「离线验证使用说明」）</td></tr>
+          <tr><td>6</td><td><code>POST /api/v1/licenses/heartbeat</code></td><td>按 <code>heartbeat_interval_hours</code>（默认 24 小时）续期，拿新的 <code>license_file</code></td></tr>
+          <tr><td>7</td><td><code>POST /api/v1/licenses/consume</code></td><td>次数卡每使用一次扣一次（需联网）</td></tr>
+          <tr><td>8</td><td><code>GET /api/v1/vars</code></td><td>(可选) 读远程变量（公告/图片/JSON 配置），需登录或用 license_key 鉴权</td></tr>
         </tbody>
       </table>
 
