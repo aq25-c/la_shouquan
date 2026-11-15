@@ -99,7 +99,7 @@ import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
 import { isEmail, normalizeEmail } from "../util.ts";
 
-const SERVER_VERSION = "2.23.0";
+const SERVER_VERSION = "2.23.1";
 
 function customerView(customer: {
   id: string;
@@ -441,16 +441,13 @@ export function registerClientRoutes(): void {
       detail: productCode ? { product: productCode, device_id: deviceId ?? null } : undefined,
     });
 
-    const base = {
+    // 网页登录和客户端登录都给授权信息；带 product_code 的客户端额外拿到 client 状态
+    return ok({
       customer: customerView(customer),
       session: sessionPayload(ctx, customer.id),
-    };
-    // 只有客户端（带 product_code）才返回授权信息；网页登录拿不到任何授权
-    return ok(
-      productCode
-        ? { ...base, ...licenseSnapshot(customer.id), client: clientInfo }
-        : { ...base, licenses: [], active_license: null, client: null },
-    );
+      ...licenseSnapshot(customer.id),
+      client: clientInfo,
+    });
   });
 
   get("/api/v1/auth/me", (ctx) => {

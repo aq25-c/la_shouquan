@@ -256,7 +256,7 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 2. **自动绑设备**：登录即绑定；解绑过的设备重新登录会自动回绑
 3. **席位校验**：席位已满且这台设备没绑过 → 403 `SEATS_FULL`，不发 token
 
-不带 `product_code` 就是「网页登录」：只返回账号和会话，`licenses` 恒为空，拿不到任何授权信息（网页端走 `/api/v1/me/overview` 看授权）。
+不带 `product_code` 就是「网页登录」：同样返回账号、会话和授权列表（门户照常能看到自己激活了哪些软件），只是不做自动试用、不绑设备、不校验席位。
 
 ### 试用没到期就激活
 

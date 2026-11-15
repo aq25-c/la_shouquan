@@ -4055,7 +4055,7 @@ test("v17 用户名注册与登录：不需要邮箱", async () => {
   const login = await api("POST", "/api/v1/auth/login", { username: "ZHANGSAN", password: "Passw0rd!" });
   assert.equal(login.status, 200);
   assert.ok(login.json.data.session.token);
-  assert.equal(login.json.data.licenses.length, 0, "网页登录不返回授权信息");
+  assert.deepEqual(login.json.data.licenses, [], "新账号还没有授权");
   assert.equal(login.json.data.active_license, null);
 
   const bad = await api("POST", "/api/v1/auth/register", { username: "a", password: "Passw0rd!" });
@@ -4096,6 +4096,12 @@ test("v17 首次登录软件自动开试用，不用调试用接口", async () =
   });
   assert.equal(again.json.data.client.trial_started, false);
   assert.equal(again.json.data.licenses.length, 1);
+
+  // 网页登录（不带 product_code）同样要能看到自己的授权
+  const web = await api("POST", "/api/v1/auth/login", { username: "autotrial", password: "Passw0rd!" });
+  assert.equal(web.status, 200);
+  assert.equal(web.json.data.licenses.length, 1, "门户网页登录也要返回授权信息");
+  assert.equal(web.json.data.client, null, "网页登录不做自动试用/绑机");
 
   await api("DELETE", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
 });

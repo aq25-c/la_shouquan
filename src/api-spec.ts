@@ -44,7 +44,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     title: "客户登录",
     auth: "public",
     params: "`username`✅、`password`✅、`product_code?`、`device_id?`、`device_name?`、`platform?`",
-    desc: "两种模式：①**客户端登录**（带 `product_code`）返回 `customer`、`session.token`、授权快照 `licenses` / `active_license` 和 `client{product,trial_started,device_bound,seats,active_devices}`；②**网页登录**（不带 `product_code`）只返回账号与会话，`licenses` 恒为空数组，拿不到任何授权信息。",
+    desc: "两种模式都返回 `customer`、`session.token` 和授权快照 `licenses` / `active_license`（门户网页登录也能看到自己激活了哪些软件）；带 `product_code` 的客户端登录额外返回 `client{product,trial_started,device_bound,seats,active_devices}`。",
     notes: "带 `product_code` 时服务端顺带做三件事：该产品没有任何授权且模块还有试用次数 → **自动开试用**（不用再调 `/trial/start`）；带 `device_id` → **自动绑定设备**（解绑过的设备重新登录也会自动回绑）；席位已满且这台设备没绑过 → 直接 **403 `SEATS_FULL`**，不发 token。",
   },
   "GET /api/v1/auth/me": {
