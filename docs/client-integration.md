@@ -8,7 +8,7 @@
 ## 1. 总体模型
 
 ```
-┌─────────────┐   ①激活(CDK)   ┌──────────────────┐
+┌─────────────┐   ①登录/激活   ┌──────────────────┐
 │   客户端     │ ─────────────▶ │  授权服务端       │
 │             │ ◀───────────── │  (本仓库)        │
 │             │  license_key    └──────────────────┘
@@ -36,34 +36,67 @@
 
 | 数据 | 来源 | 说明 |
 | --- | --- | --- |
-| `license_key` | 激活/心跳响应 | 心跳凭证，**只在激活时返回一次**，丢了要后台重置 |
+| `license_key` | 激活 / 登录自愈 / 心跳响应 | 心跳凭证。丢了用账号登录就能取回（见第 3 节） |
 | `license_file` | 激活/心跳响应 | 签名字符串，每次心跳覆盖更新 |
-| `device_id` | 本地生成 | 稳定设备指纹，见第 6 节 |
-| `last_seen_time` | 本地 | 防时间回拨（见第 7 节） |
+| `device_id` | 本地生成 | 稳定设备指纹，见第 7 节 |
+| `last_seen_time` | 本地 | 防时间回拨（见第 8 节） |
 
 存放位置建议：程序配置目录下的 `license.json`（Windows `%APPDATA%\<你的软件>\license.json`）。
 **不要把 `license_key` 明文硬编码进程序**。
 
 ---
 
-## 3. 激活
+## 3. 登录（必须先做）
+
+**激活前必须先登录**：`/api/v1/licenses/activate` 匿名调用会返回 `401 LOGIN_REQUIRED`（v17 起取消匿名激活）。
+
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{
+  "username": "buyer01",
+  "password": "BuyerPass123",
+  "product_code": "app-pro",
+  "device_id": "PC-OFFICE-01",
+  "device_name": "办公室主机",
+  "platform": "Windows 11"
+}
+```
+
+- `username` + `password`：注册也是这个用户名（3–20 位字母/数字/下划线，不区分大小写；不再需要邮箱）
+- `product_code`、`device_id` 建议带上，服务端会顺手做四件事：
+  1. 该产品还没有任何授权、且模块还有试用次数 → **自动开试用**（不用再调 `/trial/start`）
+  2. **自动绑定这台设备**（解绑过的设备重新登录会自动回绑）
+  3. 席位已满且这台设备没绑过 → 直接 `403 SEATS_FULL`，不发 token
+  4. **设备自愈**：这台设备已绑定的授权，响应里会带 `license_key` + `key_recovered=true`，客户端重装后直接登录取回密钥
+- 不带 `product_code` = 网页登录：只返回账号和授权列表，不做试用/绑定/席位校验
+
+响应里 `licenses[]` 每项含 `license_id`、`license_no`、`product_code`、`expires_at`、`modules[]`，以及（已绑定时）`license_key`。
+
+成功后把 `session.token` 放到后续请求的 `Authorization: Bearer ***`。
+
+---
+
+## 4. 激活
 
 ```http
 POST /api/v1/licenses/activate
+Authorization: Bearer <session.token>
 Content-Type: application/json
 
 {
   "cdk": "Q3GP-2WUW-7RFC-XPY2",
   "device_id": "PC-OFFICE-01",
   "device_name": "办公室主机",
-  "platform": "Windows 11",
-  "email": "buyer@example.com",
-  "password": "BuyerPass123"
+  "platform": "Windows 11"
 }
 ```
 
-- `cdk`、`device_id` 必填；`email`/`password` 可省略（匿名激活）。
-- 成功后把 `license_key`、`license_file` 存到本地。
+- `cdk`、`device_id` 必填（网页激活传 `bind_device=false` 可不占席位）
+- **必须带登录 token**，否则 `401 LOGIN_REQUIRED`
+- 试用还没到期的模块，正式授权的**开始时间 = 试用结束时间**，再往后加卡内时长
+- 成功后把 `license_key`、`license_file` 存到本地
 
 响应（成功）：
 
@@ -95,7 +128,7 @@ POST /api/v1/cdks/inspect
 
 ---
 
-## 4. 许可证文件格式
+## 5. 许可证文件格式
 
 ```
 <base64url(JSON payload)> "." <base64url(Ed25519 签名)>
@@ -125,9 +158,9 @@ payload 字段：
 
 ---
 
-## 5. 验签代码
+## 6. 验签代码
 
-### 5.1 C / C++（OpenSSL 1.1.1+，Linux 与 Windows 通用）
+### 6.1 C / C++（OpenSSL 1.1.1+，Linux 与 Windows 通用）
 
 ```c
 #include <openssl/evp.h>
@@ -162,7 +195,7 @@ int license_verify(EVP_PKEY *pubkey,
 
 `base64url` 解码时注意两点：把 `-`→`+`、`_`→`/`，并按需补 `=` 到 4 的倍数（或直接用 OpenSSL 的 `EVP_DecodeBlock` 手动处理）。
 
-### 5.2 Node.js
+### 6.2 Node.js
 
 ```js
 const { createPublicKey, verify } = require("node:crypto");
@@ -184,7 +217,7 @@ function verifyLicenseFile(file) {
 }
 ```
 
-### 5.3 Python
+### 6.3 Python
 
 ```python
 import base64, json, time
@@ -209,7 +242,7 @@ def verify_license_file(license_file: str) -> dict:
     return payload
 ```
 
-### 5.4 C#（.NET 5+）
+### 6.4 C#（.NET 5+）
 
 ```csharp
 using System.Security.Cryptography;
@@ -239,7 +272,7 @@ static JsonDocument VerifyLicense(string licenseFile, string publicKeyPem)
 
 ---
 
-## 6. 设备指纹（device_id）
+## 7. 设备指纹（device_id）
 
 要求：**同一台机器稳定、不同机器不同**，且不含隐私敏感原文（先哈希）。
 
@@ -260,7 +293,7 @@ Linux：`/etc/machine-id` + 根分区 UUID；macOS：`IOPlatformUUID`。
 
 ---
 
-## 7. 防时间回拨
+## 8. 防时间回拨
 
 客户端改系统时间可以绕过 `exp` 检查，建议加一道低成本防线：
 
@@ -275,7 +308,7 @@ Linux：`/etc/machine-id` + 根分区 UUID；macOS：`IOPlatformUUID`。
 
 ---
 
-## 8. 心跳与状态处理
+## 9. 心跳与状态处理
 
 按 `heartbeat_interval_hours`（默认 24h）发：
 
@@ -296,7 +329,7 @@ POST /api/v1/licenses/heartbeat
 | `403` `LICENSE_SUSPENDED` | 提示"授权已暂停"，可周期性重试 |
 | `403` `CUSTOMER_DISABLED` | 提示"账号已停用" |
 | `404` `DEVICE_NOT_BOUND` | 设备被解绑 → 要求重新激活（到期自动释放的机器，续费后下次心跳会自动复位） |
-| `404` `INVALID_LICENSE_KEY` | 密钥失效 → 要求重新激活 |
+| `404` `INVALID_LICENSE_KEY` | 密钥失效 → **先用账号登录**，设备还绑着就能取回新密钥；取不回再要求重新激活 |
 
 推荐的整体流程：
 
@@ -330,7 +363,7 @@ POST /api/v1/licenses/release
 
 ---
 
-## 9. 功能级授权（按模块放行）
+## 10. 功能级授权（按模块放行）
 
 许可证 payload 的 `mod` 是模块编码数组。常见做法：
 
@@ -347,11 +380,12 @@ if (license_has_module(payload, "report")) {
 
 ---
 
-## 10. 常见坑
+## 11. 常见坑
 
 1. **公钥内置**，不要从网络获取（否则可被伪造服务端欺骗）。
 2. **验签对象是 base64url 原文**，不是解码后的 JSON —— 重新序列化会导致验签失败。
-3. **`license_key` 只返回一次**：激活响应里存好，丢了只能后台重置（重置后旧客户端心跳立刻 404）。
+3. **`license_key` 要存好**：激活响应里只返回一次。丢了不一定要重置——用账号登录（带 `product_code` + `device_id`），设备还绑着就能取回；重置密钥会让同一授权下其它席位的设备一起失效。
 4. **心跳 404/403 不要当成网络错误重试到天荒地老**：按上面的状态表处理。
 5. **升级客户端不要改 `device_id` 算法**，否则所有老用户都会被当成换机。
 6. **HTTPS**：公网部署请放在 Nginx/Caddy 之后，否则 `license_key` 明文过网。
+7. **激活必须登录**（v17 起）：先 `/api/v1/auth/login` 拿 token，再带 `Authorization` 调 `/activate`；老版本客户端如果还在匿名激活会收到 `401 LOGIN_REQUIRED`。

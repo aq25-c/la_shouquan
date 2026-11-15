@@ -34,7 +34,7 @@
 | **产品（Product）** | 你要授权的软件，例如 `app-pro`。客户端用产品编码识别。 |
 | **模块（Module）** | 产品内的功能单位，例如 `core`、`report`。**CDK 绑定的就是模块组合**，客户端据此判断某功能是否被授权。 |
 | **CDK** | 卡密（兑换码），形如 `Q3GP-2WUW-7RFC-XPY2`。后台批量生成，一次性核销。 |
-| **客户（Customer）** | 激活时自动创建或注册的账号，可登录查看/自助解绑。也支持匿名激活。 |
+| **客户（Customer）** | 用「用户名 + 密码」注册的账号，登录后可查看授权、自助解绑设备；激活必须先登录。 |
 | **授权（License）** | CDK 核销后产生的授权记录，决定**到期时间**、**席位（可绑定设备数）**、**模块范围**。 |
 | **设备（Device）** | 一台机器（客户端上报的稳定指纹）。每个授权最多绑定 `seats` 台。 |
 | **许可证文件** | 服务端用 Ed25519 签名的字符串，客户端**离线**即可验签 + 校验到期 + 校验设备绑定。 |
@@ -87,7 +87,7 @@
 
 **账号**
 - 客户注册/登录（scrypt 口令哈希），登录后可查看授权、自助解绑设备、重置许可证密钥
-- 也支持不带账号的匿名激活
+- 客户端登录自动开试用、自动绑设备、席位满了直接拒绝；设备丢了密钥可登录取回
 - 管理员登录 + 多管理员 + 改密（改密后旧会话立即失效）
 
 **删除客户（硬删除）**
@@ -123,11 +123,11 @@
 
 **界面（手机 / 平板 / 桌面）**
 - 登录页改左右分栏：左侧品牌与卖点，右侧表单；手机上收成单列，品牌区变顶部色块
-- 登录支持「记住邮箱」和密码显示切换
+- 登录支持「记住账号」和密码显示切换
 - 手机端侧边栏收成抽屉（汉堡按钮打开，点遮罩或选择菜单自动收起），不再挤占顶部空间
 - 手机端表格自动转成卡片：表头文字变成每行的字段标签，9 列的授权表也不用横向拖
 - 弹窗在手机上全屏显示，底部按钮吸底并按两列排布，避免误触
-- 列表里的客户一栏改为**姓名优先、邮箱做副行**，匿名激活单独标注
+- 列表里的客户一栏改为**姓名优先、用户名做副行**
 - 导航图标换成内联 SVG，不依赖系统 emoji 字体，各平台显示一致
 
 **客户门户（默认入口 `/`）**
@@ -209,7 +209,7 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 | `HOST` | `0.0.0.0` | 监听地址 |
 | `DATA_DIR` | `./data` | 数据目录（SQLite 库、签名密钥、初始密码文件） |
 | `DB_PATH` | `$DATA_DIR/license.db` | 单独指定数据库路径 |
-| `ADMIN_EMAIL` | `admin@example.com` | 初始管理员邮箱（仅首次启动创建） |
+| `ADMIN_EMAIL` | `admin@example.com` | 初始管理员账号（仅首次启动创建；这个值同时作为登录用户名，可以用纯用户名） |
 | `ADMIN_PASSWORD` | 空 | 初始管理员密码；**留空则随机生成**并写入 `$DATA_DIR/initial-admin.txt` |
 | `ADMIN_NAME` | `系统管理员` | 初始管理员名称 |
 | `OFFLINE_GRACE_DAYS` | `7` | **离线宽限天数**：许可证文件离线可用上限 |
@@ -221,6 +221,7 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 | `TRUST_PROXY` | `false` | 在 Nginx/Traefik 后面设 `true`（从 X-Forwarded-For 取真实 IP） |
 | `MAX_BODY_BYTES` | `262144` | 请求体上限 |
 | `SIGNING_PRIVATE_KEY_B64` | 空 | 已有签名私钥（PKCS8 PEM 的 base64），多实例/迁移时用 |
+| `LICENSE_SECRET_FILE` | `$DATA_DIR/license-secret.key` | 许可证密钥的加密密钥（设备登录自愈取回密钥用），**要跟数据库一起备份** |
 | `TZ` | 容器内 `Asia/Shanghai` | 时区 |
 
 ---
@@ -230,8 +231,8 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 1. **产品与模块**：新建产品（编码用小写，如 `app-pro`），再往里加模块（`core`、`report`…）。
 2. **代理**（可选）：新建代理（如「淘宝旗舰店」「代理商 A」），填联系人与备注。
 3. **CDK**：选产品 → 勾选模块 → 填天数/席位/数量 →（可选）选**归属代理**并填**结算单价（元）** → 生成。生成结果可一键复制或下载 CSV，交给代理/客户。
-4. **客户**（可选）：在「客户」页可**手动新增客户**（邮箱 + 密码，或只填姓名建匿名客户），不必等客户端自己注册。
-5. 客户拿到 CDK 后在客户端里激活；也可由你在后台「手动开通」直接给某个邮箱开授权，不走 CDK。
+4. **客户**（可选）：在「客户」页可**手动新增客户**（用户名 + 密码，或只填姓名建无登录账号的客户），不必等客户端自己注册。
+5. 客户拿到 CDK 后，在客户端里**先登录再激活**；也可由你在后台「手动开通」直接给某个客户开授权，不走 CDK。
 6. **授权**页管理生命周期：查看设备、延长、改到期时间、暂停、吊销、重置设备、重置密钥、重新签发文件。
 7. **客户列表调到期**：客户行内「调整到期」→ 勾选要改的授权，按天延长或直接设定日期；客户端下次心跳即同步。
 8. **设备换机**：授权详情里可「绑定新设备」，已解绑的设备也能「重新绑定」——**到期时间沿用首次激活，不会重置**。
@@ -281,15 +282,25 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 ### 1. 激活（用 CDK 换授权）
 
 ```bash
+# ① 先登录（用户名 + 密码），拿到 token
+curl -X POST http://localhost:6889/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "username": "buyer01",
+        "password": "BuyerPass123",
+        "product_code": "app-pro",
+        "device_id": "PC-OFFICE-01"
+      }'
+
+# ② 再带 token 激活
 curl -X POST http://localhost:6889/api/v1/licenses/activate \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <上一步返回的 session.token>' \
   -d '{
         "cdk": "Q3GP-2WUW-7RFC-XPY2",
         "device_id": "PC-OFFICE-01",
         "device_name": "办公室主机",
-        "platform": "Windows 11",
-        "email": "buyer@example.com",
-        "password": "BuyerPass123"
+        "platform": "Windows 11"
       }'
 ```
 
@@ -310,7 +321,7 @@ curl -X POST http://localhost:6889/api/v1/licenses/activate \
 }
 ```
 
-`email`/`password` 可省略（匿名激活）；带邮箱时若账号不存在会自动创建。若已登录（`Authorization: Bearer <客户token>`）则直接绑到该账号。
+激活**必须登录**：不登录直接调会返回 `401 LOGIN_REQUIRED`（匿名激活已取消）。登录时带 `product_code` + `device_id` 会自动开试用、绑定设备并做席位校验，详见 [docs/client-integration.md](docs/client-integration.md)。
 
 ### 2. 启动时本地验签（完全离线）
 
@@ -379,14 +390,14 @@ curl -X POST http://localhost:6889/api/v1/licenses/heartbeat \
 
 ## 运维：备份、迁移、升级
 
-- **备份**：整个 `./data` 目录（含 `license.db`、`license.db-wal`、`keys.json`）。热备份建议 `sqlite3 data/license.db ".backup 'backup.db'"` 或直接 `docker compose stop` 后拷贝。
+- **备份**：整个 `./data` 目录（含 `license.db`、`license.db-wal`、`keys.json`、`license-secret.key`）。`license-secret.key` 丢了不影响已签发的离线许可证，但「设备登录取回密钥」会失效。热备份建议 `sqlite3 data/license.db ".backup 'backup.db'"` 或直接 `docker compose stop` 后拷贝。
 - **迁移/多实例**：把 `./data` 拷到新机；或把 `keys.json` 里的私钥通过 `SIGNING_PRIVATE_KEY_B64` 注入（多实例必须共用同一把私钥，否则签发的许可证互通不了）。
 - **升级**：`git pull`（或替换 `src/`）后 `docker compose up -d --build`。数据库自动迁移，`data/` 不受影响。
 - **换签名密钥**：会导致**所有已签发许可证失效**（客户端内置的公钥对不上），除非同步更新客户端。
 
 ### 数据库版本与兼容升级
 
-数据库结构用 `PRAGMA user_version` 标记版本，当前为 **v11**（常量 `SCHEMA_VERSION`，见 `src/db.ts`）。
+数据库结构用 `PRAGMA user_version` 标记版本，当前为 **v19**（常量 `SCHEMA_VERSION`，见 `src/db.ts`）。
 
 **升级是自动且向后兼容的**：程序启动时读当前版本，逐级补齐缺失的迁移（v1→v2→…→最新），每一步各自在事务里执行，失败整体回滚，已有数据全部保留。启动日志会写明实际发生了什么：
 

@@ -140,7 +140,7 @@ docker inspect --format '{{.State.Health.Status}}' license-server
 # 4) 管理员 API 能登录
 curl -s -X POST http://127.0.0.1:6889/admin/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"admin@yourcompany.com","password":"你的密码"}'
+  -d '{"username":"admin@yourcompany.com","password":"你的密码"}' 
 # {"ok":true,"data":{"admin":{...},"token":"...","expires_at":"..."}}
 ```
 
