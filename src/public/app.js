@@ -3248,10 +3248,10 @@ async function renderCustomers(root) {
                           <td>
                             ${customerCell(
                               c.name,
-                              c.email,
+                              c.username ?? c.email,
                               c.company ? `<span class="cell-sub">${esc(c.company)}</span>` : "",
                             )}
-                            ${!c.email ? '<span class="cell-sub">无登录账号（CDK 匿名激活）</span>' : ""}
+                            ${!c.username && !c.email ? '<span class="cell-sub">无登录账号</span>' : ""}
                           </td>
                           <td>${
                             c.owner_agent_name
@@ -3307,28 +3307,28 @@ function customerForm() {
     title: "新增客户",
     body: `
       <div class="form-grid">
-        <label class="field"><span>邮箱（用于登录，留空 = 仅后台代管）</span><input name="email" type="email" placeholder="buyer@example.com" /></label>
+        <label class="field"><span>用户名（用于登录，留空 = 仅后台代管）</span><input name="username" placeholder="3-20 位字母/数字/下划线" maxlength="64" /></label>
         <label class="field"><span>登录密码（≥6 位，留空 = 不能登录）</span><input name="password" type="password" autocomplete="new-password" /></label>
         <label class="field"><span>姓名</span><input name="name" placeholder="张三" /></label>
         <label class="field"><span>公司</span><input name="company" /></label>
         <label class="field"><span>电话</span><input name="phone" /></label>
         <label class="field full"><span>备注</span><textarea name="note"></textarea></label>
       </div>
-      <div class="note">留空邮箱可创建「匿名客户」，适用于线下客户由你代为开通授权；之后可用「重置密码」或补录邮箱。</div>`,
+      <div class="note">留空用户名可创建「匿名客户」，适用于线下客户由你代为开通授权；之后可以补录用户名和密码。</div>`,
     footer: `<button class="btn" data-cancel type="button">取消</button><button class="btn btn-primary" data-save type="button">创建</button>`,
     onMount(modal, close) {
       $("[data-cancel]", modal).onclick = close;
       $("[data-save]", modal).onclick = async () => {
         const payload = {
-          email: $('[name="email"]', modal).value.trim(),
+          username: $('[name="username"]', modal).value.trim(),
           password: $('[name="password"]', modal).value,
           name: $('[name="name"]', modal).value.trim(),
           company: $('[name="company"]', modal).value.trim(),
           phone: $('[name="phone"]', modal).value.trim(),
           note: $('[name="note"]', modal).value.trim(),
         };
-        if (!payload.email && !payload.name) {
-          toast("请至少填写邮箱或姓名", "error");
+        if (!payload.username && !payload.name) {
+          toast("请至少填写用户名或姓名", "error");
           return;
         }
         try {
@@ -3493,11 +3493,11 @@ async function openCustomerDetail(id) {
   const c = data.customer;
 
   openModal({
-    title: `客户：${c.name || c.email || "匿名客户"}`,
+    title: `客户：${c.name || c.username || c.email || "匿名客户"}`,
     wide: true,
     body: `
       <div class="form-grid">
-        <label class="field"><span>登录邮箱（可修改，留空 = 不能登录）</span><input name="email" type="email" value="${esc(c.email ?? "")}" placeholder="buyer@example.com" /></label>
+        <label class="field"><span>登录用户名（可修改，留空 = 不能登录）</span><input name="username" value="${esc(c.username ?? c.email ?? "")}" placeholder="3-20 位字母/数字/下划线" maxlength="64" /></label>
         <label class="field"><span>姓名</span><input name="name" value="${esc(c.name ?? "")}" /></label>
         <label class="field"><span>公司</span><input name="company" value="${esc(c.company ?? "")}" /></label>
         <label class="field"><span>电话</span><input name="phone" value="${esc(c.phone ?? "")}" /></label>
@@ -3562,7 +3562,7 @@ async function openCustomerDetail(id) {
       $("[data-save]", modal).onclick = async () => {
         try {
           await apiPatch(`/admin/api/customers/${id}`, {
-            email: $('[name="email"]', modal).value.trim(),
+            username: $('[name="username"]', modal).value.trim(),
             name: $('[name="name"]', modal).value.trim(),
             company: $('[name="company"]', modal).value.trim(),
             phone: $('[name="phone"]', modal).value.trim(),

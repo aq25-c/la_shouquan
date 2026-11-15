@@ -55,6 +55,8 @@ export type ModuleRow = {
 
 export type CustomerRow = {
   id: string;
+  /** v17：登录用户名（唯一，大小写不敏感） */
+  username: string | null;
   email: string | null;
   password_hash: string | null;
   name: string | null;

@@ -307,24 +307,61 @@ export function seatUsageForProduct(
   customerId: string,
   productId: string,
 ): { seats: number; active_devices: number } {
+  const now = nowIso();
   const seatRow = db()
     .prepare(
       `SELECT COALESCE(MAX(seats), 0) AS seats
          FROM licenses
-        WHERE customer_id = ? AND product_id = ? AND status != 'revoked'`,
+        WHERE customer_id = ? AND product_id = ? AND status != 'revoked'
+          AND (expires_at IS NULL OR expires_at > ?)`,
     )
-    .get(customerId, productId) as unknown as { seats: number };
+    .get(customerId, productId, now) as unknown as { seats: number };
   const devRow = db()
     .prepare(
       `SELECT COUNT(*) AS n
          FROM devices d
          JOIN licenses l ON l.id = d.license_id
-        WHERE l.customer_id = ? AND l.product_id = ? AND l.status != 'revoked' AND d.status = 'active'`,
+        WHERE l.customer_id = ? AND l.product_id = ? AND l.status != 'revoked'
+          AND (l.expires_at IS NULL OR l.expires_at > ?) AND d.status = 'active'`,
     )
-    .get(customerId, productId) as unknown as { n: number };
+    .get(customerId, productId, now) as unknown as { n: number };
   const seats = Number(seatRow?.seats ?? 0);
   // 显示的设备数不超过席位上限：1 席位的卡只显示 1 台
   return { seats, active_devices: Math.min(Number(devRow?.n ?? 0), seats) };
+}
+
+/** 席位池的原始数字（不做显示封顶），用于登录/激活时判断满没满 */
+export function seatPool(customerId: string, productId: string): { seats: number; active_devices: number } {
+  const now = nowIso();
+  const seatRow = db()
+    .prepare(
+      `SELECT COALESCE(MAX(seats), 0) AS seats
+         FROM licenses
+        WHERE customer_id = ? AND product_id = ? AND status != 'revoked'
+          AND (expires_at IS NULL OR expires_at > ?)`,
+    )
+    .get(customerId, productId, now) as unknown as { seats: number };
+  const devRow = db()
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM devices d
+         JOIN licenses l ON l.id = d.license_id
+        WHERE l.customer_id = ? AND l.product_id = ? AND l.status != 'revoked'
+          AND (l.expires_at IS NULL OR l.expires_at > ?) AND d.status = 'active'`,
+    )
+    .get(customerId, productId, now) as unknown as { n: number };
+  return { seats: Number(seatRow?.seats ?? 0), active_devices: Number(devRow?.n ?? 0) };
+}
+
+/** 某客户在某产品下还能用的授权（试用 + 正式） */
+export function activeLicensesForProduct(customerId: string, productId: string): LicenseRow[] {
+  return db()
+    .prepare(
+      `SELECT * FROM licenses
+        WHERE customer_id = ? AND product_id = ? AND status = 'active'
+        ORDER BY CASE kind WHEN 'paid' THEN 0 ELSE 1 END, created_at DESC`,
+    )
+    .all(customerId, productId) as unknown as LicenseRow[];
 }
 
 /** 把一批授权行里同一客户同一产品的席位/设备数统一成软件级口径 */
@@ -1029,6 +1066,8 @@ export function applyModuleTerms(
   moduleIds: string[],
   termType: TermType,
   termValue: number,
+  /** 指定模块的起算时间（毫秒）：试用没到期时，正式授权从试用结束接着算 */
+  baseByModule?: Record<string, number>,
 ): { merged: string[]; created: string[] } {
   const merged: string[] = [];
   const created: string[] = [];
@@ -1042,7 +1081,8 @@ export function applyModuleTerms(
       .get(licenseId, moduleId) as unknown as LicenseModuleRow | undefined;
 
     if (!row) {
-      const expiry = new Date(computeExpiry(termType, termValue, nowMs)).toISOString();
+      const base = Math.max(nowMs, baseByModule?.[moduleId] ?? 0);
+      const expiry = new Date(computeExpiry(termType, termValue, base)).toISOString();
       db()
         .prepare(
           `INSERT OR IGNORE INTO license_modules
@@ -1166,7 +1206,21 @@ export function findModuleTermConflicts(
 }
 
 /**
- * 授权到期时间 = 各模块到期时间的最大值（v11 起模块是到期时间的权威来源）。
+ /**
+  * 试用转正式：把试用授权里被新卡覆盖的模块立即结束（到期设成现在），
+  * 返回还剩多少个模块没被覆盖。全被覆盖时调用方可以直接吊销这条试用。
+  */
+ export function endTrialModules(licenseId: string, moduleIds: string[]): number {
+   if (!moduleIds.length) return listLicenseModules(licenseId).length;
+   const at = nowIso();
+   const marks = moduleIds.map(() => "?").join(", ");
+   db()
+     .prepare(`UPDATE license_modules SET expires_at = ?, updated_at = ? WHERE license_id = ? AND module_id IN (${marks})`)
+     .run(at, at, licenseId, ...moduleIds);
+   return listLicenseModules(licenseId).filter((m) => m.expires_at && Date.parse(m.expires_at) > Date.now()).length;
+ }
+
+ /** 授权到期时间 = 各模块到期时间的最大值（v11 起模块是到期时间的权威来源）。
  * 没有任何模块到期信息时保持原值不动。
  */
 export function recomputeLicenseExpiry(licenseId: string): LicenseRow | null {

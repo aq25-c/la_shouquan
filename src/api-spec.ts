@@ -39,13 +39,13 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   },
 
   /* ---------------- 客户端 · 账号 ---------------- */
-  "POST /api/v1/auth/register": { title: "客户注册", auth: "public", params: "`email`、`password`(≥8位)、`name?`", desc: "创建客户账号，返回客户信息与登录会话 token。" },
+  "POST /api/v1/auth/register": { title: "客户注册", auth: "public", params: "`username`✅（3-20 位字母/数字/下划线）、`password`(≥6位)、`name?`", desc: "用用户名 + 密码注册，不再需要邮箱；返回客户信息与登录会话 token。用户名不区分大小写且唯一。" },
   "POST /api/v1/auth/login": {
     title: "客户登录",
     auth: "public",
-    params: "`email`、`password`",
-    desc: "返回 `customer`、`session.token`，以及授权快照 `licenses` / `active_license`：试用期返回试用到期时间（`is_trial=true`），激活后返回卡密授权到期时间，次数卡额外返回 `usages.remaining` 剩余次数。",
-    notes: "登录本身不校验授权是否到期，客户端可依据 `active_license.status`（active/expired/revoked/suspended）自行决定是否放行。",
+    params: "`username`✅、`password`✅、`product_code?`、`device_id?`、`device_name?`、`platform?`",
+    desc: "两种模式：①**客户端登录**（带 `product_code`）返回 `customer`、`session.token`、授权快照 `licenses` / `active_license` 和 `client{product,trial_started,device_bound,seats,active_devices}`；②**网页登录**（不带 `product_code`）只返回账号与会话，`licenses` 恒为空数组，拿不到任何授权信息。",
+    notes: "带 `product_code` 时服务端顺带做三件事：该产品没有任何授权且模块还有试用次数 → **自动开试用**（不用再调 `/trial/start`）；带 `device_id` → **自动绑定设备**（解绑过的设备重新登录也会自动回绑）；席位已满且这台设备没绑过 → 直接 **403 `SEATS_FULL`**，不发 token。",
   },
   "GET /api/v1/auth/me": {
     title: "我的账号与授权",
@@ -149,10 +149,10 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "POST /api/v1/cdks/inspect": { title: "CDK 预检", auth: "public", params: "`cdk`", desc: "查询卡密是否可用、天数、席位、模块，**不核销**。" },
   "POST /api/v1/licenses/activate": {
     title: "用 CDK 激活",
-    auth: "public",
-    params: "`cdk`✅、`device_id`（`bind_device=false` 时不需要）、`device_name?`、`platform?`、`email?`、`password?`、`name?`、`bind_device?`",
-    desc: "核销 CDK 并签发授权：返回 `license_key`（只返回一次）、`license_file`（离线验签用）、到期时间与模块。",
-    notes: "带 `email`/`password` 会自动注册或绑定账号；都不带则为匿名激活。并发下 CDK 只可能被核销一次。**网页端激活传 `bind_device=false`**：只把卡绑到账号、不占席位（设备留给客户端首次启动时绑），返回 `device_bound=false`。**席位是软件级的**：并进已有授权时取 `max(原席位, 新卡席位)`；授权全部过期后重新激活会新建授权，席位按新卡从默认 1 起算。",
+    auth: "customer",
+    params: "`cdk`✅、`device_id`（`bind_device=false` 时不需要）、`device_name?`、`platform?`、`bind_device?`",
+    desc: "**必须登录**（未登录返回 401 `LOGIN_REQUIRED`，匿名激活已取消）。核销 CDK 并签发授权：返回 `license_key`（只返回一次）、`license_file`（离线验签用）、到期时间与模块。",
+    notes: "并发下 CDK 只可能被核销一次。**试用接续**：同产品下试用还没到期的模块，正式授权的开始时间 = 试用结束时间，再往后加卡内时长；被覆盖的试用模块立即结束，全部覆盖时试用授权直接作废。**网页端激活传 `bind_device=false`**：只把卡绑到账号、不占席位。**席位是软件级的**：并进已有授权时取 `max(原席位, 新卡席位)`；授权全部过期后重新激活会新建授权，席位按新卡从默认 1 起算（过期授权不再占席位）。",
   },
   "POST /api/v1/licenses/heartbeat": {
     title: "心跳续期",
@@ -471,7 +471,8 @@ for (const [key, extra] of Object.entries(EXTRA_DOCS)) {
 }
 
 export function buildApiDocs(): ApiDocs {
-  const routes = listRoutes().filter((r) => r.method !== "ANY");
+  // 对外文档只讲客户端接口：管理接口（/admin/api/*）不出现在页面上
+  const routes = listRoutes().filter((r) => r.method !== "ANY" && !r.path.startsWith("/admin/"));
   const missing: string[] = [];
   const buckets = new Map<string, ApiDocEndpoint[]>();
 
@@ -706,7 +707,7 @@ export function renderDocsPage(docs: ApiDocs, baseUrl: string): string {
       <table class="offline-table">
         <thead><tr><th>步骤</th><th>调用</th><th>说明</th></tr></thead>
         <tbody>
-          <tr><td>1</td><td><code>POST /api/v1/auth/register</code></td><td>(可选) 注册客户账号；不注册也能激活，但拿不到客户中心能力</td></tr>
+          <tr><td>1</td><td><code>POST /api/v1/auth/register</code></td><td>用「用户名 + 密码」注册；**激活前必须登录**</td></tr>
           <tr><td>2</td><td><code>POST /api/v1/cdks/inspect</code></td><td>(可选) 预检卡密：看产品、模块、时长、是否可用，不核销</td></tr>
           <tr><td>3</td><td><code>POST /api/v1/licenses/activate</code></td><td>用 CDK 激活，<b>必须联网一次</b>；可用 <code>module_ids</code> 只开通部分模块。返回 <code>license_file</code>（离线许可证）+ <code>license_key</code>（本地保存）</td></tr>
           <tr><td>4</td><td>本地验签</td><td>每次启动用内置公钥验签 <code>license_file</code>，完全离线（详见下方「离线验证使用说明」）</td></tr>

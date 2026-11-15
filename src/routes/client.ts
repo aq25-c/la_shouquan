@@ -42,6 +42,8 @@ import {
   createCustomer,
   findCustomerByEmail,
   findCustomerById,
+  findCustomerByLogin,
+  findCustomerByUsername,
   revokeSessionsFor,
   touchCustomerLogin,
   updateCustomer,
@@ -55,11 +57,14 @@ import {
 } from "../store/trials.ts";
 import {
   activeDeviceCount,
+  activeLicensesForProduct,
+  seatPool,
   seatUsageForProduct,
   addLicenseModuleIds,
   applyModuleTerms,
   findModuleTermConflicts,
   recomputeLicenseExpiry,
+  endTrialModules,
   setModuleTerm,
   consumeModuleUsage,
   consumeUsage,
@@ -82,6 +87,7 @@ import {
   moduleIdsOf,
   releaseDevice,
   releaseAllDevices,
+  revokeLicense,
   rotateLicenseKey,
   touchDevice,
   touchLicenseHeartbeat,
@@ -93,15 +99,96 @@ import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
 import { isEmail, normalizeEmail } from "../util.ts";
 
-const SERVER_VERSION = "2.22.5";
+const SERVER_VERSION = "2.23.0";
 
-function customerView(customer: { id: string; email: string | null; name: string | null; created_at: string }) {
+function customerView(customer: {
+  id: string;
+  username?: string | null;
+  email: string | null;
+  name: string | null;
+  created_at: string;
+}) {
   return {
     id: customer.id,
+    username: customer.username ?? null,
     email: customer.email,
     name: customer.name,
     created_at: customer.created_at,
   };
+}
+
+/** 用户名规则：3-20 位字母/数字/下划线（老数据里的邮箱形态也放行，避免登不上） */
+function isValidUsername(raw: string): boolean {
+  const s = raw.trim();
+  if (s.length < 3 || s.length > 64) return false;
+  return /^[A-Za-z0-9_.@-]+$/.test(s) && !s.includes(" ");
+}
+
+/**
+ * 首次登录软件时自动开试用：
+ * 该产品一个授权都没有、且模块还有试用次数 → 直接建试用授权并绑定当前设备。
+ */
+function autoStartTrial(
+  customer: { id: string; username?: string | null; email: string | null },
+  product: { id: string; code: string; name: string; status: string },
+  device: { deviceId?: string | null; deviceName?: string | null; platform?: string | null; ip: string | null },
+): LicenseRow | null {
+  const eligible = trialModulesForProduct(product.id);
+  if (!eligible.length) return null;
+  const picked = eligible.filter(({ module }) => canStartModuleTrial(customer.id, module.id).ok);
+  if (!picked.length) return null;
+
+  const key = generateLicenseKey();
+  const first = picked[0].config;
+  const license = withTx(() => {
+    const row = createLicense({
+      customerId: customer.id,
+      productId: product.id,
+      cdkId: null,
+      moduleIds: [],
+      seats: first.seats,
+      days: first.days,
+      termType: (first.mode === "count" ? "count" : "day") as "count" | "day",
+      termValue: first.value,
+      offlineGraceDays: first.offline_grace_days ?? undefined,
+      keyHash: sha256hex(key),
+      note: `自动试用 ${picked.map((p) => p.module.code).join("+")}`,
+      kind: "trial",
+      source: "trial",
+    });
+    addLicenseModuleIds(row.id, picked.map((p) => p.module.id));
+    for (const p of picked) {
+      setModuleTerm(row.id, p.module.id, p.config.mode === "count" ? "count" : "day", p.config.value);
+    }
+    return recomputeLicenseExpiry(row.id) ?? row;
+  });
+
+  if (device.deviceId) {
+    upsertDevice({
+      licenseId: license.id,
+      deviceId: device.deviceId,
+      deviceName: device.deviceName ?? null,
+      platform: device.platform ?? null,
+      ip: device.ip,
+    });
+  }
+
+  audit({
+    actorType: "customer",
+    actorId: customer.id,
+    actorLabel: customer.username ?? customer.email ?? customer.id,
+    action: "license.trial_start",
+    targetType: "license",
+    targetId: license.id,
+    ip: device.ip,
+    detail: {
+      product: product.code,
+      modules: picked.map((p) => p.module.code),
+      auto: true,
+      device_id: device.deviceId ?? null,
+    },
+  });
+  return license;
 }
 
 /** 客户会话（注册/登录后在本次响应里返回 token，客户端自行保存） */
@@ -208,23 +295,32 @@ export function registerClientRoutes(): void {
   /* ---------------------------- 账号 ---------------------------- */
 
   post("/api/v1/auth/register", async (ctx) => {
-    const email = normalizeEmail(needStr(ctx, "email", 190));
+    // v17：只用「用户名 + 密码」，邮箱可选（传了也存，但登录不再依赖）
+    const raw = (bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 }) ?? "").trim();
     const password = needStr(ctx, "password", 200);
     const name = bodyStr(ctx, "name", { max: 120 });
 
-    if (!isEmail(email)) throw badRequestEmail();
+    if (!isValidUsername(raw)) {
+      throw badRequest("用户名 3-20 位，只能用字母、数字、下划线", "INVALID_USERNAME", { field: "username" });
+    }
     if (password.length < 6) {
       throw conflict("密码至少 6 位", "WEAK_PASSWORD");
     }
-    if (findCustomerByEmail(email)) {
-      throw conflict("该邮箱已注册，请直接登录", "EMAIL_TAKEN");
+    if (findCustomerByUsername(raw)) {
+      throw conflict("该用户名已被注册，请换一个", "USERNAME_TAKEN");
     }
     const passwordHash = await hashPassword(password);
-    const customer = createCustomer({ email, passwordHash, name });
+    // 用户名里带 @ 时顺手当邮箱存一份，历史数据和导出不受影响
+    const customer = createCustomer({
+      username: raw,
+      email: raw.includes("@") ? normalizeEmail(raw) : null,
+      passwordHash,
+      name,
+    });
     audit({
       actorType: "customer",
       actorId: customer.id,
-      actorLabel: email,
+      actorLabel: raw,
       action: "customer.register",
       targetType: "customer",
       targetId: customer.id,
@@ -239,37 +335,122 @@ export function registerClientRoutes(): void {
   });
 
   post("/api/v1/auth/login", async (ctx) => {
-    const email = normalizeEmail(needStr(ctx, "email", 190));
+    const identifier = (bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 }) ?? "").trim();
+    if (!identifier) throw badRequest("请输入用户名", "MISSING_FIELD", { field: "username" });
     const password = needStr(ctx, "password", 200);
-    const customer = findCustomerByEmail(email);
+    const customer = findCustomerByLogin(identifier);
     if (!customer || !customer.password_hash) {
-      throw unauthorized("邮箱或密码不正确", "INVALID_CREDENTIALS");
+      throw unauthorized("用户名或密码不正确", "INVALID_CREDENTIALS");
     }
     if (!(await verifyPassword(password, customer.password_hash))) {
       audit({
         actorType: "anonymous",
-        actorLabel: email,
+        actorLabel: identifier,
         action: "customer.login_failed",
         ip: ctx.ip,
       });
-      throw unauthorized("邮箱或密码不正确", "INVALID_CREDENTIALS");
+      throw unauthorized("用户名或密码不正确", "INVALID_CREDENTIALS");
     }
     if (customer.status !== "active") {
       throw forbidden("账号已被停用，请联系服务商", "CUSTOMER_DISABLED");
     }
+
+    /* ---- 客户端登录（带 product_code）：自动试用 + 自动绑设备 + 席位校验 ---- */
+    const productCode = bodyStr(ctx, "product_code", { max: 64 });
+    const deviceId = bodyStr(ctx, "device_id", { max: 190 });
+    const deviceName = bodyStr(ctx, "device_name", { max: 190 });
+    const platform = bodyStr(ctx, "platform", { max: 64 });
+
+    let clientInfo:
+      | {
+          product: { code: string; name: string };
+          trial_started: boolean;
+          device_bound: boolean;
+          seats: number;
+          active_devices: number;
+        }
+      | null = null;
+
+    if (productCode) {
+      const product = findProductByCode(productCode);
+      if (!product) throw notFound("产品不存在", "PRODUCT_NOT_FOUND");
+      if (product.status !== "active") throw conflict("该产品当前不可用", "PRODUCT_DISABLED");
+
+      // 该设备是否已经绑在这个产品上（已绑就不算新占席位）
+      const boundAlready = deviceId
+        ? activeLicensesForProduct(customer.id, product.id).some((lic) =>
+            listDevices(lic.id).some((d) => d.device_id === deviceId && d.status === "active"),
+          )
+        : false;
+
+      let licenses = activeLicensesForProduct(customer.id, product.id);
+      let trialStarted = false;
+      if (!licenses.length) {
+        // 首次登录该软件：有试用配置就直接开始试用，不用再调试用接口
+        const trial = autoStartTrial(customer, product, { deviceId, deviceName, platform, ip: ctx.ip });
+        if (trial) {
+          licenses = activeLicensesForProduct(customer.id, product.id);
+          trialStarted = true;
+        }
+      }
+
+      // 席位满员：没绑过的设备直接登录失败（刚自动开试用时设备已绑上，要重新判断）
+      const boundNow = deviceId
+        ? activeLicensesForProduct(customer.id, product.id).some((lic) =>
+            listDevices(lic.id).some((d) => d.device_id === deviceId && d.status === "active"),
+          )
+        : false;
+      const pool = seatPool(customer.id, product.id);
+      if (deviceId && !boundNow && pool.seats > 0 && pool.active_devices >= pool.seats) {
+        throw forbidden(
+          `席位已满（${pool.seats} 台，已占用 ${pool.active_devices} 台），请先在其它设备上退出或解绑后再登录`,
+          "SEATS_FULL",
+        );
+      }
+
+      // 登录即绑定：解绑过的设备重新登录也会自动回绑（只要席位没满）
+      let deviceBound = false;
+      if (deviceId && licenses.length) {
+        for (const lic of licenses) {
+          if (lic.status !== "active") continue;
+          const has = listDevices(lic.id).some((d) => d.device_id === deviceId);
+          const usage = seatPool(customer.id, product.id);
+          if (!has && usage.seats > 0 && usage.active_devices >= usage.seats) break;
+          upsertDevice({ licenseId: lic.id, deviceId, deviceName, platform, ip: ctx.ip });
+          deviceBound = true;
+        }
+      }
+
+      const after = seatPool(customer.id, product.id);
+      clientInfo = {
+        product: { code: product.code, name: product.name },
+        trial_started: trialStarted,
+        device_bound: deviceBound,
+        seats: after.seats,
+        active_devices: after.active_devices,
+      };
+    }
+
     touchCustomerLogin(customer.id);
     audit({
       actorType: "customer",
       actorId: customer.id,
-      actorLabel: email,
+      actorLabel: customer.username ?? customer.email ?? customer.id,
       action: "customer.login",
       ip: ctx.ip,
+      detail: productCode ? { product: productCode, device_id: deviceId ?? null } : undefined,
     });
-    return ok({
+
+    const base = {
       customer: customerView(customer),
       session: sessionPayload(ctx, customer.id),
-      ...licenseSnapshot(customer.id),
-    });
+    };
+    // 只有客户端（带 product_code）才返回授权信息；网页登录拿不到任何授权
+    return ok(
+      productCode
+        ? { ...base, ...licenseSnapshot(customer.id), client: clientInfo }
+        : { ...base, licenses: [], active_license: null, client: null },
+    );
   });
 
   get("/api/v1/auth/me", (ctx) => {
@@ -644,6 +825,11 @@ export function registerClientRoutes(): void {
   /* ---------------------------- 激活 ---------------------------- */
 
   post("/api/v1/licenses/activate", async (ctx) => {
+    // 必须先登录：匿名激活一律拒绝（先判身份，再做参数校验）
+    const signedInFirst = currentCustomer(ctx);
+    if (!signedInFirst) {
+      throw unauthorized("请先登录账号再激活，激活码不支持匿名使用", "LOGIN_REQUIRED");
+    }
     const cdkInput = needStr(ctx, "cdk", 64);
     // bind_device=false：网页端激活只把卡绑到账号，不占席位（设备留给客户端之后绑）
     const bindDevice = ctx.body.bind_device !== false;
@@ -680,52 +866,27 @@ export function registerClientRoutes(): void {
       throw badRequest("请至少勾选一个模块", "MISSING_FIELD", { field: "module_ids" });
     }
 
-    /* --- 账号归属：先做异步校验（scrypt），再进事务做同步写入 --- */
-    type Plan =
-      | { kind: "existing"; customerId: string }
-      | { kind: "new"; email: string | null; passwordHash: string | null; name: string | null };
+    if (signedInFirst.status !== "active") throw forbidden("账号已被停用", "CUSTOMER_DISABLED");
+    const customerId = signedInFirst.id;
 
-    let plan: Plan;
-    const signedIn = currentCustomer(ctx);
-    if (signedIn) {
-      if (signedIn.status !== "active") throw forbidden("账号已被停用", "CUSTOMER_DISABLED");
-      plan = { kind: "existing", customerId: signedIn.id };
-    } else {
-      const emailRaw = bodyStr(ctx, "email", { max: 190 });
-      const password = bodyStr(ctx, "password", { max: 200 });
-      const name = bodyStr(ctx, "name", { max: 120 });
-      if (emailRaw) {
-        const email = normalizeEmail(emailRaw);
-        if (!isEmail(email)) throw badRequestEmail();
-        const existing = findCustomerByEmail(email);
-        if (existing) {
-          if (existing.status !== "active") throw forbidden("账号已被停用", "CUSTOMER_DISABLED");
-          if (!password) throw unauthorized("该邮箱已注册，请提供密码或先登录", "PASSWORD_REQUIRED");
-          if (!existing.password_hash || !(await verifyPassword(password, existing.password_hash))) {
-            throw unauthorized("邮箱或密码不正确", "INVALID_CREDENTIALS");
-          }
-          touchCustomerLogin(existing.id);
-          plan = { kind: "existing", customerId: existing.id };
-        } else {
-          if (!password || password.length < 6) throw conflict("新账号密码至少 6 位", "WEAK_PASSWORD");
-          plan = { kind: "new", email, passwordHash: await hashPassword(password), name };
-        }
-      } else {
-        // 匿名激活：建一条不可登录的客户记录，后续可用 CDK 号找服务商迁移
-        plan = { kind: "new", email: null, passwordHash: null, name: name ?? "匿名激活" };
+    /* --- 试用接续：同产品未过期的试用模块，正式授权从试用结束开始算 --- */
+    const trialBases: Record<string, number> = {};
+    const trialLicenses = listLicensesByCustomer(customerId).filter(
+      (l) => l.product_id === cdk.product_id && l.kind === "trial" && l.status === "active",
+    );
+    for (const t of trialLicenses) {
+      if (!t.expires_at) continue;
+      const tMs = Date.parse(t.expires_at);
+      if (!Number.isFinite(tMs) || tMs <= Date.now()) continue;
+      for (const lm of listLicenseModules(t.id)) {
+        if (!activeModuleIds.includes(lm.module_id) || !lm.expires_at) continue;
+        const ms = Date.parse(lm.expires_at);
+        if (Number.isFinite(ms) && ms > Date.now()) trialBases[lm.module_id] = ms;
       }
     }
 
     let licenseKey = generateLicenseKey();
     const outcome = withTx(() => {
-      const customerId =
-        plan.kind === "existing"
-          ? plan.customerId
-          : createCustomer({
-              email: plan.email,
-              passwordHash: plan.passwordHash,
-              name: plan.name,
-            }).id;
 
       const newTermType = (cdk.term_type ?? "day") as "hour" | "day" | "month" | "year" | "count";
       const newTermValue = cdk.term_value ?? cdk.days;
@@ -776,17 +937,20 @@ export function registerClientRoutes(): void {
           license = addLicenseUsages(reusable.id, newTermValue);
         } else {
           // 逐模块算账：已有模块从原到期叠加，新模块从今天起算
+          // （试用还没到期的模块，从试用结束开始接）
           addLicenseModuleIds(reusable.id, activeModuleIds);
-          applyModuleTerms(reusable.id, activeModuleIds, newTermType, newTermValue);
+          applyModuleTerms(reusable.id, activeModuleIds, newTermType, newTermValue, trialBases);
           license = recomputeLicenseExpiry(reusable.id) ?? reusable;
         }
         merged = true;
       } else {
-        license = createLicense({
+        // 新建授权：先建空壳，再逐模块写入（试用到期的模块从试用结束起算）
+        const createdAt = Date.now();
+        const shell = createLicense({
           customerId,
           productId: cdk.product_id,
           cdkId: cdk.id,
-          moduleIds: activeModuleIds,
+          moduleIds: [],
           seats: cdk.seats,
           days: cdk.days,
           keyHash: sha256hex(licenseKey),
@@ -798,10 +962,26 @@ export function registerClientRoutes(): void {
           termType: newTermType,
           termValue: newTermValue,
         });
+        addLicenseModuleIds(shell.id, activeModuleIds);
+        for (const moduleId of activeModuleIds) {
+          setModuleTerm(
+            shell.id,
+            moduleId,
+            newTermType,
+            newTermValue,
+            trialBases[moduleId] ?? createdAt,
+          );
+        }
+        license = recomputeLicenseExpiry(shell.id) ?? shell;
       }
 
       if (!markCdkUsed(cdk.id, customerId, license.id)) {
         throw conflict("该 CDK 刚刚已被使用，请更换", "CDK_ALREADY_USED");
+      }
+      // 试用转正式：被这张卡覆盖的试用模块立即结束；全被覆盖就把试用授权作废
+      for (const t of trialLicenses) {
+        const remaining = endTrialModules(t.id, activeModuleIds);
+        if (remaining === 0) revokeLicense(t.id, "已转正式授权");
       }
       const device = bindDevice
         ? upsertDevice({
@@ -878,9 +1058,6 @@ export function registerClientRoutes(): void {
       merged: outcome.merged,
       /** false = 网页端激活，只绑账号不占席位，设备留给客户端首次启动时绑 */
       device_bound: bindDevice,
-      ...(plan.kind === "new" && plan.email
-        ? { session: sessionPayload(ctx, outcome.customerId) }
-        : {}),
     });
   });
 

@@ -15,7 +15,7 @@ let database: DatabaseSync | null = null;
  * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
  * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
  */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
 let migration: { from: number; to: number } = { from: 0, to: 0 };
@@ -425,6 +425,21 @@ ALTER TABLE agent_prices ADD COLUMN seat_ratio INTEGER NOT NULL DEFAULT 100;
  *   - cdks.paid_amount：这张卡实际花了多少钱（分），赠送/管理员生成 = 0
  *   - agent_ledger：每一笔余额变化都留痕，升级时给现有代理补一条「期初余额」
  */
+/**
+ * v17：客户账号改用「用户名 + 密码」，不再依赖邮箱
+ *   - customers.username：登录名，大小写不敏感唯一
+ *   - 老数据（如果有）用原邮箱兜底，保证还能登
+ */
+const SCHEMA_V17 = `
+ALTER TABLE customers ADD COLUMN username TEXT;
+
+UPDATE customers
+   SET username = COALESCE(NULLIF(TRIM(email), ''), 'user_' || substr(id, -8))
+ WHERE username IS NULL OR TRIM(username) = '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_username ON customers(username COLLATE NOCASE);
+`;
+
 const SCHEMA_V16 = `
 ALTER TABLE cdks ADD COLUMN paid_amount INTEGER NOT NULL DEFAULT 0;
 
@@ -558,6 +573,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 14) runMigration(db, SCHEMA_V14, 14);
   if (version < 15) runMigration(db, SCHEMA_V15, 15);
   if (version < 16) runMigration(db, SCHEMA_V16, 16);
+  if (version < 17) runMigration(db, SCHEMA_V17, 17);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

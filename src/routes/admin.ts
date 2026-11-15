@@ -125,6 +125,8 @@ import {
   findAdminByEmail,
   findAdminById,
   findCustomerByEmail,
+  findCustomerByLogin,
+  findCustomerByUsername,
   findCustomerById,
   customerBelongsToAgent,
   listAdmins,
@@ -1641,20 +1643,20 @@ export function registerAdminRoutes(): void {
     const admin = staffCtx.admin;
     // 代理不直接建客户：客户由卡密激活产生，创建后无从归属
     if (staffCtx.isAgent) throw forbidden("代理不能直接新增客户，客户请由卡密激活产生", "FORBIDDEN_AGENT_SCOPE");
-    const emailInput = bodyStr(ctx, "email", 190);
+    const usernameInput = (bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 }) ?? "").trim();
     const password = bodyStr(ctx, "password", 200);
     const name = bodyStr(ctx, "name", { max: 120 });
     const company = bodyStr(ctx, "company", { max: 190 });
     const phone = bodyStr(ctx, "phone", { max: 40 });
     const note = bodyStr(ctx, "note", { max: 1000 });
 
-    const email = emailInput ? normalizeEmail(emailInput) : null;
-    if (email && !isEmail(email)) throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
-    if (email && findCustomerByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
+    const username = usernameInput || null;
+    if (username && username.length < 3) throw badRequest("用户名至少 3 位", "INVALID_USERNAME");
+    if (username && findCustomerByUsername(username)) throw conflict("该用户名已存在", "USERNAME_TAKEN");
     if (password && password.length < 6) throw badRequest("密码至少 6 位", "WEAK_PASSWORD");
 
     const customer = createCustomer({
-      email,
+      username,
       passwordHash: password ? await hashPassword(password) : null,
       name,
       company,
@@ -1669,7 +1671,7 @@ export function registerAdminRoutes(): void {
       targetType: "customer",
       targetId: customer.id,
       ip: ctx.ip,
-      detail: { email, has_password: Boolean(password) },
+      detail: { username, has_password: Boolean(password) },
     });
     return created({ customer: { ...customer, password_hash: undefined } });
   });
@@ -1774,17 +1776,17 @@ export function registerAdminRoutes(): void {
       throw forbidden("该客户不属于你的代理", "FORBIDDEN_AGENT_SCOPE");
     }
     const patchData: Record<string, string | null> = {};
-    // v8：允许修改登录邮箱与密码（代理也能改自己名下客户的登录信息）
-    const emailInput = bodyStr(ctx, "email", 190);
-    if (emailInput !== null) {
-      const normalized = normalizeEmail(emailInput);
+    // v17：登录名是用户名；email 参数当作 username 兼容旧界面
+    const usernameInput = bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 });
+    if (usernameInput !== null) {
+      const normalized = usernameInput.trim();
       if (!normalized) {
-        patchData.email = null;
+        patchData.username = null;
       } else {
-        if (!isEmail(normalized)) throw badRequest("邮箱格式不正确", "INVALID_FIELD");
-        const exists = findCustomerByEmail(normalized);
-        if (exists && exists.id !== id) throw conflict("该邮箱已被其它客户使用", "EMAIL_TAKEN");
-        patchData.email = normalized;
+        if (normalized.length < 3) throw badRequest("用户名至少 3 位", "INVALID_FIELD");
+        const exists = findCustomerByUsername(normalized);
+        if (exists && exists.id !== id) throw conflict("该用户名已被其它客户使用", "USERNAME_TAKEN");
+        patchData.username = normalized;
       }
     }
     const passwordInput = bodyStr(ctx, "password", 200);
@@ -2310,9 +2312,9 @@ export function registerAdminRoutes(): void {
     const customerIdInput = bodyStr(ctx, "customer_id", 64);
     const emailInput = bodyStr(ctx, "customer_email", 190);
     let customer = customerIdInput ? findCustomerById(customerIdInput) : null;
-    if (!customer && emailInput) customer = findCustomerByEmail(normalizeEmail(emailInput));
+    if (!customer && emailInput) customer = findCustomerByLogin(emailInput);
     if (!customer) {
-      throw notFound("客户不存在，请先创建客户或用邮箱开通", "CUSTOMER_NOT_FOUND");
+      throw notFound("客户不存在，请先创建客户或用用户名开通", "CUSTOMER_NOT_FOUND");
     }
 
     const moduleIds = validateModuleIds(productId, bodyStrArray(ctx, "module_ids") ?? []);

@@ -180,7 +180,7 @@ function bindAuth() {
     const email = $("#login-email").value.trim();
     const password = $("#login-password").value;
     try {
-      const data = await api("POST", "/api/v1/auth/login", { email, password });
+      const data = await api("POST", "/api/v1/auth/login", { username: email, password });
       state.token = data.session.token;
       localStorage.setItem(TOKEN_KEY, state.token);
       await enterApp();
@@ -196,7 +196,7 @@ function bindAuth() {
     const password = $("#reg-password").value;
     const name = $("#reg-name").value.trim();
     try {
-      const data = await api("POST", "/api/v1/auth/register", { email, password, ...(name ? { name } : {}) });
+      const data = await api("POST", "/api/v1/auth/register", { username: email, password, ...(name ? { name } : {}) });
       state.token = data.session.token;
       localStorage.setItem(TOKEN_KEY, state.token);
       toast("注册成功，已为你登录", "ok");
@@ -221,10 +221,10 @@ function renderApp() {
   $("#view-app").hidden = false;
 
   const c = state.customer ?? {};
-  const who = c.name || c.email || "客户";
+  const who = c.name || c.username || c.email || "客户";
   $("#header-right").innerHTML = `
-    <span class="user-chip" title="${esc(c.email ?? "")}">
-      <span class="avatar">${initials(c.name, c.email)}</span>
+    <span class="user-chip" title="${esc(c.username ?? c.email ?? "")}">
+      <span class="avatar">${initials(c.name, c.username ?? c.email)}</span>
       <span class="name">${esc(who)}</span>
     </span>
     <button class="btn btn-ghost btn-sm" id="logout" type="button">退出</button>`;
@@ -266,10 +266,10 @@ function renderLicenses() {
   const sum = data.summary ?? {};
   const account = `
     <section class="acct-card">
-      <div class="acct-avatar">${initials(c.name, c.email)}</div>
+      <div class="acct-avatar">${initials(c.name, c.username ?? c.email)}</div>
       <div class="acct-info">
-        <strong>${esc(c.name || c.email || "客户")}</strong>
-        <span>${esc(c.email ?? "")}</span>
+        <strong>${esc(c.name || c.username || c.email || "客户")}</strong>
+        <span>${esc(c.username ?? "")}</span>
         <span class="muted small">注册于 ${fmtDay(c.created_at)}</span>
       </div>
       <div class="acct-stats">

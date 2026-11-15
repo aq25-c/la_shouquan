@@ -242,6 +242,26 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 
 ---
 
+## 账号与登录（v17 起）
+
+- 客户账号只用 **用户名 + 密码**，不再需要邮箱；用户名 3–20 位字母/数字/下划线，不区分大小写、唯一
+- 后台新建客户也填用户名；留空就是不给他登录账号（仅后台代管）
+- **激活必须登录**：`POST /api/v1/licenses/activate` 匿名调用返回 401 `LOGIN_REQUIRED`；查卡密（`/cdks/inspect`）仍然允许匿名
+
+### 客户端登录（带产品）
+
+`POST /api/v1/auth/login` 带上 `product_code` + `device_id` 就是「客户端登录」，服务端顺带完成三件事：
+
+1. **自动试用**：该产品一个授权都没有、模块还有试用次数 → 直接开试用（不用再调 `/trial/start`），响应里 `client.trial_started=true`
+2. **自动绑设备**：登录即绑定；解绑过的设备重新登录会自动回绑
+3. **席位校验**：席位已满且这台设备没绑过 → 403 `SEATS_FULL`，不发 token
+
+不带 `product_code` 就是「网页登录」：只返回账号和会话，`licenses` 恒为空，拿不到任何授权信息（网页端走 `/api/v1/me/overview` 看授权）。
+
+### 试用没到期就激活
+
+同产品下试用还没到期的模块，正式授权的开始时间 = **试用结束时间**，再往后加卡内时长；被覆盖的试用模块立即结束，全部覆盖时试用授权直接作废。
+
 ## 客户端接入（三步）
 
 接口前缀 `/api/v1`，请求/响应均为 JSON。成功响应 `{"ok":true,"data":{…}}`，失败 `{"ok":false,"error":{"code":"…","message":"…"}}`。

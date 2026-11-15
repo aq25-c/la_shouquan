@@ -39,6 +39,7 @@ let licenseId = "";
 let licenseFile = "";
 let publicKeyPem = "";
 let customerToken = "";
+let buyerToken = "";
 /* 代理 / 分销 */
 let agentId = "";
 let agentCdkCodes: string[] = [];
@@ -68,6 +69,36 @@ async function api(
     json = null;
   }
   return { status: res.status, json, text };
+}
+
+/* v17：激活必须登录。带 email/password 就登录/注册后激活；完全匿名时用一个新客户 */
+let guestSeq = 0;
+async function activate(body: Json, token?: string): Promise<{ status: number; json: any; text: string }> {
+  const { email, password, ...payload } = body as Json;
+  let t = token;
+  if (!t && email && password) {
+    const login = await api("POST", "/api/v1/auth/login", { username: email, password });
+    if (login.status === 200) {
+      t = login.json.data.session.token;
+    } else {
+      const reg = await api("POST", "/api/v1/auth/register", { username: email, password });
+      t = reg.json?.data?.session?.token;
+    }
+  }
+  if (!t) {
+    guestSeq += 1;
+    const reg = await api("POST", "/api/v1/auth/register", {
+      username: `guest${guestSeq}@test.local`,
+      password: "GuestPass123",
+    });
+    t = reg.json?.data?.session?.token;
+  }
+  return api("POST", "/api/v1/licenses/activate", payload, t);
+}
+
+/* v17：客户端登录（带 product_code）才会返回授权；网页登录（不带）拿不到授权 */
+function clientLogin(body: Json) {
+  return api("POST", "/api/v1/auth/login", { product_code: "app-pro", ...body });
 }
 
 before(async () => {
@@ -192,24 +223,26 @@ test("客户注册", async () => {
   });
   assert.equal(reg.status, 201);
   assert.ok(reg.json.data.session.token);
+  buyerToken = reg.json.data.session.token;
 
   const dup = await api("POST", "/api/v1/auth/register", {
-    email: "buyer@test.local",
+    username: "buyer@test.local",
     password: "buyerPass123",
   });
   assert.equal(dup.status, 409);
-  assert.equal(dup.json.error.code, "EMAIL_TAKEN");
+  assert.equal(dup.json.error.code, "USERNAME_TAKEN");
 });
 
 test("激活 CDK：签发可离线验签的许可证文件", async () => {
-  const act = await api("POST", "/api/v1/licenses/activate", {
-    cdk: codes[0],
-    device_id: "DEV-A",
-    device_name: "测试工作站",
-    platform: "win32",
-    email: "buyer@test.local",
-    password: "buyerPass123",
-  });
+  const act = await activate(
+    {
+      cdk: codes[0],
+      device_id: "DEV-A",
+      device_name: "测试工作站",
+      platform: "win32",
+    },
+    buyerToken,
+  );
   assert.equal(act.status, 201);
   licenseKey = act.json.data.license_key;
   licenseId = act.json.data.license.id;
@@ -261,7 +294,7 @@ test("激活 CDK：签发可离线验签的许可证文件", async () => {
 });
 
 test("同一个 CDK 不能二次激活", async () => {
-  const again = await api("POST", "/api/v1/licenses/activate", {
+  const again = await activate( {
     cdk: codes[0],
     device_id: "DEV-A",
   });
@@ -415,7 +448,7 @@ test("恢复授权后心跳重新通过", async () => {
 });
 
 test("客户自助查看授权与解绑设备", async () => {
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "buyer@test.local",
     password: "buyerPass123",
   });
@@ -521,12 +554,12 @@ test("概览统计与审计日志", async () => {
 });
 
 test("参数校验与错误结构", async () => {
-  const missing = await api("POST", "/api/v1/licenses/activate", { cdk: "AAAA-BBBB-CCCC-DDDD" });
+  const missing = await activate( { cdk: "AAAA-BBBB-CCCC-DDDD" });
   assert.equal(missing.status, 400);
   assert.equal(missing.json.ok, false);
   assert.equal(missing.json.error.code, "MISSING_FIELD");
 
-  const notFoundCdk = await api("POST", "/api/v1/licenses/activate", {
+  const notFoundCdk = await activate( {
     cdk: "AAAA-BBBB-CCCC-DDDD",
     device_id: "DEV-X",
   });
@@ -643,7 +676,7 @@ test("代理：CDK 批次归属代理并携带结算单价", async () => {
 });
 
 test("代理：激活时继承代理与单价，并按代理聚合统计", async () => {
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: agentCdkCodes[0],
     device_id: "CHAN-DEV-1",
     device_name: "代理测试机",
@@ -752,14 +785,14 @@ test("客户：后台新增客户", async () => {
     adminToken,
   );
   assert.equal(created.status, 201);
-  assert.equal(created.json.data.customer.email, "admin-created@test.local");
+  assert.equal(created.json.data.customer.username, "admin-created@test.local");
   assert.equal(created.json.data.customer.company, "某某公司");
   assert.equal(created.json.data.customer.password_hash, undefined, "响应不应泄露密码哈希");
   adminCreatedCustomerId = created.json.data.customer.id;
 
-  const dup = await api("POST", "/admin/api/customers", { email: "admin-created@test.local", name: "重复" }, adminToken);
+  const dup = await api("POST", "/admin/api/customers", { username: "admin-created@test.local", name: "重复" }, adminToken);
   assert.equal(dup.status, 409);
-  assert.equal(dup.json.error.code, "EMAIL_TAKEN");
+  assert.equal(dup.json.error.code, "USERNAME_TAKEN");
 
   const weak = await api("POST", "/admin/api/customers", { email: "weak-pwd@test.local", password: "123" }, adminToken);
   assert.equal(weak.status, 400);
@@ -767,10 +800,10 @@ test("客户：后台新增客户", async () => {
 
   const anon = await api("POST", "/admin/api/customers", { name: "匿名线下客户" }, adminToken);
   assert.equal(anon.status, 201);
-  assert.equal(anon.json.data.customer.email, null, "允许创建无邮箱的匿名客户");
+  assert.equal(anon.json.data.customer.username, null, "允许创建无账号的匿名客户");
 
   const list = await api("GET", "/admin/api/customers?q=admin-created", undefined, adminToken);
-  assert.ok(list.json.data.items.some((c: Json) => c.email === "admin-created@test.local"));
+  assert.ok(list.json.data.items.some((c: Json) => c.username === "admin-created@test.local"));
 });
 
 test("客户：按客户批量调整到期时间", async () => {
@@ -1040,9 +1073,14 @@ test("API 文档公开可访问（无需登录）", async () => {
   // JSON：无需 token
   const json = await api("GET", "/api/v1/docs");
   assert.equal(json.status, 200, "文档 JSON 不应要求鉴权");
-  assert.ok(json.json.data.total >= 60, "应包含全部已注册路由");
+  // v17：对外文档只列客户端接口，管理接口不再出现
+  assert.ok(json.json.data.total >= 20, "应包含客户端接口");
+  assert.ok(
+    json.json.data.groups.every((g: Json) => g.endpoints.every((e: Json) => !e.path.startsWith("/admin/"))),
+    "文档里不应出现管理接口",
+  );
   assert.equal(json.json.data.missing.length, 0, "所有路由都应有说明");
-  assert.ok(json.json.data.groups.length >= 10);
+  assert.ok(json.json.data.groups.length >= 4);
 
   // 网页版：无需登录，返回完整 HTML
   const page = await fetch(`${base}/docs`);
@@ -1052,7 +1090,7 @@ test("API 文档公开可访问（无需登录）", async () => {
   assert.ok(html.toLowerCase().startsWith("<!doctype html>"));
   assert.ok(html.includes("API 文档"));
   assert.ok(html.includes("/api/v1/licenses/activate"), "页面应列出客户端接口");
-  assert.ok(html.includes("/admin/api/licenses"), "页面应列出管理接口（全部公开）");
+  assert.ok(!html.includes("/admin/api/"), "管理接口不应出现在对外文档里");
 
   // 后台端点保留，仍要求管理员 token
   const adminDocs = await api("GET", "/admin/api/docs");
@@ -1214,7 +1252,7 @@ test("次数型卡密：激活后按次消耗，用完拒绝", async () => {
   assert.equal(gen.json.data.batch.term_type, "count");
   assert.equal(gen.json.data.batch.term_value, 5);
 
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: gen.json.data.codes[0],
     device_id: "COUNT-DEV-1",
     email: "count-buyer@test.local",
@@ -1257,7 +1295,7 @@ test("按时长计费：小时卡与天卡到期精确，月卡落在合理区�
       adminToken,
     );
     assert.equal(gen.status, 201);
-    const act = await api("POST", "/api/v1/licenses/activate", {
+    const act = await activate( {
       cdk: gen.json.data.codes[0],
       device_id: `TERM-${c.type}-1`,
       email: `term-${c.type}@test.local`,
@@ -1275,7 +1313,7 @@ test("按时长计费：小时卡与天卡到期精确，月卡落在合理区�
     { product_id: productId, module_ids: [moduleIds[0]], term_type: "month", term_value: 2, count: 1, seats: 1 },
     adminToken,
   );
-  const monthAct = await api("POST", "/api/v1/licenses/activate", {
+  const monthAct = await activate( {
     cdk: monthGen.json.data.codes[0],
     device_id: "TERM-MONTH-1",
     email: "term-month@test.local",
@@ -1292,7 +1330,7 @@ test("非次数型授权调用消耗接口被拒", async () => {
     { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, seats: 1 },
     adminToken,
   );
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: gen.json.data.codes[0],
     device_id: "NONCOUNT-1",
     email: "noncount@test.local",
@@ -1374,7 +1412,7 @@ test("试用按次数模式配置生效，已购客户不能再试用", async ()
   assert.equal(patched.json.data.config.value, 3);
 
   // 已有正式授权的客户不允许再试用
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "buyer@test.local",
     password: "buyerPass123",
   });
@@ -1582,7 +1620,7 @@ test("客户登录返回实际到期时间：试用给试用期、激活给卡�
   assert.equal(started.status, 201);
 
   // 试用期内登录 → 直接返回试用到期时间
-  const trialLogin = await api("POST", "/api/v1/auth/login", {
+  const trialLogin = await clientLogin({
     email: "login-trial@test.local",
     password: "TrialLogin123",
   });
@@ -1595,7 +1633,7 @@ test("客户登录返回实际到期时间：试用给试用期、激活给卡�
   assert.ok(al.days_left >= 0 && al.days_left <= 7, `剩余天数应在 0~7，实际 ${al.days_left}`);
 
   // 2) 已通过卡密激活的客户 → 返回卡密到期时间
-  const buyerLogin = await api("POST", "/api/v1/auth/login", {
+  const buyerLogin = await clientLogin({
     email: "buyer@test.local",
     password: "buyerPass123",
   });
@@ -1615,7 +1653,7 @@ test("客户登录返回实际到期时间：试用给试用期、激活给卡�
     { product_id: productId, module_ids: [moduleIds[0]], term_type: "count", term_value: 10, count: 1, seats: 1 },
     adminToken,
   );
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: gen.json.data.codes[0],
     device_id: "LOGIN-COUNT-1",
     email: "login-count@test.local",
@@ -1623,7 +1661,7 @@ test("客户登录返回实际到期时间：试用给试用期、激活给卡�
   });
   assert.equal(act.status, 201);
 
-  const countLogin = await api("POST", "/api/v1/auth/login", {
+  const countLogin = await clientLogin({
     email: "login-count@test.local",
     password: "CountLogin123",
   });
@@ -1647,7 +1685,7 @@ test("同类型卡叠加、异类型互斥", async () => {
   );
   const [cdk1, cdk2] = gen.json.data.codes;
 
-  const act1 = await api("POST", "/api/v1/licenses/activate", {
+  const act1 = await activate( {
     cdk: cdk1,
     device_id: "STACK-1",
     email: "stack@test.local",
@@ -1658,7 +1696,7 @@ test("同类型卡叠加、异类型互斥", async () => {
   const exp1 = Date.parse(act1.json.data.expires_at);
 
   // 第二张 30 天卡：叠加到同一授权，到期从原到期日继续加
-  const act2 = await api("POST", "/api/v1/licenses/activate", {
+  const act2 = await activate( {
     cdk: cdk2,
     device_id: "STACK-1",
     email: "stack@test.local",
@@ -1677,7 +1715,7 @@ test("同类型卡叠加、异类型互斥", async () => {
     { product_id: productId, module_ids: [moduleIds[0]], term_type: "count", term_value: 5, count: 1, seats: 1 },
     adminToken,
   );
-  const bad = await api("POST", "/api/v1/licenses/activate", {
+  const bad = await activate( {
     cdk: genCount.json.data.codes[0],
     device_id: "STACK-1",
     email: "stack@test.local",
@@ -1718,7 +1756,7 @@ test("代理管自己名下客户：可见、可改资料、到期可缩短可�
 
   // 客户用它激活 → 归属该代理
   await api("POST", "/api/v1/auth/register", { email: "agent-cust@test.local", password: "AgentCust123" });
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: gen.json.data.codes[0],
     device_id: "AGENT-CUST-1",
     email: "agent-cust@test.local",
@@ -1796,7 +1834,7 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
   await api("POST", "/api/v1/auth/register", { email: "mods@test.local", password: "ModsPass123" });
 
   // ① 传了 CDK 范围外的模块 → 拒绝
-  const outside = await api("POST", "/api/v1/licenses/activate", {
+  const outside = await activate( {
     cdk: cdkA,
     device_id: "MODS-0",
     email: "mods@test.local",
@@ -1807,7 +1845,7 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
   assert.equal(outside.json.error.code, "MODULE_NOT_ALLOWED");
 
   // ② 只开通第一个模块
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: cdkA,
     device_id: "MODS-1",
     email: "mods@test.local",
@@ -1821,7 +1859,7 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
   const exp0 = act.json.data.expires_at;
 
   // ③ 登录返回模块级到期
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "mods@test.local",
     password: "ModsPass123",
   });
@@ -1858,7 +1896,7 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
   );
   assert.equal(patched.status, 200);
 
-  const relogin = await api("POST", "/api/v1/auth/login", {
+  const relogin = await clientLogin({
     email: "mods@test.local",
     password: "ModsPass123",
   });
@@ -1870,7 +1908,7 @@ test("激活可选模块子集、后台可增减（至少一个）、登录返�
   assert.ok(Math.abs(Date.parse(other.expires_at) - Date.parse(exp0)) < 2000, "未设置的模块应仍跟随授权");
 
   // ⑦ 第二个 CDK 激活（同为 30 天 / 两个模块）→ 每个模块从自己的到期时间叠加
-  const act2 = await api("POST", "/api/v1/licenses/activate", {
+  const act2 = await activate( {
     cdk: cdkB,
     device_id: "MODS-1",
     email: "mods@test.local",
@@ -1923,7 +1961,7 @@ test("逐模块叠加：已有模块累加，新模块从今天起算", async ()
   // ① 先只买模块 A（30 天）
   const genA = await gen([moduleIds[0]]);
   const cdkA = genA.json.data.codes[0];
-  const act1 = await api("POST", "/api/v1/licenses/activate", {
+  const act1 = await activate( {
     cdk: cdkA,
     device_id: "STACK-1",
     email: "stack@test.local",
@@ -1937,7 +1975,7 @@ test("逐模块叠加：已有模块累加，新模块从今天起算", async ()
   const genB = await gen([moduleIds[0], moduleIds[1]]);
   const cdkB = genB.json.data.codes[0];
   const before = Date.now();
-  const act2 = await api("POST", "/api/v1/licenses/activate", {
+  const act2 = await activate( {
     cdk: cdkB,
     device_id: "STACK-1",
     email: "stack@test.local",
@@ -1987,7 +2025,7 @@ test("逐模块到期：一个模块过期不影响另一个", async () => {
   assert.equal(patched.status, 200);
 
   // 客户端登录：B 不可用，A 仍可用
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "stack@test.local",
     password: "StackPass123",
   });
@@ -2040,7 +2078,7 @@ test("远程变量：未登录 401，登录后按产品读取文本/图片/JSON"
   assert.equal(bad.status, 400);
 
   // ④ 客户登录后可读，json 已解析成对象
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "buyer@test.local",
     password: "buyerPass123",
   });
@@ -2069,7 +2107,7 @@ test("模块说明：后台可改，客户端登录后能读到", async () => {
   );
   assert.equal(patched.status, 200);
 
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "buyer@test.local",
     password: "buyerPass123",
   });
@@ -2089,7 +2127,7 @@ test("模块说明：后台可改，客户端登录后能读到", async () => {
     { product_id: productId, module_ids: [moduleIds[0]], days: 30, count: 1, seats: 1 },
     adminToken,
   );
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: gen.json.data.codes[0],
     device_id: "DESC-1",
     email: "buyer@test.local",
@@ -2245,7 +2283,7 @@ test("CDK 修改与删除：未激活可改可删（模块至少一个），已�
   assert.equal(gone.status, 404, "删除后应查不到");
 
   // 激活第二张卡后，修改/删除都要被拒
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk: cdkB,
     device_id: "CDK-EDIT-1",
     email: "cdkedit@test.local",
@@ -2424,7 +2462,7 @@ test("删除客户：有有效授权时拒绝，全部过期后硬删除并留�
     password: "PurgePass123",
     name: "待删除客户",
   });
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk,
     device_id: "PURGE-1",
     email: "purge@test.local",
@@ -2433,7 +2471,7 @@ test("删除客户：有有效授权时拒绝，全部过期后硬删除并留�
   assert.equal(act.status, 201);
   const licenseId = act.json.data.license.id;
 
-  const session = await api("POST", "/api/v1/auth/login", {
+  const session = await clientLogin({
     email: "purge@test.local",
     password: "PurgePass123",
   });
@@ -2506,8 +2544,8 @@ test("并卡时的席位：取较大值，续费不会把席位翻倍", async ()
     assert.equal(r.status, 201);
     return r.json.data.codes[0];
   };
-  const activate = async (cdk: string, deviceId: string) =>
-    api("POST", "/api/v1/licenses/activate", {
+  const activateSeat = async (cdk: string, deviceId: string) =>
+    activate({
       cdk,
       device_id: deviceId,
       email: "seats@test.local",
@@ -2520,20 +2558,20 @@ test("并卡时的席位：取较大值，续费不会把席位翻倍", async ()
     name: "席位测试",
   });
 
-  const first = await activate(await mint(1), "SEAT-1");
+  const first = await activateSeat(await mint(1), "SEAT-1");
   assert.equal(first.status, 201);
   assert.equal(first.json.data.license.seats, 1);
   const licenseId = first.json.data.license.id;
 
   // 买了一张 3 席位的卡，并进同一条授权 → 席位数要涨上去
-  const second = await activate(await mint(3), "SEAT-2");
+  const second = await activateSeat(await mint(3), "SEAT-2");
   assert.equal(second.status, 201);
   assert.equal(second.json.data.license.id, licenseId, "应并进同一条授权");
   assert.equal(second.json.data.license.seats, 3, "新卡席位更大时应生效");
   assert.equal(second.json.data.license_payload.seat, 3, "签发的许可证里席位也要是 3");
 
   // 续费买 1 席位 → 席位保持 3，不翻倍也不缩水
-  const third = await activate(await mint(1), "SEAT-3");
+  const third = await activateSeat(await mint(1), "SEAT-3");
   assert.equal(third.status, 201);
   assert.equal(third.json.data.license.seats, 3, "续费不应降低席位");
 
@@ -2562,7 +2600,7 @@ test("软件参数接口：客户会话和许可证密钥都能取", async () =>
     password: "VarsPass123",
     name: "参数测试",
   });
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk,
     device_id: "VARS-1",
     email: "vars@test.local",
@@ -2572,7 +2610,7 @@ test("软件参数接口：客户会话和许可证密钥都能取", async () =>
   const licenseKey = act.json.data.license_key;
 
   // ① 客户会话（老用法）
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "vars@test.local",
     password: "VarsPass123",
   });
@@ -2619,8 +2657,8 @@ test("席位：模块里不能设，全部过期后按新卡从默认值起算",
     );
     return r.json.data.codes[0];
   };
-  const activate = async (cdk: string, deviceId: string) =>
-    api("POST", "/api/v1/licenses/activate", {
+  const activateExpire = async (cdk: string, deviceId: string) =>
+    activate({
       cdk,
       device_id: deviceId,
       email: "expire-seat@test.local",
@@ -2634,7 +2672,7 @@ test("席位：模块里不能设，全部过期后按新卡从默认值起算",
   });
 
   // ② 先买 3 席位
-  const first = await activate(await mint(3), "EXP-1");
+  const first = await activateExpire(await mint(3), "EXP-1");
   assert.equal(first.status, 201);
   assert.equal(first.json.data.license.seats, 3);
   const firstId = first.json.data.license.id;
@@ -2645,7 +2683,7 @@ test("席位：模块里不能设，全部过期后按新卡从默认值起算",
   assert.equal(expired.status, 200);
 
   // ④ 过期后再激活 1 席位的卡 → 新建授权，席位从卡上的 1 起算，不继承 3
-  const second = await activate(await mint(1), "EXP-1");
+  const second = await activateExpire(await mint(1), "EXP-1");
   assert.equal(second.status, 201);
   assert.notEqual(second.json.data.license.id, firstId, "过期后应新建一条授权");
   assert.equal(second.json.data.license.seats, 1, "全部过期后席位按新卡起算（默认 1）");
@@ -2666,7 +2704,7 @@ test("过期后设备自动解绑：席位释放，心跳仍按「已过期」�
     password: "SweepPass123",
     name: "到期解绑",
   });
-  const act = await api("POST", "/api/v1/licenses/activate", {
+  const act = await activate( {
     cdk,
     device_id: "SWEEP-1",
     email: "sweep@test.local",
@@ -2729,7 +2767,7 @@ test("网页激活：bind_device=false 只绑账号，不占席位；门户总�
   const token = reg.json.data.session.token;
 
   // 登录状态下激活，且不绑设备
-  const act = await api("POST", "/api/v1/licenses/activate", { cdk, bind_device: false }, token);
+  const act = await activate( { cdk, bind_device: false }, token);
   assert.equal(act.status, 201);
   assert.equal(act.json.data.device_bound, false, "网页激活应标记未绑设备");
   assert.ok(act.json.data.license_key, "必须返回密钥，客户端之后要靠它绑设备");
@@ -2777,7 +2815,7 @@ test("客户自助改密码：校验原密码，改完其它会话失效", async
   const tokenA = reg.json.data.session.token;
 
   // 另一台设备登录
-  const login = await api("POST", "/api/v1/auth/login", {
+  const login = await clientLogin({
     email: "pwchange@test.local",
     password: "OldPass12345",
   });
@@ -2825,12 +2863,12 @@ test("客户自助改密码：校验原密码，改完其它会话失效", async
   assert.equal(meNew.status, 200, "新 token 应可用");
 
   // 旧密码登不进来，新密码可以
-  const oldLogin = await api("POST", "/api/v1/auth/login", {
+  const oldLogin = await clientLogin({
     email: "pwchange@test.local",
     password: "OldPass12345",
   });
   assert.equal(oldLogin.status, 401);
-  const newLogin = await api("POST", "/api/v1/auth/login", {
+  const newLogin = await clientLogin({
     email: "pwchange@test.local",
     password: "NewPass12345",
   });
@@ -3083,7 +3121,7 @@ test("代理首页：余额、卡密统计与近期到期", async () => {
     adminToken,
   );
   assert.equal(gen.status, 201);
-  await api("POST", "/api/v1/licenses/activate", { cdk: gen.json.data.codes[0], bind_device: false }, (
+  await activate( { cdk: gen.json.data.codes[0], bind_device: false }, (
     await api("POST", "/api/v1/auth/register", { email: "home-buyer@test.local", password: "HomeBuyer123" })
   ).json.data.session.token);
 
@@ -3118,7 +3156,7 @@ test("调整到期：超上限会被夹取，并留下「加/减了几天 + 原�
   });
   const token = reg.json.data.session.token;
   const buyerId = reg.json.data.customer.id;
-  const act = await api("POST", "/api/v1/licenses/activate", { cdk: code, bind_device: false }, token);
+  const act = await activate( { cdk: code, bind_device: false }, token);
   assert.equal(act.status, 201);
   const licId = act.json.data.license.id;
   const cap = act.json.data.license.max_expires_at;
@@ -3212,8 +3250,8 @@ test("代理端：客户授权列表设备数按共享池统一，且能看日�
   const buyerToken = reg.json.data.session.token;
   const buyerId = reg.json.data.customer.id;
 
-  const a1 = await api("POST", "/api/v1/licenses/activate", { cdk: mk.json.data.codes[0], bind_device: false }, buyerToken);
-  const a2 = await api("POST", "/api/v1/licenses/activate", { cdk: mk.json.data.codes[1], bind_device: false }, buyerToken);
+  const a1 = await activate( { cdk: mk.json.data.codes[0], bind_device: false }, buyerToken);
+  const a2 = await activate( { cdk: mk.json.data.codes[1], bind_device: false }, buyerToken);
   await api("POST", `/admin/api/licenses/${a1.json.data.license.id}/devices`, { device_id: "POOL-DEV-1" }, adminToken);
 
   // 客户详情：两条授权的设备数都按「同软件共享池」给，显示一致
@@ -3451,7 +3489,7 @@ test("批量操作：卡密批量改时长/模块，代理默认无权限", asyn
   );
   const [c1, c2, c3] = gen.json.data.codes;
   const reg = await api("POST", "/api/v1/auth/register", { email: "batch-buyer@test.local", password: "BatchBuyer123" });
-  await api("POST", "/api/v1/licenses/activate", { cdk: c3, bind_device: false }, reg.json.data.session.token);
+  await activate( { cdk: c3, bind_device: false }, reg.json.data.session.token);
 
   const list = await api("GET", `/admin/api/cdks?agent_id=${agId}&page_size=50`, undefined, adminToken);
   const idOf = (code: string) => list.json.data.items.find((c: Json) => c.code === code).id;
@@ -3537,7 +3575,7 @@ test("批量操作：授权批量延期与改模块，代理超上限会失败�
   );
   const reg = await api("POST", "/api/v1/auth/register", { email: "batchlic@test.local", password: "BatchLic123" });
   const token = reg.json.data.session.token;
-  const act = await api("POST", "/api/v1/licenses/activate", { cdk: cdk.json.data.codes[0], bind_device: false }, token);
+  const act = await activate( { cdk: cdk.json.data.codes[0], bind_device: false }, token);
   const licIds: string[] = [act.json.data.license.id];
 
   // 第二条授权用「手动开通」造（同产品会被并卡，这里要的是两条独立的授权）
@@ -3998,4 +4036,182 @@ test("代理的赠送卡（实付 0）不能改，只能删除，删了不退钱
   const del = await api("DELETE", `/admin/api/cdks/${card.id}`, undefined, adminToken);
   assert.equal(del.status, 200);
   assert.equal(del.json.data.refund, 0, "赠送卡删了不退钱");
+});
+
+
+/* ==================== v17：用户名账号 / 自动试用 / 登录绑机 / 席位 ==================== */
+
+test("v17 用户名注册与登录：不需要邮箱", async () => {
+  const reg = await api("POST", "/api/v1/auth/register", { username: "zhangsan", password: "Passw0rd!" });
+  assert.equal(reg.status, 201, JSON.stringify(reg.json));
+  assert.equal(reg.json.data.customer.username, "zhangsan");
+  assert.equal(reg.json.data.customer.email, null, "注册不需要邮箱");
+
+  // 大小写不敏感，且重复注册被拒
+  const dup = await api("POST", "/api/v1/auth/register", { username: "ZhangSan", password: "Passw0rd!" });
+  assert.equal(dup.status, 409);
+  assert.equal(dup.json.error.code, "USERNAME_TAKEN");
+
+  const login = await api("POST", "/api/v1/auth/login", { username: "ZHANGSAN", password: "Passw0rd!" });
+  assert.equal(login.status, 200);
+  assert.ok(login.json.data.session.token);
+  assert.equal(login.json.data.licenses.length, 0, "网页登录不返回授权信息");
+  assert.equal(login.json.data.active_license, null);
+
+  const bad = await api("POST", "/api/v1/auth/register", { username: "a", password: "Passw0rd!" });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.error.code, "INVALID_USERNAME");
+});
+
+test("v17 首次登录软件自动开试用，不用调试用接口", async () => {
+  // 只给 core 开 5 天试用
+  await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[0]}/trial`,
+    { enabled: true, mode: "day", value: 5, max_per_customer: 2, seats: 1 },
+    adminToken,
+  );
+  await api("POST", "/api/v1/auth/register", { username: "autotrial", password: "Passw0rd!" });
+
+  const login = await api("POST", "/api/v1/auth/login", {
+    username: "autotrial",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "AT-DEV-1",
+  });
+  assert.equal(login.status, 200, JSON.stringify(login.json));
+  assert.equal(login.json.data.client.trial_started, true, "首次登录就自动开始试用");
+  assert.equal(login.json.data.client.device_bound, true, "登录自动绑定设备");
+  assert.equal(login.json.data.licenses.length, 1);
+  const trial = login.json.data.licenses[0];
+  assert.equal(trial.kind, "trial");
+  assert.ok(trial.expires_at, "试用到期时间应返回");
+
+  // 再次登录不会重复开试用
+  const again = await api("POST", "/api/v1/auth/login", {
+    username: "autotrial",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "AT-DEV-1",
+  });
+  assert.equal(again.json.data.client.trial_started, false);
+  assert.equal(again.json.data.licenses.length, 1);
+
+  await api("DELETE", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
+});
+
+test("v17 试用没到期就激活：同模块从试用结束开始算", async () => {
+  await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[0]}/trial`,
+    { enabled: true, mode: "day", value: 10, max_per_customer: 2, seats: 1 },
+    adminToken,
+  );
+  const reg = await api("POST", "/api/v1/auth/register", { username: "trialthenpay", password: "Passw0rd!" });
+  const token = reg.json.data.session.token;
+  const first = await api("POST", "/api/v1/auth/login", {
+    username: "trialthenpay",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "TP-1",
+  });
+  const trialExpires = first.json.data.licenses[0].expires_at;
+  assert.ok(trialExpires);
+
+  // 买 30 天同模块的卡
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, count: 1 },
+    adminToken,
+  );
+  const act = await activate({ cdk: gen.json.data.codes[0], bind_device: false }, token);
+  assert.equal(act.status, 201, JSON.stringify(act.json));
+
+  const lic = act.json.data.license;
+  assert.equal(lic.kind, "paid");
+  const diffDays = Math.round((Date.parse(lic.expires_at) - Date.parse(trialExpires)) / 86_400_000);
+  assert.equal(diffDays, 30, "正式授权应从试用结束日开始，再往后加 30 天");
+
+  // 被这张卡覆盖的试用模块应立刻结束（如果试用全部模块都在卡里，试用授权直接作废）
+  const mine = await api("GET", "/api/v1/licenses", undefined, token);
+  const trials = mine.json.data.items.filter((l: Json) => l.kind === "trial");
+  for (const t of trials) {
+    if (t.status !== "active") continue;
+    const mods = await api("GET", `/admin/api/licenses/${t.id}`, undefined, adminToken);
+    const core = mods.json.data.modules.find((m: Json) => m.module_id === moduleIds[0]);
+    assert.ok(
+      !core || !core.expires_at || Date.parse(core.expires_at) <= Date.now() + 1000,
+      "试用里被卡覆盖的模块应立即结束",
+    );
+  }
+
+  await api("DELETE", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
+});
+
+test("v17 激活码必须登录；查卡密可以匿名", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 7, count: 1 },
+    adminToken,
+  );
+  const code = gen.json.data.codes[0];
+
+  const inspect = await api("POST", "/api/v1/cdks/inspect", { cdk: code });
+  assert.equal(inspect.status, 200, "未登录也能查卡密");
+
+  const anon = await api("POST", "/api/v1/licenses/activate", { cdk: code });
+  assert.equal(anon.status, 401, "未登录不能激活");
+  assert.equal(anon.json.error.code, "LOGIN_REQUIRED");
+
+  // 查过没核销，登录后还能用
+  const reg = await api("POST", "/api/v1/auth/register", { username: "mustlogin", password: "Passw0rd!" });
+  const act = await api(
+    "POST",
+    "/api/v1/licenses/activate",
+    { cdk: code, bind_device: false },
+    reg.json.data.session.token,
+  );
+  assert.equal(act.status, 201);
+});
+
+test("v17 解绑后重新登录自动回绑；席位满员登录直接失败", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, seats: 1, count: 1 },
+    adminToken,
+  );
+  const code = gen.json.data.codes[0];
+  const reg = await api("POST", "/api/v1/auth/register", { username: "rebind", password: "Passw0rd!" });
+  const token = reg.json.data.session.token;
+  await api("POST", "/api/v1/licenses/activate", { cdk: code, device_id: "RB-A", bind_device: true }, token);
+
+  // 后台解绑这台设备
+  const mine = await api("GET", "/api/v1/licenses", undefined, token);
+  const licId = mine.json.data.items[0].id;
+  const rel = await api("POST", `/api/v1/me/devices/RB-A/release`, undefined, token);
+  assert.equal(rel.status, 200);
+
+  // 同一台设备重新登录 → 自动回绑
+  const back = await api("POST", "/api/v1/auth/login", {
+    username: "rebind",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "RB-A",
+  });
+  assert.equal(back.status, 200, JSON.stringify(back.json));
+  assert.equal(back.json.data.client.device_bound, true, "解绑后重新登录要自动回绑");
+
+  // 换一台设备：1 席位已满 → 登录直接失败
+  const other = await api("POST", "/api/v1/auth/login", {
+    username: "rebind",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "RB-B",
+  });
+  assert.equal(other.status, 403, JSON.stringify(other.json));
+  assert.equal(other.json.error.code, "SEATS_FULL");
+  assert.ok(!other.json.data?.session, "席位满时不应发会话");
 });

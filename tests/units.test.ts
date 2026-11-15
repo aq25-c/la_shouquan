@@ -23,9 +23,12 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v16，新增列齐全", () => {
+test("数据库迁移到 v17，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 16);
+  assert.equal(version, 17);
+
+  // v17：客户账号用用户名登录
+  assert.ok(columns("customers").includes("username"), "customers.username");
 
   const dev = columns("devices");
   assert.ok(dev.includes("released_reason"), "devices.released_reason");

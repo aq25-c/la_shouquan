@@ -104,6 +104,21 @@ export function findCustomerById(id: string): CustomerRow | null {
   return row ?? null;
 }
 
+/** 按用户名查（大小写不敏感）；老数据里 username 可能存的是邮箱 */
+export function findCustomerByUsername(username: string): CustomerRow | null {
+  const row = db()
+    .prepare("SELECT * FROM customers WHERE username = ? COLLATE NOCASE")
+    .get(username.trim()) as unknown as CustomerRow | undefined;
+  return row ?? null;
+}
+
+/** 登录用：用户名优先，找不到再按邮箱找（兼容历史账号） */
+export function findCustomerByLogin(identifier: string): CustomerRow | null {
+  const key = identifier.trim();
+  if (!key) return null;
+  return findCustomerByUsername(key) ?? findCustomerByEmail(key);
+}
+
 export function findCustomerByEmail(email: string): CustomerRow | null {
   const row = db().prepare("SELECT * FROM customers WHERE email = ?").get(email.toLowerCase()) as
     | unknown as CustomerRow
@@ -112,7 +127,9 @@ export function findCustomerByEmail(email: string): CustomerRow | null {
 }
 
 export function createCustomer(input: {
-  email: string | null;
+  /** v17：登录用户名（必填，大小写不敏感唯一） */
+  username?: string | null;
+  email?: string | null;
   passwordHash: string | null;
   name: string | null;
   company?: string | null;
@@ -123,11 +140,12 @@ export function createCustomer(input: {
   const at = nowIso();
   db()
     .prepare(
-      `INSERT INTO customers (id, email, password_hash, name, company, phone, status, note, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+      `INSERT INTO customers (id, username, email, password_hash, name, company, phone, status, note, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
     )
     .run(
       id,
+      input.username ? input.username.trim() : null,
       input.email ? input.email.toLowerCase() : null,
       nz(input.passwordHash),
       nz(input.name),
@@ -142,7 +160,9 @@ export function createCustomer(input: {
 
 export function updateCustomer(
   id: string,
-  patch: Partial<Pick<CustomerRow, "email" | "name" | "company" | "phone" | "status" | "note" | "password_hash">>,
+  patch: Partial<
+    Pick<CustomerRow, "username" | "email" | "name" | "company" | "phone" | "status" | "note" | "password_hash">
+  >,
 ): CustomerRow | null {
   const sets: string[] = [];
   const params: (string | null)[] = [];
@@ -187,8 +207,10 @@ export function listCustomers(opts: {
   }
   if (opts.q) {
     const p = `%${opts.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-    where.push("(c.email LIKE ? ESCAPE '\\' OR c.name LIKE ? ESCAPE '\\' OR c.company LIKE ? ESCAPE '\\' OR c.phone LIKE ? ESCAPE '\\')");
-    params.push(p, p, p, p);
+    where.push(
+      "(c.username LIKE ? ESCAPE '\\' OR c.email LIKE ? ESCAPE '\\' OR c.name LIKE ? ESCAPE '\\' OR c.company LIKE ? ESCAPE '\\' OR c.phone LIKE ? ESCAPE '\\')",
+    );
+    params.push(p, p, p, p, p);
   }
   if (opts.status) {
     where.push("c.status = ?");
