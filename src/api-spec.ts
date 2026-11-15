@@ -429,7 +429,7 @@ const EXTRA_DOCS: Record<string, { returns?: string; errors?: string }> = {
     errors: "`404 CDK_NOT_FOUND`",
   },
   "POST /api/v1/auth/login": {
-    returns: "`customer`、`session.token`、`licenses`（含 `modules` 逐模块到期）、`active_license`（优先正式授权，其次试用，都没有为 null）；带 `product_code` 时另有 `client{product,trial_started,device_bound,seats,active_devices}`",
+    returns: "`customer`、`session.token`、`licenses`（含 `modules` 逐模块到期）、`active_license`（优先正式授权，其次试用，都没有为 null）；带 `product_code` 时另有 `client{product,trial_started,device_bound,seats,active_devices}`。**这台设备已绑定该授权时**，`licenses[]` 对应那条会带 `license_key` 和 `key_recovered=true`（重装后取回密钥，不用重置）",
     errors: "`401 INVALID_CREDENTIALS`、`403 CUSTOMER_DISABLED`、`403 SEATS_FULL`（席位已满且设备没绑过）",
   },
   "POST /api/v1/licenses/consume": {

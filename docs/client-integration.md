@@ -72,9 +72,69 @@ Content-Type: application/json
   4. **设备自愈**：这台设备已绑定的授权，响应里会带 `license_key` + `key_recovered=true`，客户端重装后直接登录取回密钥
 - 不带 `product_code` = 网页登录：只返回账号和授权列表，不做试用/绑定/席位校验
 
-响应里 `licenses[]` 每项含 `license_id`、`license_no`、`product_code`、`expires_at`、`modules[]`，以及（已绑定时）`license_key`。
+响应里 `licenses[]` 每项含 `license_id`、`license_no`、`product_code`、`expires_at`、`modules[]`；**这台设备已绑定该授权时**，还会多两个字段：`license_key`（当前生效的密钥）和 `key_recovered: true`。
 
 成功后把 `session.token` 放到后续请求的 `Authorization: Bearer ***`。
+
+### 取回密钥（设备自愈 / 重装后恢复）
+
+客户端重装、换机、配置文件丢了，**不用找管理员重置密钥**，直接登录就能把当前密钥拿回来：
+
+```http
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{
+  "username": "buyer01",
+  "password": "BuyerPass123",
+  "product_code": "app-pro",
+  "device_id": "PC-OFFICE-01"
+}
+```
+
+响应里挑出带 `license_key` 的那条（`licenses[]`，已隐藏无关字段）：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "customer": { "id": "cus_x", "username": "buyer01", "name": "张三" },
+    "session": { "token": "…", "expires_at": "2026-12-15T08:00:00.000Z" },
+    "licenses": [
+      {
+        "license_id": "lic_x",
+        "license_no": "LIC-2026-00006",
+        "product_code": "app-pro",
+        "status": "active",
+        "expires_at": "2026-12-15T08:05:41.412Z",
+        "license_key": "LK-…",
+        "key_recovered": true,
+        "modules": [ … ]
+      }
+    ],
+    "active_license": { … },
+    "client": {
+      "product": { "code": "app-pro", "name": "专业版" },
+      "trial_started": false,
+      "device_bound": true,
+      "seats": 2,
+      "active_devices": 1
+    }
+  }
+}
+```
+
+规则：
+
+| 情况 | 结果 |
+| --- | --- |
+| 这台设备已绑定该授权 | 返回 `license_key` + `key_recovered=true` |
+| 这台设备还没绑、但还有空席位 | 先自动绑上（`client.device_bound=true`），再返回密钥 |
+| 这台设备没绑、席位已满 | `403 SEATS_FULL`，不发 token、拿不到密钥 |
+| 授权是 v19（本功能）之前签发的 | 库里没有加密副本，**取不回**；在后台「重置密钥」一次即可写入副本，之后就能自愈 |
+| 授权已吊销 / 客户停用 | 按原有错误码拒绝 |
+
+> 密钥在服务端加密存放（AES-256-GCM，密钥文件 `data/license-secret.key`），只有在“账号密码正确 + 这台设备确实绑在这条授权上”两个条件同时满足时才下发。
 
 ---
 

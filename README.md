@@ -243,6 +243,10 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 
 ---
 
+## 变更说明
+
+版本改动（尤其是会影响客户端对接的破坏性变更）见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 账号与登录（v17 起）
 
 - 客户账号只用 **用户名 + 密码**，不再需要邮箱；用户名 3–20 位字母/数字/下划线，不区分大小写、唯一
@@ -263,6 +267,19 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 ### 设备丢了密钥怎么办（v19）
 
 客户端重装、换机后不用再重置密钥（重置会把同一授权下其它席位的设备一起踢掉）：**用账号登录**（带 `product_code` + `device_id`）即可。
+
+```bash
+curl -X POST http://localhost:6889/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "username": "buyer01",
+        "password": "BuyerPass123",
+        "product_code": "app-pro",
+        "device_id": "PC-OFFICE-01"
+      }'
+# 响应 data.licenses[] 里，已绑定的那条会多出：
+#   "license_key": "LK-…", "key_recovered": true
+```
 
 - 服务端把许可证密钥加密存了一份（`licenses.key_enc`，AES-256-GCM，密钥在 `data/license-secret.key`）
 - 登录成功后，只要这台设备已绑定该授权（或本次登录刚绑上），响应里就带当前 `license_key`；没绑定的设备拿不到
