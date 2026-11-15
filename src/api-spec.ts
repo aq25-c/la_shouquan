@@ -174,6 +174,14 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "GET /api/v1/licenses/:id": { title: "授权详情", auth: "customer", desc: "授权信息 + 全部设备记录 + 模块编码。" },
   "POST /api/v1/licenses/:id/rotate-key": { title: "重置许可证密钥", auth: "customer", params: "`device_id?`", desc: "旧密钥立即失效；带 `device_id` 时一并返回新签发的许可证文件。" },
   "POST /api/v1/licenses/:id/devices/:deviceId/release": { title: "自助解绑设备", auth: "customer", desc: "客户解绑自己的设备（换机用）。" },
+  "POST /api/v1/licenses/:id/claim": {
+    title: "认领授权（登录即绑定）",
+    auth: "customer",
+    params: "`device_id`✅、`device_name?`、`platform?`",
+    desc: "客户用自己的账号把一张「还没绑定过任何设备」的授权认领到本机：绑定设备 + 重新签发密钥 + 返回签名文件，客户端登录后即可直接使用，不需要卡密。",
+    returns: "`license`、`license_key`、`license_file`、`license_payload`、`offline_expires_at`、`expires_at`、`days_left`、`module_codes`",
+    notes: "409 SEAT_LIMIT（席位已被占满，需先在旧电脑解绑或后台重置设备）、409 KEY_NOT_ISSUABLE（同一授权已有其他设备在用，发新密钥会顶掉它们，请改用卡密激活）。",
+  },
   "POST /api/v1/licenses/:id/reenroll": { title: "重新获取许可证文件", auth: "customer", params: "`device_id`✅", desc: "本地缓存丢失时重新拉取签名文件。" },
 
   /* ---------------- 客户端 · 试用 ---------------- */

@@ -93,7 +93,7 @@ import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
 import { isEmail, normalizeEmail } from "../util.ts";
 
-const SERVER_VERSION = "2.22.4";
+const SERVER_VERSION = "2.22.5";
 
 function customerView(customer: { id: string; email: string | null; name: string | null; created_at: string }) {
   return {
@@ -1053,7 +1053,92 @@ export function registerClientRoutes(): void {
     });
   });
 
+
+  /**
+   * 客户用账号认领授权（登录即绑定）。
+   * 场景：后台手工开通的授权、或客户忘了卡密，本机没有 license_key。
+   * 只在「这张授权名下还没有任何在用设备」时允许，
+   * 因为发新密钥会让旧密钥失效，多设备共用一张卡的场景不能这么干。
+   */
+  post("/api/v1/licenses/:id/claim", (ctx) => {
+    const customer = requireCustomer(ctx);
+    const license = findLicenseById(ctx.params.id);
+    if (!license) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
+    if (license.customer_id !== customer.id) throw forbidden("无权操作该授权");
+
+    const eff = effectiveStatus(license);
+    if (eff === "revoked") throw locked("授权已被吊销", "LICENSE_REVOKED");
+    if (eff === "suspended") throw locked("授权已被暂停", "LICENSE_SUSPENDED");
+    if (eff === "expired")
+      throw locked("授权已到期", "LICENSE_EXPIRED", { expires_at: license.expires_at });
+    if (eff === "pending")
+      throw locked("授权尚未生效", "LICENSE_NOT_STARTED", { starts_at: license.starts_at });
+
+    const deviceId = needStr(ctx, "device_id", 190);
+    const deviceName = bodyStr(ctx, "device_name", { max: 190 });
+    const platform = bodyStr(ctx, "platform", { max: 64 });
+
+    const usage = seatUsageForProduct(license.customer_id, license.product_id);
+    const mine = findDevice(license.id, deviceId);
+    const alreadyMine = !!mine && mine.status === "active";
+
+    if (!alreadyMine) {
+      if (usage.active_devices >= usage.seats)
+        throw conflict(
+          "这张授权已经在别的电脑上绑定过了，先在旧电脑解绑（或让管理员重置设备）再登录",
+          "SEAT_LIMIT",
+          { seats: usage.seats, active_devices: usage.active_devices },
+        );
+      // 已经有别的设备在用同一把密钥：这里再发新密钥会把它们顶掉，拒绝
+      if (usage.active_devices > 0)
+        throw conflict(
+          "这张授权已在其他设备使用，请用卡密激活这台电脑",
+          "KEY_NOT_ISSUABLE",
+        );
+    }
+
+    const issued = withTx(() => {
+      if (!alreadyMine) {
+        upsertDevice({ licenseId: license.id, deviceId, deviceName, platform, ip: ctx.ip });
+      }
+      // 发一把新密钥（旧密钥立即失效），并重新签发离线许可证
+      const newKey = generateLicenseKey();
+      rotateLicenseKey(license.id, sha256hex(newKey));
+      const reloaded = findLicenseById(license.id) as LicenseRow;
+      const file = buildLicenseFile({
+        license: reloaded,
+        productCode: license.product_code,
+        deviceId,
+        keys: signingKeys(),
+      });
+      touchLicenseHeartbeat(license.id);
+      return { newKey, reloaded, file };
+    });
+
+    audit({
+      actorType: "customer",
+      actorId: customer.id,
+      action: "license.claim",
+      targetType: "license",
+      targetId: license.id,
+      ip: ctx.ip,
+      detail: { device_id: deviceId, device_name: deviceName || null, already_bound: alreadyMine },
+    });
+
+    return ok({
+      license: licenseView(issued.reloaded),
+      license_key: issued.newKey,
+      license_file: issued.file.license_file,
+      license_payload: issued.file.payload,
+      offline_expires_at: issued.file.offline_expires_at,
+      expires_at: issued.reloaded.expires_at,
+      days_left: daysLeft(issued.reloaded.expires_at),
+      module_codes: issued.file.payload.mod,
+    });
+  });
+
   /* ---------------------------- 次数型消耗 ---------------------------- */
+
 
   /**
    * 消耗次数型授权的次数（客户端每用一次调一次）。
