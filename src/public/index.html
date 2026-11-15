@@ -33,15 +33,14 @@
             <p class="login-lead">使用管理员账号继续</p>
           </div>
           <div class="field">
-            <span>管理员邮箱</span>
+            <span>管理员账号</span>
             <input
               id="login-email"
-              name="email"
-              type="email"
+              name="username"
+              type="text"
               autocomplete="username"
-              inputmode="email"
               required
-              placeholder="admin@example.com"
+              placeholder="输入管理员账号"
             />
           </div>
           <div class="field">
@@ -60,7 +59,7 @@
             </div>
           </div>
           <div class="login-row">
-            <label><input type="checkbox" id="login-remember" checked /> 记住邮箱</label>
+            <label><input type="checkbox" id="login-remember" checked /> 记住账号</label>
           </div>
           <button class="btn btn-primary btn-block" type="submit">登录</button>
           <p id="login-error" class="error-text" hidden></p>

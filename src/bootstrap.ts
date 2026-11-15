@@ -38,6 +38,8 @@ export async function bootstrap(): Promise<BootstrapInfo> {
       );
     }
     await createAdmin({
+      // v18：登录用用户名；初始账号就用 ADMIN_EMAIL 的值当用户名
+      username: email,
       email,
       passwordHash: await hashPassword(password),
       name: config.initialAdmin.name,

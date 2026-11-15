@@ -4221,3 +4221,30 @@ test("v17 解绑后重新登录自动回绑；席位满员登录直接失败", a
   assert.equal(other.json.error.code, "SEATS_FULL");
   assert.ok(!other.json.data?.session, "席位满时不应发会话");
 });
+
+
+test("v18 后台账号也用用户名登录", async () => {
+  // 新建一个纯用户名的管理员
+  const created = await api(
+    "POST",
+    "/admin/api/admins",
+    { username: "ops002", password: "OpsPassw0rd!", name: "运维小号" },
+    adminToken,
+  );
+  assert.equal(created.status, 201, JSON.stringify(created.json));
+  assert.equal(created.json.data.admin.username, "ops002");
+
+  // 大小写不敏感地登录
+  const login = await api("POST", "/admin/api/auth/login", { username: "OPS002", password: "OpsPassw0rd!" });
+  assert.equal(login.status, 200, JSON.stringify(login.json));
+  assert.equal(login.json.data.admin.username, "ops002");
+
+  // 重复用户名被拒
+  const dup = await api("POST", "/admin/api/admins", { username: "OPS002", password: "OpsPassw0rd!" }, adminToken);
+  assert.equal(dup.status, 409);
+  assert.equal(dup.json.error.code, "USERNAME_TAKEN");
+
+  // 老账号（邮箱当用户名）仍然能登
+  const legacy = await api("POST", "/admin/api/auth/login", { email: "root@test.local", password: "RootPassw0rd!" });
+  assert.equal(legacy.status, 200);
+});

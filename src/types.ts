@@ -2,6 +2,8 @@
 
 export type AdminRow = {
   id: string;
+  /** v18：登录用户名（唯一，大小写不敏感）；老账号等于原邮箱 */
+  username: string;
   email: string;
   password_hash: string;
   name: string | null;

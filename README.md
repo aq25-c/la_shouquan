@@ -245,6 +245,7 @@ PORT=6889 DATA_DIR=./data ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='强密�
 ## 账号与登录（v17 起）
 
 - 客户账号只用 **用户名 + 密码**，不再需要邮箱；用户名 3–20 位字母/数字/下划线，不区分大小写、唯一
+- **后台账号（管理员 / 员工 / 代理）也一样用用户名登录**；老账号自动把原邮箱当用户名，用邮箱还能登
 - 后台新建客户也填用户名；留空就是不给他登录账号（仅后台代管）
 - **激活必须登录**：`POST /api/v1/licenses/activate` 匿名调用返回 401 `LOGIN_REQUIRED`；查卡密（`/cdks/inspect`）仍然允许匿名
 

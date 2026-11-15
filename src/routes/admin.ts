@@ -120,6 +120,8 @@ import {
 import {
   createAdmin,
   createCustomer,
+  findAdminByLogin,
+  findAdminByUsername,
   deleteStaff,
   deleteAgentAccounts,
   findAdminByEmail,
@@ -214,6 +216,7 @@ function adminView(admin: AdminRow) {
   const perms = parsePermissions(admin.permissions, role);
   return {
     id: admin.id,
+    username: admin.username,
     email: admin.email,
     name: admin.name,
     role,
@@ -274,12 +277,13 @@ export function registerAdminRoutes(): void {
 
   post(`${P}/auth/login`, async (ctx) => {
     if (!checkStrictLimit(`admin-login:${ctx.ip}`, ADMIN_LOGIN_LIMIT)) throw tooMany("登录尝试过于频繁，请稍后再试");
-    const email = normalizeEmail(needStr(ctx, "email", 190));
+    const identifier = (bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 }) ?? "").trim();
+    if (!identifier) throw badRequest("请输入用户名", "MISSING_FIELD", { field: "username" });
     const password = needStr(ctx, "password", 200);
-    const admin = findAdminByEmail(email);
+    const admin = findAdminByLogin(identifier);
     if (!admin || !(await verifyPassword(password, admin.password_hash))) {
-      audit({ actorType: "anonymous", actorLabel: email, action: "admin.login_failed", ip: ctx.ip });
-      throw unauthorized("邮箱或密码不正确", "INVALID_CREDENTIALS");
+      audit({ actorType: "anonymous", actorLabel: identifier, action: "admin.login_failed", ip: ctx.ip });
+      throw unauthorized("用户名或密码不正确", "INVALID_CREDENTIALS");
     }
     if (admin.status !== "active") throw forbidden("该管理员账号已停用", "ADMIN_DISABLED");
     touchAdminLogin(admin.id);
@@ -328,13 +332,13 @@ export function registerAdminRoutes(): void {
 
   post(`${P}/admins`, async (ctx) => {
     const actor = requireAdmin(ctx);
-    const email = normalizeEmail(needStr(ctx, "email", 190));
+    const username = (bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 }) ?? "").trim();
     const password = needStr(ctx, "password", 200);
     const name = bodyStr(ctx, "name", { max: 120 });
-    if (!isEmail(email)) throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
+    if (username.length < 3) throw badRequest("用户名至少 3 位", "INVALID_USERNAME");
     if (password.length < 10) throw badRequest("管理员密码至少 10 位", "WEAK_PASSWORD");
-    if (findAdminByEmail(email)) throw conflict("该邮箱已存在管理员", "EMAIL_TAKEN");
-    const createdAdmin = await createAdmin({ email, passwordHash: await hashPassword(password), name, role: "admin" });
+    if (findAdminByUsername(username)) throw conflict("该用户名已存在", "USERNAME_TAKEN");
+    const createdAdmin = await createAdmin({ username, passwordHash: await hashPassword(password), name, role: "admin" });
     audit({
       actorType: "admin",
       actorId: actor.id,
@@ -343,7 +347,7 @@ export function registerAdminRoutes(): void {
       targetType: "admin",
       targetId: createdAdmin.id,
       ip: ctx.ip,
-      detail: { email },
+      detail: { username },
     });
     return created({ admin: adminView(createdAdmin) });
   });
@@ -431,15 +435,15 @@ export function registerAdminRoutes(): void {
 
   post(`${P}/staff`, async (ctx) => {
     const actor = requireOwner(ctx).admin;
-    const email = normalizeEmail(needStr(ctx, "email", 190));
+    const username = (bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 }) ?? "").trim();
     const password = needStr(ctx, "password", 200);
     const name = bodyStr(ctx, "name", { max: 120 });
     const roleInput = bodyStr(ctx, "role", { max: 20 }) ?? "staff";
 
     if (!["staff", "agent"].includes(roleInput)) throw badRequest("role 只能是 staff / agent", "INVALID_FIELD");
-    if (!isEmail(email)) throw badRequest("邮箱格式不正确", "INVALID_EMAIL");
+    if (username.length < 3) throw badRequest("用户名至少 3 位", "INVALID_USERNAME");
     if (password.length < 6) throw badRequest("密码至少 6 位", "WEAK_PASSWORD");
-    if (findAdminByEmail(email)) throw conflict("该邮箱已存在", "EMAIL_TAKEN");
+    if (findAdminByUsername(username)) throw conflict("该用户名已存在", "USERNAME_TAKEN");
 
     let agentId: string | null = null;
     let agentProfile = "{}";
@@ -469,7 +473,7 @@ export function registerAdminRoutes(): void {
           });
 
     const newStaff = await createAdmin({
-      email,
+      username,
       passwordHash: await hashPassword(password),
       name,
       role: roleInput,
@@ -486,7 +490,7 @@ export function registerAdminRoutes(): void {
       targetType: "staff",
       targetId: newStaff.id,
       ip: ctx.ip,
-      detail: { email, role: roleInput, agent_id: agentId },
+      detail: { username, role: roleInput, agent_id: agentId },
     });
     return created({ staff: adminView(newStaff) });
   });
@@ -503,6 +507,16 @@ export function registerAdminRoutes(): void {
     const patchData: Record<string, string | null> = {};
     const name = bodyStr(ctx, "name", { max: 120 });
     if (name !== null) patchData.name = name;
+
+    // v18：可以改登录用户名
+    const usernameInput = bodyStr(ctx, "username", { max: 190 }) ?? bodyStr(ctx, "email", { max: 190 });
+    if (usernameInput !== null && usernameInput.trim() !== target.username) {
+      const next = usernameInput.trim();
+      if (next.length < 3) throw badRequest("用户名至少 3 位", "INVALID_USERNAME");
+      const exists = findAdminByUsername(next);
+      if (exists && exists.id !== id) throw conflict("该用户名已被占用", "USERNAME_TAKEN");
+      patchData.username = next;
+    }
 
     const status = bodyStr(ctx, "status", { max: 20 });
     if (status) {

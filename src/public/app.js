@@ -1593,7 +1593,7 @@ async function agentAccountForm(agentId) {
        </div>`
     : `<div class="note">该代理还没有登录账号。创建后它可登录后台，但只能看自己的卡密与余额。</div>
        <div class="form-grid" style="margin-top:12px">
-         <label class="field"><span>登录邮箱</span><input name="email" placeholder="agent@example.com" /></label>
+         <label class="field"><span>登录用户名</span><input name="username" placeholder="3-20 位字母/数字/下划线" maxlength="64" /></label>
          <label class="field"><span>初始密码（≥6 位）</span><input name="password" type="password" autocomplete="new-password" /></label>
        </div>`;
 
@@ -1621,7 +1621,7 @@ async function agentAccountForm(agentId) {
             toast("账号已更新", "ok");
           } else {
             await apiPost("/admin/api/staff", {
-              email: $('[name="email"]', m).value.trim(),
+              username: $('[name="username"]', m).value.trim(),
               password: $('[name="password"]', m).value,
               role: "agent",
               agent_id: agentId,
@@ -2108,7 +2108,7 @@ async function renderCdks(root) {
             <option value="__none__" ${filters.agent_id === "__none__" ? "selected" : ""}>无代理（直销）</option>
             ${state.agents.map((c) => `<option value="${esc(c.id)}" ${filters.agent_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
           </select>
-          <input data-f-q placeholder="搜索 CDK / 备注 / 客户邮箱" value="${esc(filters.q)}" />
+          <input data-f-q placeholder="搜索 CDK / 备注 / 客户账号" value="${esc(filters.q)}" />
           <button class="btn btn-sm" data-export type="button">导出 CSV</button>
         </div>
       </div>
@@ -2467,7 +2467,7 @@ async function renderLicenses(root) {
             <option value="7" ${filters.expiring === "7" ? "selected" : ""}>7 天内到期</option>
             <option value="30" ${filters.expiring === "30" ? "selected" : ""}>30 天内到期</option>
           </select>
-          <input data-f-q placeholder="搜索单号 / 客户邮箱 / 客户名称" value="${esc(filters.q)}" />
+          <input data-f-q placeholder="搜索单号 / 客户账号 / 客户名称" value="${esc(filters.q)}" />
           ${hasFeature("license.create") ? '<button class="btn btn-primary btn-sm" data-new type="button">+ 手动开通</button>' : ""}
         </div>
       </div>
@@ -3160,7 +3160,7 @@ async function manualLicenseForm() {
     body: `
       <div class="form-grid">
         <label class="field"><span>产品</span><select name="product_id">${productOptions(state.products[0]?.id)}</select></label>
-        <label class="field"><span>客户邮箱（需已注册）</span><input name="email" placeholder="buyer@example.com" /></label>
+        <label class="field"><span>客户用户名（需已注册）</span><input name="username" placeholder="客户的登录用户名" /></label>
         <label class="field"><span>授权天数</span><input name="days" type="number" min="1" value="365" /></label>
         <label class="field"><span>席位数</span><input name="seats" type="number" min="1" value="1" /></label>
         <div class="field full"><span>包含模块</span><div class="checkbox-list" data-modules>${moduleCheckboxes(state.products[0]?.id ?? "")}</div></div>
@@ -3173,15 +3173,15 @@ async function manualLicenseForm() {
       };
       $("[data-c]", modal).onclick = close;
       $("[data-ok]", modal).onclick = async () => {
-        const email = $('[name="email"]', modal).value.trim();
-        if (!email) {
-          toast("请填写客户邮箱", "error");
+        const username = $('[name="username"]', modal).value.trim();
+        if (!username) {
+          toast("请填写客户用户名", "error");
           return;
         }
         try {
           const res = await apiPost("/admin/api/licenses", {
             product_id: productSelect.value,
-            customer_email: email,
+            customer_email: username,
             days: Number($('[name="days"]', modal).value),
             seats: Number($('[name="seats"]', modal).value),
             module_ids: $$("[data-modules] input:checked", modal).map((i) => i.value),
@@ -3231,7 +3231,7 @@ async function renderCustomers(root) {
             <option value="active" ${filters.status === "active" ? "selected" : ""}>正常</option>
             <option value="disabled" ${filters.status === "disabled" ? "selected" : ""}>已停用</option>
           </select>
-          <input data-f-q placeholder="搜索邮箱 / 姓名 / 公司" value="${esc(filters.q)}" />
+          <input data-f-q placeholder="搜索用户名 / 姓名 / 公司" value="${esc(filters.q)}" />
           <button class="btn btn-primary btn-sm" data-new-customer type="button" ${state.role === "agent" ? "hidden" : ""}>+ 新增客户</button>
         </div>
       </div>
@@ -3915,11 +3915,11 @@ async function staffForm(staff, opt) {
   const checkedFeatures = staff?.permissions?.features ?? [];
 
   openModal({
-    title: isNew ? "新增员工 / 代理" : `编辑：${staff.email}`,
+    title: isNew ? "新增员工 / 代理" : `编辑：${staff.username ?? staff.email}`,
     wide: true,
     body: `
       <div class="form-grid">
-        <label class="field"><span>邮箱</span><input name="email" value="${esc(staff?.email ?? "")}" ${isNew ? "" : "disabled"} /></label>
+        <label class="field"><span>登录用户名</span><input name="username" value="${esc(staff?.username ?? staff?.email ?? "")}" /></label>
         <label class="field"><span>${isNew ? "初始密码（≥6 位）" : "重置密码（留空不改）"}</span><input name="password" type="password" autocomplete="new-password" /></label>
         <label class="field"><span>名称</span><input name="name" value="${esc(staff?.name ?? "")}" /></label>
         <label class="field"><span>角色</span>
@@ -3991,8 +3991,9 @@ async function staffForm(staff, opt) {
           payload.features = $$("[data-features] input:checked", modal).map((i) => i.value);
         }
         try {
+          const username = $('[name="username"]', modal).value.trim();
+          if (username) payload.username = username;
           if (isNew) {
-            payload.email = $('[name="email"]', modal).value.trim();
             await apiPost("/admin/api/staff", payload);
           } else {
             await apiPatch(`/admin/api/staff/${staff.id}`, payload);
@@ -4207,12 +4208,12 @@ async function renderSettings(root) {
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr><th>邮箱</th><th>名称</th><th>角色</th><th>最近登录</th></tr></thead>
+            <thead><tr><th>账号</th><th>名称</th><th>角色</th><th>最近登录</th></tr></thead>
             <tbody>
               ${admins.items
                 .map(
                   (a) => `<tr>
-                    <td>${esc(a.email)}</td>
+                    <td>${esc(a.username ?? a.email)}</td>
                     <td>${esc(a.name ?? "—")}</td>
                     <td><span class="badge">${esc(a.role)}</span></td>
                     <td class="nowrap">${fmtTime(a.last_login_at)}</td>
@@ -4278,7 +4279,7 @@ async function renderSettings(root) {
     openModal({
       title: "新增管理员",
       body: `<div class="form-grid">
-               <label class="field"><span>邮箱</span><input name="email" type="email" /></label>
+               <label class="field"><span>账号（用户名）</span><input name="username" /></label>
                <label class="field"><span>名称</span><input name="name" /></label>
                <label class="field full"><span>初始密码（至少 10 位）</span><input name="password" type="password" /></label>
              </div>`,
@@ -4288,7 +4289,7 @@ async function renderSettings(root) {
         $("[data-ok]", modal).onclick = async () => {
           try {
             await apiPost("/admin/api/admins", {
-              email: $('[name="email"]', modal).value.trim(),
+              username: $('[name="username"]', modal).value.trim(),
               name: $('[name="name"]', modal).value.trim(),
               password: $('[name="password"]', modal).value,
             });
@@ -4322,12 +4323,12 @@ async function renderSettings(root) {
 function bindLogin() {
   $("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const email = $("#login-email").value.trim();
+    const username = $("#login-email").value.trim();
     const password = $("#login-password").value;
     const errorBox = $("#login-error");
     errorBox.hidden = true;
     try {
-      const res = await apiPost("/admin/api/auth/login", { email, password });
+      const res = await apiPost("/admin/api/auth/login", { username, password });
       startSession(res.token, res.admin);
       state.token = res.token;
       const me = await apiGet("/admin/api/auth/me");

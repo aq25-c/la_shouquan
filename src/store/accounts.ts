@@ -17,6 +17,21 @@ export function findAdminByEmail(email: string): AdminRow | null {
   return row ?? null;
 }
 
+/** 按用户名查后台账号（大小写不敏感） */
+export function findAdminByUsername(username: string): AdminRow | null {
+  const row = db()
+    .prepare("SELECT * FROM admin_users WHERE username = ? COLLATE NOCASE")
+    .get(username.trim()) as unknown as AdminRow | undefined;
+  return row ?? null;
+}
+
+/** 登录用：用户名优先，再回落到邮箱（老账号） */
+export function findAdminByLogin(identifier: string): AdminRow | null {
+  const key = identifier.trim();
+  if (!key) return null;
+  return findAdminByUsername(key) ?? findAdminByEmail(key);
+}
+
 export function findAdminById(id: string): AdminRow | null {
   const row = db().prepare("SELECT * FROM admin_users WHERE id = ?").get(id) as unknown as AdminRow | undefined;
   return row ?? null;
@@ -27,7 +42,9 @@ export function listAdmins(): AdminRow[] {
 }
 
 export function createAdmin(input: {
-  email: string;
+  /** v18：登录用户名（必填）。email 列继续留一份同值，兼容旧查询 */
+  username: string;
+  email?: string;
   passwordHash: string;
   name: string | null;
   role?: string;
@@ -39,12 +56,13 @@ export function createAdmin(input: {
   db()
     .prepare(
       `INSERT INTO admin_users
-         (id, email, password_hash, name, role, status, created_at, permissions, agent_id, agent_profile)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+         (id, username, email, password_hash, name, role, status, created_at, permissions, agent_id, agent_profile)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
     )
     .run(
       id,
-      input.email.toLowerCase(),
+      input.username.trim(),
+      (input.email ?? input.username).toLowerCase(),
       input.passwordHash,
       nz(input.name),
       input.role ?? "owner",
@@ -60,7 +78,10 @@ export function createAdmin(input: {
 export function updateStaff(
   id: string,
   patch: Partial<
-    Pick<AdminRow, "email" | "name" | "role" | "status" | "permissions" | "agent_id" | "password_hash" | "agent_profile">
+    Pick<
+      AdminRow,
+      "username" | "email" | "name" | "role" | "status" | "permissions" | "agent_id" | "password_hash" | "agent_profile"
+    >
   >,
 ): AdminRow | null {
   const sets: string[] = [];

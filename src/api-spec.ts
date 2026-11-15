@@ -203,7 +203,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   },
 
   /* ---------------- 管理 · 认证 ---------------- */
-  "POST /admin/api/auth/login": { title: "管理员登录", auth: "public", params: "`email`、`password`", desc: "返回 `token`（后续管理接口放在 Authorization: Bearer 里）。限流 10 次/分钟。" },
+  "POST /admin/api/auth/login": { title: "管理员登录", auth: "public", params: "`username`、`password`", desc: "返回 `token`（后续管理接口放在 Authorization: Bearer 里）。限流 10 次/分钟。" },
   "POST /admin/api/auth/logout": { title: "管理员登出", auth: "admin", desc: "使当前会话失效。" },
   "GET /admin/api/auth/me": { title: "当前管理员", auth: "admin", desc: "管理员信息 + 签名公钥 + 策略参数。" },
   "GET /admin/api/entry": { title: "读取后台入口", auth: "admin", returns: "`path`、`default_path`、`is_default`、`root_is_portal`", desc: "根路径 `/` 是客户门户，管理后台走这里返回的入口（默认 `upadmin`）。" },
