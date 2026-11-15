@@ -26,7 +26,8 @@ export type CdkListItem = CdkRow & {
 
 function cdkSelect(): string {
   return `SELECT k.*, p.code AS product_code, p.name AS product_name,
-                 c.email AS customer_email, l.license_no AS license_no,
+                 c.email AS customer_email, c.username AS customer_username, c.name AS customer_name,
+                 l.license_no AS license_no,
                  l.expires_at AS license_expires_at, l.kind AS license_kind,
                  b.agent_id AS agent_id, b.unit_price AS unit_price,
                  ch.code AS agent_code, ch.name AS agent_name
@@ -256,7 +257,7 @@ export function effectiveStatus(row: LicenseRow, refMs: number = Date.now()): Ef
 }
 
 function licenseSelect(): string {
-  return `SELECT l.*, c.email AS customer_email, c.name AS customer_name,
+  return `SELECT l.*, c.email AS customer_email, c.username AS customer_username, c.name AS customer_name,
                  p.code AS product_code, p.name AS product_name,
                  ch.code AS agent_code, ch.name AS agent_name,
                  (SELECT COUNT(*) FROM devices d WHERE d.license_id = l.id AND d.status = 'active') AS active_devices,
@@ -494,8 +495,10 @@ export function listLicenses(opts: {
   const params: (string | number)[] = [];
   if (opts.q) {
     const p = `%${opts.q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-    outer.push("(license_no LIKE ? ESCAPE '\\' OR customer_email LIKE ? ESCAPE '\\' OR customer_name LIKE ? ESCAPE '\\')");
-    params.push(p, p, p);
+    outer.push(
+      "(license_no LIKE ? ESCAPE '\\' OR customer_email LIKE ? ESCAPE '\\' OR customer_username LIKE ? ESCAPE '\\' OR customer_name LIKE ? ESCAPE '\\')",
+    );
+    params.push(p, p, p, p);
   }
   if (opts.status) {
     outer.push("eff_status = ?");

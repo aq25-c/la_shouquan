@@ -1481,7 +1481,9 @@ export function registerAdminRoutes(): void {
         const m = findModuleById(mid);
         return { id: mid, code: m?.code ?? mid, name: m?.name ?? mid };
       }),
-      customer: customer ? { id: customer.id, email: customer.email, name: customer.name } : null,
+      customer: customer
+        ? { id: customer.id, username: customer.username, email: customer.email, name: customer.name }
+        : null,
       activated: cdk.status === "used" || Boolean(cdk.customer_id),
     });
   });
@@ -2377,7 +2379,7 @@ export function registerAdminRoutes(): void {
       ip: ctx.ip,
       detail: {
         product: product.code,
-        customer: customer.email,
+        customer: customer.username ?? customer.email,
         days,
         seats,
         agent_id: agentId,

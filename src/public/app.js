@@ -750,7 +750,7 @@ async function renderAgentHome(root) {
       ? list
           .map(
             (r) => `<tr>
-              <td>${customerCell(r.customer_name, r.customer_email)}</td>
+              <td>${customerCell(r.customer_name, r.customer_username ?? r.customer_email)}</td>
               <td>${esc(r.product_name)} <span class="muted small mono">${esc(r.product_code)}</span></td>
               <td class="nowrap">${fmtDay(r.expires_at)}</td>
               <td>${
@@ -853,7 +853,7 @@ async function renderOverview(root) {
                       .map(
                         (l) => `<tr>
                           <td class="mono">${esc(l.license_no)}</td>
-                          <td>${customerCell(l.customer_name, l.customer_email)}</td>
+                          <td>${customerCell(l.customer_name, l.customer_username ?? l.customer_email)}</td>
                           <td>${esc(l.product_name)}</td>
                           <td class="nowrap">${fmtDay(l.expires_at)}</td>
                           <td><span class="badge badge-warn">${relDays(l.expires_at)}</span></td>
@@ -883,7 +883,7 @@ async function renderOverview(root) {
                       .map(
                         (l) => `<tr>
                           <td class="mono">${esc(l.license_no)}</td>
-                          <td>${customerCell(l.customer_name, l.customer_email)}</td>
+                          <td>${customerCell(l.customer_name, l.customer_username ?? l.customer_email)}</td>
                           <td>${esc(l.product_code)}</td>
                           <td class="nowrap">${fmtDay(l.starts_at)}</td>
                           <td class="nowrap">${fmtDay(l.expires_at)}</td>
@@ -1945,7 +1945,7 @@ async function cdkDetail(cdkId) {
             : ""
         }</dd>
         <dt>兑换截止</dt><dd>${c.expires_at ? fmtTime(c.expires_at) : "不限"}</dd>
-        <dt>绑定客户</dt><dd>${data.customer ? esc(data.customer.email ?? data.customer.name ?? "—") : "—"}</dd>
+        <dt>绑定客户</dt><dd>${data.customer ? esc(data.customer.username ?? data.customer.email ?? data.customer.name ?? "—") : "—"}</dd>
         <dt>生成时间</dt><dd>${fmtTime(c.created_at)}</dd>
         ${c.revoked_at ? `<dt>作废时间</dt><dd>${fmtTime(c.revoked_at)}${c.revoked_reason ? " · " + esc(c.revoked_reason) : ""}</dd>` : ""}
         ${c.note ? `<dt>备注</dt><dd>${esc(c.note)}</dd>` : ""}
@@ -2128,7 +2128,7 @@ async function renderCdks(root) {
                           <td>${cdkTermCell(c)}</td>
                           <td>${c.seats}</td>
                           <td>${statusBadge(CDK_STATUS, c.status)}</td>
-                          <td>${customerCell(c.customer_name, c.customer_email)}</td>
+                          <td>${customerCell(c.customer_name, c.customer_username ?? c.customer_email)}</td>
                           <td class="nowrap">${c.license_expires_at ? `${fmtDay(c.license_expires_at)}<div class="muted small">${relDays(c.license_expires_at)}</div>` : '<span class="muted small">未激活</span>'}</td>
                           <td class="nowrap">${fmtTime(c.created_at)}</td>
                           <td class="right">
@@ -2483,7 +2483,7 @@ async function renderLicenses(root) {
                         (l) => `<tr>
                           ${canBatch ? `<td class="chk"><input type="checkbox" data-sel="${esc(l.id)}" data-product="${esc(l.product_id)}" ${state.selLic.has(l.id) ? "checked" : ""} /></td>` : ""}
                           <td class="mono">${esc(l.license_no)}</td>
-                          <td>${customerCell(l.customer_name, l.customer_email)}</td>
+                          <td>${customerCell(l.customer_name, l.customer_username ?? l.customer_email)}</td>
                           <td>${esc(l.product_code)}</td>
                           <td class="nowrap">${licenseTermText(l)}</td>
                           <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
