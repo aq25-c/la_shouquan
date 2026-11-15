@@ -23,7 +23,7 @@ function fmtTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function fmtDay(iso) {
@@ -752,7 +752,7 @@ async function renderAgentHome(root) {
             (r) => `<tr>
               <td>${customerCell(r.customer_name, r.customer_username ?? r.customer_email)}</td>
               <td>${esc(r.product_name)} <span class="muted small mono">${esc(r.product_code)}</span></td>
-              <td class="nowrap">${fmtDay(r.expires_at)}</td>
+              <td class="nowrap">${fmtTime(r.expires_at)}</td>
               <td>${
                 r.days_left === null
                   ? "—"
@@ -855,7 +855,7 @@ async function renderOverview(root) {
                           <td class="mono">${esc(l.license_no)}</td>
                           <td>${customerCell(l.customer_name, l.customer_username ?? l.customer_email)}</td>
                           <td>${esc(l.product_name)}</td>
-                          <td class="nowrap">${fmtDay(l.expires_at)}</td>
+                          <td class="nowrap">${fmtTime(l.expires_at)}</td>
                           <td><span class="badge badge-warn">${relDays(l.expires_at)}</span></td>
                           <td>${l.active_devices}/${l.seats}</td>
                           <td class="right"><button class="btn btn-sm" data-license="${esc(l.id)}" type="button">详情</button></td>
@@ -885,8 +885,8 @@ async function renderOverview(root) {
                           <td class="mono">${esc(l.license_no)}</td>
                           <td>${customerCell(l.customer_name, l.customer_username ?? l.customer_email)}</td>
                           <td>${esc(l.product_code)}</td>
-                          <td class="nowrap">${fmtDay(l.starts_at)}</td>
-                          <td class="nowrap">${fmtDay(l.expires_at)}</td>
+                          <td class="nowrap">${fmtTime(l.starts_at)}</td>
+                          <td class="nowrap">${fmtTime(l.expires_at)}</td>
                           <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
                           <td class="right"><button class="btn btn-sm" data-license="${esc(l.id)}" type="button">详情</button></td>
                         </tr>`,
@@ -1720,7 +1720,7 @@ async function renderAgents(root) {
                           <td>${c.cdk_total > 0 ? percent(c.activation_rate) : "—"}</td>
                           <td>${c.license_total}（有效 ${c.license_active}）<div class="muted small">近 30 天新增 ${c.activated_30d}</div></td>
                           <td>${money(c.balance ?? 0)}<div class="muted small">${(c.balance ?? 0) > 0 ? "可继续生成" : "余额不足"}</div></td>
-                          <td class="nowrap">${c.last_activated_at ? fmtDay(c.last_activated_at) : "—"}</td>
+                          <td class="nowrap">${c.last_activated_at ? fmtTime(c.last_activated_at) : "—"}</td>
                           <td>${c.status === "active" ? '<span class="badge badge-ok">启用</span>' : '<span class="badge">停用</span>'}</td>
                           <td class="right">
                             <div class="btn-row" style="justify-content:flex-end">
@@ -2129,7 +2129,7 @@ async function renderCdks(root) {
                           <td>${c.seats}</td>
                           <td>${statusBadge(CDK_STATUS, c.status)}</td>
                           <td>${customerCell(c.customer_name, c.customer_username ?? c.customer_email)}</td>
-                          <td class="nowrap">${c.license_expires_at ? `${fmtDay(c.license_expires_at)}<div class="muted small">${relDays(c.license_expires_at)}</div>` : '<span class="muted small">未激活</span>'}</td>
+                          <td class="nowrap">${c.license_expires_at ? `${fmtTime(c.license_expires_at)}<div class="muted small">${relDays(c.license_expires_at)}</div>` : '<span class="muted small">未激活</span>'}</td>
                           <td class="nowrap">${fmtTime(c.created_at)}</td>
                           <td class="right">
                             <div class="btn-row" style="justify-content:flex-end">
@@ -2487,7 +2487,7 @@ async function renderLicenses(root) {
                           <td>${esc(l.product_code)}</td>
                           <td class="nowrap">${licenseTermText(l)}</td>
                           <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
-                          <td class="nowrap">${fmtDay(l.expires_at)}</td>
+                          <td class="nowrap">${fmtTime(l.expires_at)}</td>
                           <td class="nowrap">${relDays(l.expires_at)}</td>
                           <td>${l.active_devices}/${l.seats}</td>
                           <td class="right"><button class="btn btn-sm" data-license="${esc(l.id)}" type="button">${state.role === "agent" ? "设备与日志" : "管理"}</button></td>
@@ -2590,11 +2590,11 @@ function licenseLogText(entry) {
   const delta = d.days ?? d.days_added;
   if (delta != null && delta !== 0) parts.push(`${delta > 0 ? "+" : ""}${delta} 天`);
   if (d.from_expires_at && d.to_expires_at) {
-    parts.push(`${fmtDay(d.from_expires_at)} → ${fmtDay(d.to_expires_at)}`);
+    parts.push(`${fmtTime(d.from_expires_at)} → ${fmtTime(d.to_expires_at)}`);
   } else if (d.to_expires_at) {
-    parts.push(`到期 ${fmtDay(d.to_expires_at)}`);
+    parts.push(`到期 ${fmtTime(d.to_expires_at)}`);
   } else if (d.from_expires_at) {
-    parts.push(`原到期 ${fmtDay(d.from_expires_at)}`);
+    parts.push(`原到期 ${fmtTime(d.from_expires_at)}`);
   } else if (d.new_expires_at) {
     parts.push(`到期改为 ${fmtTime(d.new_expires_at)}`);
   } else if (d.expires_at) {
@@ -2647,9 +2647,9 @@ async function openLicenseMini(id) {
         <dt>产品</dt><dd>${esc(l.product_name)} <span class="muted mono">${esc(l.product_code)}</span></dd>
         <dt>客户</dt><dd>${customerCell(data.customer?.name, data.customer?.email)}</dd>
         <dt>状态</dt><dd>${statusBadge(LICENSE_STATUS, l.eff_status)}${
-          l.max_expires_at ? ` <span class="muted small">最多可到 ${fmtDay(l.max_expires_at)}</span>` : ""
+          l.max_expires_at ? ` <span class="muted small">最多可到 ${fmtTime(l.max_expires_at)}</span>` : ""
         }</dd>
-        <dt>到期</dt><dd>${fmtDay(l.expires_at)} <span class="muted small">${relDays(l.expires_at)}</span></dd>
+        <dt>到期</dt><dd>${fmtTime(l.expires_at)} <span class="muted small">${relDays(l.expires_at)}</span></dd>
         <dt>设备</dt><dd>${l.active_devices} / ${l.seats} 台在用${
           group.length > 1 ? ` <span class="muted small">（同软件 ${group.length} 条授权共用席位与设备）</span>` : ""
         }</dd>
@@ -2774,7 +2774,7 @@ async function openLicenseDetail(id) {
         (data.modules ?? [])
           .map(
             (m) =>
-              `<span class="badge ${m.custom_expiry ? "badge-warn" : "badge-info"}" title="${m.custom_expiry ? "该模块有单独到期时间" : "跟随授权到期"}">${esc(m.name)}${m.expires_at ? " · " + fmtDay(m.expires_at) : ""}</span>`,
+              `<span class="badge ${m.custom_expiry ? "badge-warn" : "badge-info"}" title="${m.custom_expiry ? "该模块有单独到期时间" : "跟随授权到期"}">${esc(m.name)}${m.expires_at ? " · " + fmtTime(m.expires_at) : ""}</span>`,
           )
           .join(" ") || "（无）"
       }</dd>
@@ -3113,7 +3113,7 @@ async function openLicenseDetail(id) {
                   platform: $('[name="platform"]', m).value.trim(),
                 });
                 closeInner();
-                toast(`已绑定，到期时间不变：${fmtDay(res.expires_at)}`, "ok");
+                toast(`已绑定，到期时间不变：${fmtTime(res.expires_at)}`, "ok");
                 await refresh();
               } catch (err) {
                 toast(err.message, "error");
@@ -3130,7 +3130,7 @@ async function openLicenseDetail(id) {
           if (!(await confirmDialog(`把设备 ${deviceId} 重新绑定到本授权？到期时间不变。`, { okText: "重新绑定" }))) return;
           try {
             const res = await apiPost(`/admin/api/licenses/${licId}/devices`, { device_id: deviceId });
-            toast(`已重新绑定，到期时间仍为 ${fmtDay(res.expires_at)}`, "ok");
+            toast(`已重新绑定，到期时间仍为 ${fmtTime(res.expires_at)}`, "ok");
             await refresh();
           } catch (err) {
             toast(err.message, "error");
@@ -3263,7 +3263,7 @@ async function renderCustomers(root) {
                               : '<span class="muted small">直销</span>'
                           }</td>
                           <td>${c.license_count} 个（有效 ${c.active_license_count}）</td>
-                          <td class="nowrap">${fmtDay(c.last_expires_at)}</td>
+                          <td class="nowrap">${fmtTime(c.last_expires_at)}</td>
                           <td>${c.status === "active" ? '<span class="badge badge-ok">正常</span>' : '<span class="badge badge-warn">已停用</span>'}</td>
                           <td class="nowrap">${fmtDay(c.created_at)}</td>
                           <td class="right">
@@ -3376,8 +3376,8 @@ async function customerExpiryForm(customerId) {
             .map(
               (l) => `<label><input type="checkbox" value="${esc(l.id)}" checked
                   data-cur="${esc(l.expires_at ?? "")}" data-cap="${esc(l.max_expires_at ?? "")}" />
-                <span>${esc(l.license_no)} · ${esc(l.product_code)} · 到期 ${fmtDay(l.expires_at)}${
-                  l.max_expires_at ? ` · <span class="muted">最多可到 ${fmtDay(l.max_expires_at)}</span>` : ""
+                <span>${esc(l.license_no)} · ${esc(l.product_code)} · 到期 ${fmtTime(l.expires_at)}${
+                  l.max_expires_at ? ` · <span class="muted">最多可到 ${fmtTime(l.max_expires_at)}</span>` : ""
                 }${l.kind === "trial" ? " · 试用" : ""}</span></label>`,
             )
             .join("")}
@@ -3413,7 +3413,7 @@ async function customerExpiryForm(customerId) {
             state.role === "agent" ? "这些授权没有时间上限记录，可按需调整。" : "管理员不受上限限制，可以随意延长时间。";
           return;
         }
-        const reach = fmtDay(new Date(capMs).toISOString());
+        const reach = fmtTime(new Date(capMs).toISOString());
         if (state.role !== "agent") {
           hint.className = "note";
           hint.textContent = `当前最紧的上限是 ${reach}；管理员可以超过这个时间，超过后上限会自动抬高。`;
@@ -3434,12 +3434,12 @@ async function customerExpiryForm(customerId) {
         const v = dtInput.value;
         if (v) {
           const ms = new Date(v).getTime();
-          if (ms > capMs) return `超出当前用户最大时间：最多只能调整到 ${fmtDay(new Date(capMs).toISOString())}`;
+          if (ms > capMs) return `超出当前用户最大时间：最多只能调整到 ${fmtTime(new Date(capMs).toISOString())}`;
           return null;
         }
         const d = Number(daysInput.value);
         if (Number.isFinite(d) && maxDays !== null && d > maxDays) {
-          return `超出当前用户最大时间：最多还能加 ${Math.max(0, maxDays)} 天（到 ${fmtDay(new Date(capMs).toISOString())}）`;
+          return `超出当前用户最大时间：最多还能加 ${Math.max(0, maxDays)} 天（到 ${fmtTime(new Date(capMs).toISOString())}）`;
         }
         return null;
       };
@@ -3477,7 +3477,7 @@ async function customerExpiryForm(customerId) {
           close();
           if (res.capped?.length) {
             toast(
-              `超出当前用户最大时间，已按上限调整：${res.capped.map((c) => `${c.license_no} → ${fmtDay(c.to)}`).join("；")}`,
+              `超出当前用户最大时间，已按上限调整：${res.capped.map((c) => `${c.license_no} → ${fmtTime(c.to)}`).join("；")}`,
               "error",
             );
           } else {
@@ -3541,7 +3541,7 @@ async function openCustomerDetail(id) {
                             <td class="mono">${esc(l.license_no)}</td>
                             <td>${esc(l.product_code)}</td>
                             <td>${statusBadge(LICENSE_STATUS, l.eff_status)}</td>
-                            <td class="nowrap">${fmtDay(l.expires_at)}</td>
+                            <td class="nowrap">${fmtTime(l.expires_at)}</td>
                             <td>${l.pool_active_devices ?? 0} / ${l.pool_seats ?? l.seats} 台</td>
                             <td class="right"><button class="btn btn-sm" data-lic-view="${esc(l.id)}" type="button">设备与日志</button></td>
                           </tr>`,

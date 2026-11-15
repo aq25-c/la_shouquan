@@ -78,7 +78,7 @@ function fmtTime(iso) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 const STATUS = {
@@ -351,7 +351,7 @@ function licenseCard(lic) {
     </header>
 
     <div class="lic-meta">
-      <div class="meta-item"><span>到期时间</span><b>${fmtDay(lic.expires_at)}</b></div>
+      <div class="meta-item"><span>到期时间</span><b>${fmtTime(lic.expires_at)}</b></div>
       <div class="meta-item ${expiredSoon ? "warn" : ""}"><span>剩余</span><b>${daysText}</b></div>
       <div class="meta-item"><span>设备席位</span><b>${lic.active_devices} / ${lic.seats}</b></div>
       <div class="meta-item"><span>产品编码</span><b class="mono" style="font-size:13px">${esc(lic.product.code)}</b></div>
@@ -411,11 +411,11 @@ function logDetailText(d) {
   const delta = d.days ?? d.days_added;
   if (delta != null && delta !== 0) parts.push(`${delta > 0 ? "+" : ""}${delta} 天`);
   if (d.from_expires_at && d.to_expires_at) {
-    parts.push(`${fmtDay(d.from_expires_at)} → ${fmtDay(d.to_expires_at)}`);
+    parts.push(`${fmtTime(d.from_expires_at)} → ${fmtTime(d.to_expires_at)}`);
   } else if (d.to_expires_at) {
-    parts.push(`到期 ${fmtDay(d.to_expires_at)}`);
+    parts.push(`到期 ${fmtTime(d.to_expires_at)}`);
   } else if (d.from_expires_at) {
-    parts.push(`原到期 ${fmtDay(d.from_expires_at)}`);
+    parts.push(`原到期 ${fmtTime(d.from_expires_at)}`);
   } else if (d.new_expires_at) {
     parts.push(`到期改为 ${fmtTime(d.new_expires_at)}`);
   } else if (d.expires_at) {
@@ -699,7 +699,7 @@ function inspectHtml(info, { withActivate = false } = {}) {
         <div><span>产品编码</span><b class="mono" style="font-size:13px">${esc(info.product?.code ?? "—")}</b></div>
         <div><span>时长</span><b>${info.days} 天</b></div>
         <div><span>设备席位</span><b>${info.seats} 台</b></div>
-        <div><span>兑换截止</span><b>${fmtDay(info.redeem_before)}</b></div>
+        <div><span>兑换截止</span><b>${fmtTime(info.redeem_before)}</b></div>
       </div>
       <div><span class="small muted">包含模块</span>
         <div class="mod-list" style="margin-top:6px">
