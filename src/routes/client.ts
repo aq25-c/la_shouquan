@@ -96,11 +96,12 @@ import {
   createLicense,
   updateLicense,
 } from "../store/licensing.ts";
+import { readLicenseKey, setLicenseKey } from "../store/keyvault.ts";
 import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
 import { isEmail, normalizeEmail } from "../util.ts";
 
-const SERVER_VERSION = "2.26.0";
+const SERVER_VERSION = "2.27.0";
 
 function customerView(customer: {
   id: string;
@@ -163,6 +164,7 @@ function autoStartTrial(
     }
     return recomputeLicenseExpiry(row.id) ?? row;
   });
+  setLicenseKey(license.id, key);
 
   if (device.deviceId) {
     upsertDevice({
@@ -445,10 +447,38 @@ export function registerClientRoutes(): void {
     });
 
     // 网页登录和客户端登录都给授权信息；带 product_code 的客户端额外拿到 client 状态
+    const snapshot = licenseSnapshot(customer.id);
+
+    /* 设备自愈：这台机器已经绑在某条授权上，就把当前 license_key 还给它。
+       客户端重装/丢了密钥时直接登录即可，不用再重置密钥（避免把同一授权下
+       其它席位的设备一起踢掉）。 */
+    if (deviceId) {
+      for (const item of snapshot.licenses) {
+        const lic = findLicenseById(item.license_id);
+        if (!lic) continue;
+        const bound = listDevices(lic.id).some((d) => d.device_id === deviceId && d.status === "active");
+        if (!bound) continue;
+        const key = readLicenseKey(lic.id);
+        if (!key) continue;
+        (item as Record<string, unknown>).license_key = key;
+        (item as Record<string, unknown>).key_recovered = true;
+        audit({
+          actorType: "customer",
+          actorId: customer.id,
+          actorLabel: customer.username ?? customer.email ?? customer.id,
+          action: "license.key_recovered",
+          targetType: "license",
+          targetId: lic.id,
+          ip: ctx.ip,
+          detail: { device_id: deviceId },
+        });
+      }
+    }
+
     return ok({
       customer: customerView(customer),
       session: sessionPayload(ctx, customer.id),
-      ...licenseSnapshot(customer.id),
+      ...snapshot,
       client: clientInfo,
     });
   });
@@ -750,6 +780,7 @@ export function registerClientRoutes(): void {
       for (const t of terms) setModuleTerm(row.id, t.module.id, t.termType, t.termValue);
       return recomputeLicenseExpiry(row.id) ?? row;
     });
+    setLicenseKey(license.id, licenseKey);
 
     upsertDevice({ licenseId: license.id, deviceId, deviceName, platform, ip: ctx.ip });
 
@@ -924,7 +955,7 @@ export function registerClientRoutes(): void {
       if (reusable) {
         // 叠加到现有授权，并重新签发密钥（旧密钥作废，客户端需保存新的）
         licenseKey = generateLicenseKey();
-        rotateLicenseKey(reusable.id, sha256hex(licenseKey));
+        setLicenseKey(reusable.id, licenseKey);
         // 席位取较大值：新卡承诺的台数必须生效，续费时也不会把席位翻倍。
         // （此前合并完全不看 cdk.seats，买了 3 席位的卡仍然只能绑 1 台）
         if (cdk.seats > reusable.seats) {
@@ -973,6 +1004,7 @@ export function registerClientRoutes(): void {
           );
         }
         license = recomputeLicenseExpiry(shell.id) ?? shell;
+        setLicenseKey(license.id, licenseKey);
       }
 
       if (!markCdkUsed(cdk.id, customerId, license.id)) {
@@ -1301,7 +1333,7 @@ export function registerClientRoutes(): void {
       }
       // 发一把新密钥（旧密钥立即失效），并重新签发离线许可证
       const newKey = generateLicenseKey();
-      rotateLicenseKey(license.id, sha256hex(newKey));
+      setLicenseKey(license.id, newKey);
       const reloaded = findLicenseById(license.id) as LicenseRow;
       const file = buildLicenseFile({
         license: reloaded,
@@ -1468,7 +1500,7 @@ export function registerClientRoutes(): void {
 
     const deviceId = bodyStr(ctx, "device_id", { max: 190 });
     const newKey = generateLicenseKey();
-    rotateLicenseKey(license.id, sha256hex(newKey));
+    setLicenseKey(license.id, newKey);
 
     const reloaded = findLicenseById(license.id) as LicenseRow;
     const file = deviceId

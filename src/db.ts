@@ -15,7 +15,7 @@ let database: DatabaseSync | null = null;
  * 规则：每次改动 schema 必须 ①追加 SCHEMA_Vx 常量 ②在 migrate() 里补一行分支 ③把这里 +1。
  * 老库会被逐级升级（v1→v2→…→最新），数据保留；新库直接从 v1 建到最新。
  */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 /** 本次启动实际发生的迁移（from → to，相等表示无需迁移） */
 let migration: { from: number; to: number } = { from: 0, to: 0 };
@@ -435,6 +435,13 @@ ALTER TABLE agent_prices ADD COLUMN seat_ratio INTEGER NOT NULL DEFAULT 100;
  *   - admin_users.username：登录名，大小写不敏感唯一
  *   - 老数据用原 email 兜底，保证还能登
  */
+/**
+ * v19：把许可证密钥加密存一份，已绑定的设备登录时能自动取回（不用再重置密钥）
+ */
+const SCHEMA_V19 = `
+ALTER TABLE licenses ADD COLUMN key_enc TEXT;
+`;
+
 const SCHEMA_V18 = `
 ALTER TABLE admin_users ADD COLUMN username TEXT;
 
@@ -590,6 +597,7 @@ function migrate(db: DatabaseSync): void {
   if (version < 16) runMigration(db, SCHEMA_V16, 16);
   if (version < 17) runMigration(db, SCHEMA_V17, 17);
   if (version < 18) runMigration(db, SCHEMA_V18, 18);
+  if (version < 19) runMigration(db, SCHEMA_V19, 19);
 }
 
 /** 执行一次迁移：成功则写入 user_version，失败整体回滚。 */

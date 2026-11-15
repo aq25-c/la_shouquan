@@ -3,6 +3,8 @@
  * 只使用 Node 内置 crypto，无第三方依赖。
  */
 import {
+  createCipheriv,
+  createDecipheriv,
   createHash,
   createPrivateKey,
   createPublicKey,
@@ -17,6 +19,7 @@ import {
 } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
 import { dirname } from "node:path";
 import { promisify } from "node:util";
 import { b64url, fromB64url, nowIso } from "./util.ts";
@@ -260,6 +263,42 @@ export function generateLicenseNo(): string {
 }
 
 /** 许可证密钥（客户端保存，用于心跳）。仅在签发时明文返回一次。 */
+/** 本地对称密钥（用于把许可证密钥加密存库，支持设备自愈取回） */
+export function loadOrCreateLocalSecret(file: string): Buffer {
+  if (existsSync(file)) {
+    const raw = readFileSync(file, "utf8").trim();
+    const buf = Buffer.from(raw, "base64");
+    if (buf.length === 32) return buf;
+  }
+  const key = randomBytes(32);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, key.toString("base64"), { mode: 0o600 });
+  return key;
+}
+
+/** AES-256-GCM 加密，格式 v1:iv:tag:cipher（全部 base64） */
+export function encryptSecret(plain: string, key: Buffer): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const enc = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  return ["v1", iv.toString("base64"), cipher.getAuthTag().toString("base64"), enc.toString("base64")].join(":");
+}
+
+export function decryptSecret(payload: string, key: Buffer): string | null {
+  const parts = payload.split(":");
+  if (parts.length !== 4 || parts[0] !== "v1") return null;
+  try {
+    const iv = Buffer.from(parts[1], "base64");
+    const tag = Buffer.from(parts[2], "base64");
+    const data = Buffer.from(parts[3], "base64");
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
 export function generateLicenseKey(): string {
   return `LK-${randomBytes(24).toString("base64url")}`;
 }

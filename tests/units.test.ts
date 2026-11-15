@@ -23,13 +23,15 @@ function columns(table: string): string[] {
   return (db().prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((r) => r.name);
 }
 
-test("数据库迁移到 v18，新增列齐全", () => {
+test("数据库迁移到 v19，新增列齐全", () => {
   const version = (db().prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  assert.equal(version, 18);
+  assert.equal(version, 19);
 
   // v17：客户账号用用户名登录；v18：后台账号也用用户名
   assert.ok(columns("customers").includes("username"), "customers.username");
   assert.ok(columns("admin_users").includes("username"), "admin_users.username");
+  // v19：许可证密钥加密留档，已绑设备登录可自愈取回
+  assert.ok(columns("licenses").includes("key_enc"), "licenses.key_enc");
 
   const dev = columns("devices");
   assert.ok(dev.includes("released_reason"), "devices.released_reason");

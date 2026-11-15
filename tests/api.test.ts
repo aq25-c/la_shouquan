@@ -4304,3 +4304,62 @@ test("v17 试用激活正式卡：同一台设备只留一行，日志写「试�
 
   await api("DELETE", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
 });
+
+
+test("v19 设备自愈：已绑定的设备登录能取回 license_key，不用重置", async () => {
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, seats: 2, count: 1 },
+    adminToken,
+  );
+  const code = gen.json.data.codes[0];
+  await api("POST", "/api/v1/auth/register", { username: "healkey", password: "Passw0rd!" });
+  const token = (await api("POST", "/api/v1/auth/login", { username: "healkey", password: "Passw0rd!" }))
+    .json.data.session.token;
+
+  // 第一台设备激活
+  const act = await api("POST", "/api/v1/licenses/activate", { cdk: code, device_id: "HEAL-1" }, token);
+  assert.equal(act.status, 201);
+  const key = act.json.data.license_key;
+
+  // 用同一台设备登录：应能把当前密钥取回来
+  const login = await api("POST", "/api/v1/auth/login", {
+    username: "healkey",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "HEAL-1",
+  });
+  assert.equal(login.status, 200);
+  const recovered = login.json.data.licenses.find((l: Json) => l.key_recovered);
+  assert.ok(recovered, "已绑定设备登录应能取回密钥");
+  assert.equal(recovered.license_key, key, "取回的应该是当前生效的那把密钥");
+
+  // 取回的密钥能正常心跳
+  const hb = await api("POST", "/api/v1/licenses/heartbeat", { license_key: recovered.license_key, device_id: "HEAL-1" });
+  assert.equal(hb.status, 200, "取回的密钥应能通过心跳");
+
+  // 第二台设备登录：登录即绑定（还有空席位），绑上之后同样能拿到密钥
+  const other = await api("POST", "/api/v1/auth/login", {
+    username: "healkey",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "HEAL-2",
+  });
+  assert.equal(other.status, 200);
+  assert.equal(other.json.data.client.device_bound, true, "空席位时登录自动绑定");
+  const got = other.json.data.licenses.find((l: Json) => l.license_key);
+  assert.ok(got, "绑定成功后应拿到同一把密钥");
+  const hb2 = await api("POST", "/api/v1/licenses/heartbeat", { license_key: got.license_key, device_id: "HEAL-2" });
+  assert.equal(hb2.status, 200);
+
+  // 席位已满时，第三台设备登录仍被拒（拿不到密钥）
+  const third = await api("POST", "/api/v1/auth/login", {
+    username: "healkey",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "HEAL-3",
+  });
+  assert.equal(third.status, 403);
+  assert.equal(third.json.error.code, "SEATS_FULL");
+});

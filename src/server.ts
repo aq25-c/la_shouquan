@@ -29,7 +29,7 @@ import { featureForAdminRoute } from "./permissions.ts";
 import { forbidden } from "./http.ts";
 
 const SERVER_NAME = "license-server";
-const SERVER_VERSION = "2.26.0";
+const SERVER_VERSION = "2.27.0";
 
 function applyCommonHeaders(res: ServerResponse): void {
   res.setHeader("X-Content-Type-Options", "nosniff");

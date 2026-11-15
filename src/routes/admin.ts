@@ -53,6 +53,7 @@ import { audit, listAudit, listAuditByTarget, listAuditByTargets } from "../stor
 import { buildApiDocs } from "../api-spec.ts";
 import { batchCdks, batchLicenses, cardValue } from "../store/batch.ts";
 import { changeBalance, ledgerSummary, listLedger } from "../store/ledger.ts";
+import { setLicenseKey } from "../store/keyvault.ts";
 import type { BatchOptions } from "../store/batch.ts";
 
 /** 代理只能看/碰自己出的卡密（管理员不受限） */
@@ -2268,7 +2269,7 @@ export function registerAdminRoutes(): void {
     const id = slash(ctx, "id");
     if (!findLicenseById(id)) throw notFound("授权不存在", "LICENSE_NOT_FOUND");
     const newKey = generateLicenseKey();
-    rotateLicenseKey(id, sha256hex(newKey));
+    setLicenseKey(id, newKey);
     audit({
       actorType: "admin",
       actorId: admin.id,
@@ -2368,6 +2369,7 @@ export function registerAdminRoutes(): void {
         termValue: termValueInput ?? undefined,
       }),
     );
+    setLicenseKey(license.id, licenseKey);
 
     audit({
       actorType: "admin",

@@ -35,6 +35,8 @@ export const config = {
   dataDir,
   dbPath: envStr("DB_PATH", resolve(dataDir, "license.db")),
   keysFile: envStr("KEYS_FILE", resolve(dataDir, "keys.json")),
+  // 许可证密钥的本地加密密钥（用于设备登录自愈取回密钥，丢了不影响已签发的文件）
+  licenseSecretFile: envStr("LICENSE_SECRET_FILE", resolve(dataDir, "license-secret.key")),
 
   initialAdmin: {
     email: envStr("ADMIN_EMAIL", "admin@example.com").toLowerCase(),

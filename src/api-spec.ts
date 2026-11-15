@@ -45,7 +45,7 @@ const ENTRIES: Record<string, ApiDocEntry> = {
     auth: "public",
     params: "`username`✅、`password`✅、`product_code?`、`device_id?`、`device_name?`、`platform?`",
     desc: "两种模式都返回 `customer`、`session.token` 和授权快照 `licenses` / `active_license`（门户网页登录也能看到自己激活了哪些软件）；带 `product_code` 的客户端登录额外返回 `client{product,trial_started,device_bound,seats,active_devices}`。",
-    notes: "带 `product_code` 时服务端顺带做三件事：该产品没有任何授权且模块还有试用次数 → **自动开试用**（不用再调 `/trial/start`）；带 `device_id` → **自动绑定设备**（解绑过的设备重新登录也会自动回绑）；席位已满且这台设备没绑过 → 直接 **403 `SEATS_FULL`**，不发 token。",
+    notes: "带 `product_code` 时服务端顺带做三件事：该产品没有任何授权且模块还有试用次数 → **自动开试用**（不用再调 `/trial/start`）；带 `device_id` → **自动绑定设备**（解绑过的设备重新登录也会自动回绑）；席位已满且这台设备没绑过 → 直接 **403 `SEATS_FULL`**，不发 token。**设备自愈**：登录成功后，凡是这台设备已绑定的授权，响应里会带上当前 `license_key` 和 `key_recovered=true`（客户端重装/换机不用再找管理员重置密钥）。",
   },
   "GET /api/v1/auth/me": {
     title: "我的账号与授权",
