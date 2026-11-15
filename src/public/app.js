@@ -2543,6 +2543,7 @@ const LICENSE_LOG_LABELS = {
   "license.activate": "激活",
   "license.consume": "激活（CDK）",
   "license.trial_start": "开始试用",
+  "license.trial_converted": "试用转正式",
   "license.extend": "加时",
   "license.adjust_expiry": "调整到期",
   "license.update": "调整授权",
@@ -2561,7 +2562,7 @@ function licenseLogLabel(action) {
 
 function licenseLogTone(action) {
   if (/release_device|revoke|reset_devices/.test(action)) return "badge-danger";
-  if (/bind_device|activate|consume|trial_start/.test(action)) return "badge-ok";
+  if (/bind_device|activate|consume|trial_start|trial_converted/.test(action)) return "badge-ok";
   if (/extend/.test(action)) return "badge-warn";
   return "badge-info";
 }
@@ -2604,6 +2605,8 @@ function licenseLogText(entry) {
   if (d.unit_price) parts.push(`单价 ${(Number(d.unit_price) / 100).toFixed(2)} 元`);
   if (d.status) parts.push(`状态改为 ${STATUS_CN[d.status] ?? d.status}`);
   if (d.cdk) parts.push(`激活码 ${d.cdk}`);
+  if (d.to_license_no) parts.push(`转为 ${d.to_license_no}`);
+  if (d.note) parts.push(d.note);
   if (d.modules) parts.push(`模块 ${Array.isArray(d.modules) ? d.modules.length + " 个" : d.modules}`);
   if (d.by) parts.push(d.by === "client" ? "客户端自助" : "后台操作");
   if (d.released === false) parts.push("（该设备本来就不在用）");
@@ -2614,6 +2617,7 @@ function licenseLogText(entry) {
     "seats", "status", "cdk", "modules", "module_codes", "by", "released", "rebind",
     "not_reset", "from_now", "product", "customer", "unit_price", "agent_id",
     "from_expires_at", "to_expires_at", "capped", "merged", "term_type", "term_value", "days_added", "web",
+    "to_license_no", "note", "auto",
   ]);
   for (const [k, v] of Object.entries(d)) {
     if (skip.has(k) || v == null || v === "" || typeof v === "object") continue;

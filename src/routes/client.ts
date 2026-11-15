@@ -91,6 +91,7 @@ import {
   rotateLicenseKey,
   touchDevice,
   touchLicenseHeartbeat,
+  transferDeviceToLicense,
   upsertDevice,
   createLicense,
   updateLicense,
@@ -99,7 +100,7 @@ import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
 import { isEmail, normalizeEmail } from "../util.ts";
 
-const SERVER_VERSION = "2.24.1";
+const SERVER_VERSION = "2.25.0";
 
 function customerView(customer: {
   id: string;
@@ -416,7 +417,9 @@ export function registerClientRoutes(): void {
           const has = listDevices(lic.id).some((d) => d.device_id === deviceId);
           const usage = seatPool(customer.id, product.id);
           if (!has && usage.seats > 0 && usage.active_devices >= usage.seats) break;
-          upsertDevice({ licenseId: lic.id, deviceId, deviceName, platform, ip: ctx.ip });
+          if (!transferDeviceToLicense(customer.id, product.id, deviceId, lic.id)) {
+            upsertDevice({ licenseId: lic.id, deviceId, deviceName, platform, ip: ctx.ip });
+          }
           deviceBound = true;
         }
       }
@@ -975,19 +978,40 @@ export function registerClientRoutes(): void {
       if (!markCdkUsed(cdk.id, customerId, license.id)) {
         throw conflict("该 CDK 刚刚已被使用，请更换", "CDK_ALREADY_USED");
       }
-      // 试用转正式：被这张卡覆盖的试用模块立即结束；全被覆盖就把试用授权作废
+      // 试用转正式：被这张卡覆盖的试用模块立即结束（不吊销，到期就行，客户端看到的是「已到期」）
       for (const t of trialLicenses) {
-        const remaining = endTrialModules(t.id, activeModuleIds);
-        if (remaining === 0) revokeLicense(t.id, "已转正式授权");
+        const before = listLicenseModules(t.id)
+          .map((m) => m.module_id)
+          .filter((id) => activeModuleIds.includes(id));
+        endTrialModules(t.id, activeModuleIds);
+        recomputeLicenseExpiry(t.id);
+        if (before.length) {
+          audit({
+            actorType: "customer",
+            actorId: customerId,
+            actorLabel: signedInFirst.username ?? signedInFirst.email ?? customerId,
+            action: "license.trial_converted",
+            targetType: "license",
+            targetId: t.id,
+            ip: ctx.ip,
+            detail: {
+              to_license_no: license.license_no,
+              modules: moduleCodesFor(before),
+              note: "试用结束，已转为正式授权",
+            },
+          });
+        }
       }
       const device = bindDevice
-        ? upsertDevice({
-            licenseId: license.id,
-            deviceId: deviceRef,
-            deviceName,
-            platform,
-            ip: ctx.ip,
-          })
+        ? (transferDeviceToLicense(customerId, cdk.product_id, deviceRef, license.id)
+            ? findDevice(license.id, deviceRef)
+            : upsertDevice({
+                licenseId: license.id,
+                deviceId: deviceRef,
+                deviceName,
+                platform,
+                ip: ctx.ip,
+              }))
         : null;
       // 这张卡带来的天数（并卡时按授权到期实际变化算，新卡就是卡的时长）
       const daysAdded = (() => {

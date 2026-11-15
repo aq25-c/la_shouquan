@@ -318,7 +318,7 @@ export function seatUsageForProduct(
     .get(customerId, productId, now) as unknown as { seats: number };
   const devRow = db()
     .prepare(
-      `SELECT COUNT(*) AS n
+      `SELECT COUNT(DISTINCT d.device_id) AS n
          FROM devices d
          JOIN licenses l ON l.id = d.license_id
         WHERE l.customer_id = ? AND l.product_id = ? AND l.status != 'revoked'
@@ -343,7 +343,7 @@ export function seatPool(customerId: string, productId: string): { seats: number
     .get(customerId, productId, now) as unknown as { seats: number };
   const devRow = db()
     .prepare(
-      `SELECT COUNT(*) AS n
+      `SELECT COUNT(DISTINCT d.device_id) AS n
          FROM devices d
          JOIN licenses l ON l.id = d.license_id
         WHERE l.customer_id = ? AND l.product_id = ? AND l.status != 'revoked'
@@ -412,7 +412,7 @@ export function listDevicesForGroup(
   customerId: string,
   productId: string,
 ): (DeviceRow & { license_no: string })[] {
-  return db()
+  const rows = db()
     .prepare(
       `SELECT d.*, l.license_no
          FROM devices d
@@ -421,6 +421,18 @@ export function listDevicesForGroup(
         ORDER BY CASE d.status WHEN 'active' THEN 0 ELSE 1 END, d.last_seen_at DESC`,
     )
     .all(customerId, productId) as unknown as (DeviceRow & { license_no: string })[];
+
+  // 同一台设备可能在试用授权和正式授权里各有一行（激活时换绑留下的）：
+  // 只保留最相关的一条（优先在用，其次最近活跃），避免列表里同一台机器出现两遍
+  const seen = new Set<string>();
+  const out: (DeviceRow & { license_no: string })[] = [];
+  for (const row of rows) {
+    const key = row.device_id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
 }
 
 export function findLicenseById(id: string): LicenseListItem | null {
@@ -832,6 +844,35 @@ export function upsertDevice(input: {
     )
     .run(newId("dev"), input.licenseId, input.deviceId, nz(input.deviceName), nz(input.platform), at, at, nz(input.ip));
   return findDevice(input.licenseId, input.deviceId) as DeviceRow;
+}
+
+/**
+ * 把同一台设备从「同客户 + 同产品」的其它授权迁到目标授权。
+ * 试用换正式时用，避免同一台机器在两条授权里各留一行设备记录。
+ */
+export function transferDeviceToLicense(
+  customerId: string,
+  productId: string,
+  deviceId: string,
+  targetLicenseId: string,
+): boolean {
+  const row = db()
+    .prepare(
+      `SELECT d.id
+         FROM devices d
+         JOIN licenses l ON l.id = d.license_id
+        WHERE l.customer_id = ? AND l.product_id = ? AND d.device_id = ? AND d.license_id != ?
+        ORDER BY CASE d.status WHEN 'active' THEN 0 ELSE 1 END, d.last_seen_at DESC
+        LIMIT 1`,
+    )
+    .get(customerId, productId, deviceId, targetLicenseId) as { id: string } | undefined;
+  if (!row) return false;
+  db()
+    .prepare(
+      "UPDATE devices SET license_id = ?, status = 'active', released_at = NULL, released_reason = NULL, last_seen_at = ? WHERE id = ?",
+    )
+    .run(targetLicenseId, nowIso(), row.id);
+  return true;
 }
 
 export function touchDevice(id: string, ip: string | null): void {

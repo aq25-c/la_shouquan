@@ -377,6 +377,7 @@ const LOG_LABELS = {
   "license.activate": "激活",
   "license.consume": "激活（激活码）",
   "license.trial_start": "开始试用",
+  "license.trial_converted": "试用转正式",
   "license.extend": "加时",
   "license.adjust_expiry": "调整到期",
   "license.update": "调整授权",
@@ -395,6 +396,7 @@ const LOG_TONES = {
   "license.activate": "badge-ok",
   "license.consume": "badge-ok",
   "license.trial_start": "badge-ok",
+  "license.trial_converted": "badge-ok",
   "license.extend": "badge-warn",
 };
 const STATUS_CN = { active: "有效", suspended: "暂停", revoked: "吊销", expired: "已到期", pending: "未生效" };
@@ -423,13 +425,15 @@ function logDetailText(d) {
   if (d.seats != null) parts.push(`席位 ${d.seats}`);
   if (d.status) parts.push(`状态改为 ${STATUS_CN[d.status] ?? d.status}`);
   if (d.cdk) parts.push(`激活码 ${d.cdk}`);
+  if (d.to_license_no) parts.push(`转为 ${d.to_license_no}`);
+  if (d.note) parts.push(d.note);
   if (d.product) parts.push(`产品 ${d.product}`);
   if (d.released === false) parts.push("（本来就没在用）");
   const skip = new Set([
     "device_id", "device_name", "platform", "days", "new_expires_at", "expires_at",
     "seats", "status", "cdk", "product", "modules", "module_codes", "by", "released",
     "rebind", "not_reset", "from_now", "from_expires_at", "to_expires_at", "capped",
-    "merged", "term_type", "term_value", "days_added", "web",
+    "merged", "term_type", "term_value", "days_added", "web", "to_license_no", "note", "auto",
   ]);
   for (const [k, v] of Object.entries(d)) {
     if (skip.has(k) || v == null || v === "" || typeof v === "object") continue;

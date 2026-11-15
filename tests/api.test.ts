@@ -4248,3 +4248,59 @@ test("v18 后台账号也用用户名登录", async () => {
   const legacy = await api("POST", "/admin/api/auth/login", { email: "root@test.local", password: "RootPassw0rd!" });
   assert.equal(legacy.status, 200);
 });
+
+
+test("v17 试用激活正式卡：同一台设备只留一行，日志写「试用转正式」而不是吊销", async () => {
+  await api(
+    "PATCH",
+    `/admin/api/modules/${moduleIds[0]}/trial`,
+    { enabled: true, mode: "day", value: 7, max_per_customer: 2, seats: 2 },
+    adminToken,
+  );
+  await api("POST", "/api/v1/auth/register", { username: "trialrow", password: "Passw0rd!" });
+  const login = await api("POST", "/api/v1/auth/login", {
+    username: "trialrow",
+    password: "Passw0rd!",
+    product_code: "app-pro",
+    device_id: "ROW-DEV",
+  });
+  const token = login.json.data.session.token;
+  const trialId = login.json.data.licenses[0].license_id ?? login.json.data.licenses[0].id;
+
+  // 用同一台设备激活正式卡（席位 2）
+  const gen = await api(
+    "POST",
+    "/admin/api/cdks/generate",
+    { product_id: productId, module_ids: [moduleIds[0]], term_type: "day", term_value: 30, seats: 2, count: 1 },
+    adminToken,
+  );
+  const act = await api(
+    "POST",
+    "/api/v1/licenses/activate",
+    { cdk: gen.json.data.codes[0], device_id: "ROW-DEV" },
+    token,
+  );
+  assert.equal(act.status, 201, JSON.stringify(act.json));
+  const paidId = act.json.data.license.id;
+
+  // 设备列表里 ROW-DEV 只能出现一次
+  const devs = await api("GET", `/api/v1/me/licenses/${paidId}/devices`, undefined, token);
+  assert.equal(devs.status, 200);
+  const rows = devs.json.data.devices.filter((d: Json) => d.device_id === "ROW-DEV");
+  assert.equal(rows.length, 1, "同一台设备只应出现一行");
+  assert.equal(rows[0].status, "active", "设备应迁到正式授权并保持在用");
+
+  // 试用授权不吊销，只是模块到期
+  const mineList = await api("GET", "/api/v1/licenses", undefined, token);
+  const trialRow = mineList.json.data.items.find((l: Json) => l.id === trialId);
+  assert.ok(trialRow, "试用授权还在列表里");
+  assert.notEqual(trialRow.status, "revoked", "试用不应被吊销（客户会误解）");
+
+  // 日志里有「试用转正式」
+  const logs = await api("GET", `/api/v1/me/licenses/${paidId}/logs`, undefined, token);
+  const converted = logs.json.data.items.find((e: Json) => e.action === "license.trial_converted");
+  assert.ok(converted, "日志里应有试用转正式");
+  assert.match(String(converted.detail?.note ?? converted.detail ?? ""), /试用结束/);
+
+  await api("DELETE", `/admin/api/modules/${moduleIds[0]}/trial`, undefined, adminToken);
+});
