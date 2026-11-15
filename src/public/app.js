@@ -1971,12 +1971,13 @@ async function cdkDetail(cdkId) {
         </div>
         <div class="field full"><span>包含模块（至少勾选 1 个）</span>
           <div class="checkbox-list" data-mods>${moduleList}</div></div>
-        <div class="form-actions"><button class="btn btn-primary btn-sm" data-save type="button">保存修改</button></div>
       </div></div>`
       }`,
     footer: `<button class="btn" data-close2 type="button">关闭</button>${
-      activated ? "" : '<button class="btn btn-danger" data-del type="button">删除此 CDK</button>'
-    }`,
+      !activated && !(state.role === "agent" && c.agent_id && Number(c.paid_amount ?? 0) === 0)
+        ? '<button class="btn btn-primary" data-save type="button">保存修改</button>'
+        : ""
+    }${activated ? "" : '<button class="btn btn-danger" data-del type="button">删除此 CDK</button>'}`,
     onMount(modal, close) {
       $("[data-close2]", modal).onclick = () => {
         close();
@@ -1985,9 +1986,8 @@ async function cdkDetail(cdkId) {
       $$("[data-copy]", modal).forEach((btn) => {
         btn.onclick = () => copyText(btn.dataset.copy);
       });
-      if (activated) return;
-
-      $("[data-save]", modal).onclick = async () => {
+      const saveBtn = $("[data-save]", modal);
+      if (saveBtn) saveBtn.onclick = async () => {
         const ids = $$("[data-mods] input:checked", modal).map((i) => i.value);
         if (!ids.length) {
           toast("请至少保留一个模块", "error");
@@ -2049,8 +2049,7 @@ async function renderCdks(root) {
     apiGet(`/admin/api/cdks?${query}`),
     apiGet("/admin/api/cdk-batches"),
   ]);
-  const canBatch = hasFeature("batch.operation");
-  const pageCdkIds = list.items.map((c) => c.id);
+  // CDK 页面不再提供批量操作（授权页仍保留）
 
   const isAgent = state.role === "agent";
   const TERM_LABEL = { hour: "按小时", day: "按天", month: "按月", year: "按年", count: "按次数" };
@@ -2110,21 +2109,19 @@ async function renderCdks(root) {
             ${state.agents.map((c) => `<option value="${esc(c.id)}" ${filters.agent_id === c.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
           </select>
           <input data-f-q placeholder="搜索 CDK / 备注 / 客户邮箱" value="${esc(filters.q)}" />
-          ${canBatch ? '<button class="btn btn-sm" data-sel-page type="button">全选本页</button><button class="btn btn-sm" data-batch-open type="button" disabled>批量操作 <span data-sel-count>0</span></button>' : ""}
           <button class="btn btn-sm" data-export type="button">导出 CSV</button>
         </div>
       </div>
       <div class="card-body tight">
         <div class="table-wrap">
           <table>
-            <thead><tr>${canBatch ? '<th class="chk"><input type="checkbox" data-sel-all type="checkbox" /></th>' : ""}<th>CDK</th><th>产品</th><th>代理</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>到期时间</th><th>生成时间</th><th class="right">操作</th></tr></thead>
+            <thead><tr><th>CDK</th><th>产品</th><th>代理</th><th>时长</th><th>席位</th><th>状态</th><th>绑定客户</th><th>到期时间</th><th>生成时间</th><th class="right">操作</th></tr></thead>
             <tbody>
               ${
                 list.items.length
                   ? list.items
                       .map(
                         (c) => `<tr>
-                          ${canBatch ? `<td class="chk"><input type="checkbox" data-sel="${esc(c.id)}" data-product="${esc(c.product_id)}" ${state.selCdk.has(c.id) ? "checked" : ""} /></td>` : ""}
                           <td class="mono"><button class="btn btn-ghost btn-sm" data-copy="${esc(c.code)}" type="button" title="点击复制">${esc(c.code)}</button></td>
                           <td>${esc(c.product_code)}</td>
                           <td>${c.agent_code ? `<span class="badge badge-info">${esc(c.agent_name ?? c.agent_code)}</span>` : '<span class="muted small">直销</span>'}</td>
@@ -2144,7 +2141,7 @@ async function renderCdks(root) {
                         </tr>`,
                       )
                       .join("")
-                  : emptyRow(canBatch ? 11 : 10, "没有符合条件的 CDK")
+                  : emptyRow(10, "没有符合条件的 CDK")
               }
             </tbody>
           </table>
@@ -2152,7 +2149,6 @@ async function renderCdks(root) {
       </div>
     </div>`;
 
-  bindBatchSelect(root, "cdk", pageCdkIds);
   const productSelect = $('[name="product_id"]', root);
   const termSelect = $('[name="term_type"]', root);
   const estimateBox = $("[data-estimate]", root);
