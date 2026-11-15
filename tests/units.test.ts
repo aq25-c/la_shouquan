@@ -207,3 +207,43 @@ test("最长离线时间：按授权自己的宽限天数计算，并以实际�
   const zero = { expires_at: new Date(now + 100 * DAY).toISOString(), offline_grace_days: 0 } as never;
   assert.ok(offlineExpiryMs(zero, now) - now < 2000, "宽限 0 天应几乎不可离线使用");
 });
+
+test("授权编号：删过授权之后再建，不能撞唯一约束（回归）", async () => {
+  const dbm = await import("../src/db.ts");
+  try {
+    dbm.db();
+  } catch {
+    dbm.openDb(":memory:");
+  }
+  const { createLicense } = await import("../src/store/licensing.ts");
+  const at = new Date().toISOString();
+  db()
+    .prepare(
+      "INSERT OR REPLACE INTO customers(id,email,password_hash,name,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+    )
+    .run("cus_no_test", "no-test@local", "x", "编号测试", "active", at, at);
+  db()
+    .prepare(
+      "INSERT OR REPLACE INTO products(id,code,name,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+    )
+    .run("prd_no_test", "no-test", "编号测试产品", "active", at, at);
+  const mk = () =>
+    createLicense({
+      customerId: "cus_no_test",
+      productId: "prd_no_test",
+      moduleIds: [],
+      seats: 1,
+      days: 1,
+      keyHash: "h-" + Math.random().toString(36).slice(2),
+      kind: "trial",
+      source: "trial",
+    });
+  const a = mk();
+  const b = mk();
+  // 删掉其中一条：老实现用 COUNT(*)+1，这里就会退回旧号直接报 UNIQUE
+  db().prepare("DELETE FROM licenses WHERE id = ?").run(a.id);
+  const c = mk();
+  const nos = [b.license_no, c.license_no];
+  assert.equal(new Set(nos).size, nos.length, `编号重复了：${nos.join(", ")}`);
+  assert.match(c.license_no, /^LIC-\d{4}-\d{5}$/);
+});

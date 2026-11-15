@@ -515,17 +515,20 @@ export function createLicense(input: {
   const expiresAt = new Date(computeExpiry(term.termType, term.termValue, startMs)).toISOString();
   // 次数型：max_usages 记录总额度，到期只是远期占位
   const maxUsages = term.termType === "count" ? term.termValue : null;
-  db()
-    .prepare(
-      `INSERT INTO licenses
-         (id, license_no, customer_id, product_id, cdk_id, module_ids, seats, status, starts_at, expires_at,
-          offline_grace_days, key_hash, note, created_at, updated_at, agent_id, unit_price, kind, source,
-          term_type, term_value, max_usages, used_usages, max_expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-    )
-    .run(
+  const insert = db().prepare(
+    `INSERT INTO licenses
+       (id, license_no, customer_id, product_id, cdk_id, module_ids, seats, status, starts_at, expires_at,
+        offline_grace_days, key_hash, note, created_at, updated_at, agent_id, unit_price, kind, source,
+        term_type, term_value, max_usages, used_usages, max_expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+  );
+  // 并发下仍可能撞号（两个请求同时拿到同一个 MAX），撞了就顺延一位重试
+  let insertErr: unknown = null;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      insert.run(
       id,
-      nextLicenseNo(),
+      nextLicenseNo(attempt),
       input.customerId,
       input.productId,
       nz(input.cdkId),
@@ -546,7 +549,20 @@ export function createLicense(input: {
       term.termValue,
       maxUsages,
       expiresAt, // v8：上限 = CDK 授予的实际到期时间
-    );
+      );
+      insertErr = null;
+      break;
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      // 只有编号撞号才重试，其它错误（外键、约束）原样抛
+      if (!msg.includes("UNIQUE constraint failed: licenses.license_no")) {
+        insertErr = e;
+        break;
+      }
+      insertErr = e;
+    }
+  }
+  if (insertErr) throw insertErr;
   // v9：为每个模块建立到期记录（默认跟随授权到期）
   // v11：模块同时记录自己的计费类型与数值
   syncLicenseModules(id, input.moduleIds, expiresAt, {
@@ -583,13 +599,22 @@ export function consumeUsage(
   };
 }
 
-function nextLicenseNo(): string {
+/**
+ * 生成授权编号 LIC-<年>-<5位序号>。
+ * 必须取「现有最大序号 + 1」，不能用 COUNT(*)+1：
+ * 删过任何一条授权后，COUNT 会退回到已存在的号，直接撞唯一约束。
+ * offset 用于并发下撞号后的重试（见 createLicense）。
+ */
+function nextLicenseNo(offset = 0): string {
   const year = new Date().getUTCFullYear();
+  const prefix = `LIC-${year}-`;
   const row = db()
-    .prepare("SELECT COUNT(*) AS n FROM licenses WHERE license_no LIKE ?")
-    .get(`LIC-${year}-%`) as { n: number } | undefined;
-  const seq = Number(row?.n ?? 0) + 1;
-  return `LIC-${year}-${String(seq).padStart(5, "0")}`;
+    .prepare(
+      "SELECT MAX(CAST(substr(license_no, ?) AS INTEGER)) AS n FROM licenses WHERE license_no LIKE ?",
+    )
+    .get(prefix.length + 1, `${prefix}%`) as { n: number | null } | undefined;
+  const seq = Number(row?.n ?? 0) + 1 + offset;
+  return `${prefix}${String(seq).padStart(5, "0")}`;
 }
 
 export function updateLicense(

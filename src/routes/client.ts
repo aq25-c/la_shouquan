@@ -93,7 +93,7 @@ import { varsForClient } from "../store/vars.ts";
 import type { LicenseRow } from "../types.ts";
 import { isEmail, normalizeEmail } from "../util.ts";
 
-const SERVER_VERSION = "1.0.0";
+const SERVER_VERSION = "2.22.4";
 
 function customerView(customer: { id: string; email: string | null; name: string | null; created_at: string }) {
   return {
