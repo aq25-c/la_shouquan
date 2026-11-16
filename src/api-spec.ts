@@ -348,11 +348,11 @@ const ENTRIES: Record<string, ApiDocEntry> = {
   "GET /admin/api/customers/:id": { title: "客户详情", auth: "admin", desc: "客户信息 + 名下授权（各附设备）+ `purgeable` / `purge_blocking`（能否删除及原因）。" },
   "PATCH /admin/api/customers/:id": { title: "编辑客户", auth: "admin", params: "`name?`、`company?`、`phone?`、`note?`、`status?`", desc: "停用后该客户心跳立即被拒。" },
   "POST /admin/api/customers/:id/reset-password": { title: "重置客户密码", auth: "admin", desc: "生成临时密码（只返回一次），并使其会话全部失效。" },
-  "POST /admin/api/customers/:id/adjust-expiry": { title: "按客户调整到期", auth: "admin", params: "`days?` 或 `expires_at?`、`license_ids?`", desc: "批量调整该客户名下授权的到期时间；`days` 正数延长/负数缩短，`license_ids` 省略则作用于全部未吊销授权。" },
+  "POST /admin/api/customers/:id/adjust-expiry": { title: "按客户调整到期", auth: "admin", params: "`days?` 或 `expires_at?`、`license_ids?`、`module_ids?`", desc: "调整该客户授权的到期时间；`days` 正数延长/负数缩短。**不传 `license_ids` 时只作用于「每个产品最后一条生效授权」**（active 且未过期、创建时间最新；全过期则取最新一条）。`module_ids` 会把模块一并追加到这些授权上（只认属于该产品的模块）。" },
   "DELETE /admin/api/customers/:id": { title: "删除客户（硬删除，仅超级管理员）", auth: "admin", desc: "需要 owner 权限。要求名下授权全部已过期或已吊销（暂停的不算），否则 409 CUSTOMER_HAS_ACTIVE_LICENSE。删除客户、授权、设备、模块记录以及关联的 CDK。删除前会把完整快照（含每张 CDK 的码与批次）写进审计日志（action=customer.delete），日志写不进去则整体回滚。" },
 
   /* ---------------- 管理 · 授权 ---------------- */
-  "GET /admin/api/licenses": { title: "授权列表", auth: "admin", params: "`status?`、`kind?`(paid/trial)、`product_id?`、`customer_id?`、`agent_id?`、`expiring_within_days?`、`q?`、分页", desc: "含 `eff_status`（实时计算）、代理与设备数。" },
+  "GET /admin/api/licenses": { title: "授权列表", auth: "admin", params: "`status?`、`kind?`(paid/trial)、`product_id?`、`customer_id?`、`agent_id?`、`expiring_within_days?`、`q?`、分页", desc: "含 `eff_status`（实时计算）、代理与设备数。**代理的可见范围**：自己出的授权 ∪ 归属自己的客户名下的全部授权（客户归属 = 最后一次激活卡的代理）。" },
   "POST /admin/api/licenses": { title: "手动开通授权", auth: "admin", params: "`product_id`✅、`customer_id` 或 `customer_email`（这里填客户**用户名**）、`days`✅、`seats?`、`module_ids?`、`note?`、`agent_id?`、`unit_price?`", desc: "不走 CDK 直接开授权，返回 `license_key`（只显示一次）。" },
   "GET /admin/api/licenses/:id": { title: "授权详情", auth: "admin", desc: "授权 + 设备列表 + 模块编码 + 客户信息。每台设备带 `status` 与 `released_reason`（`manual` = 手动解绑；`expired` = 授权到期自动释放，续费后可自动复位）。" },
   "PATCH /admin/api/licenses/:id": { title: "编辑授权", auth: "admin", params: "`status?`、`expires_at?`、`starts_at?`、`seats?`、`module_ids?`、`offline_grace_days?`、`note?`", desc: "改到期时间后，客户端下次心跳即同步。" },

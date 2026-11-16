@@ -223,7 +223,9 @@ export function listCustomers(opts: {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (opts.agentId) {
-    where.push("EXISTS (SELECT 1 FROM licenses l WHERE l.customer_id = c.id AND l.agent_id = ?)");
+    where.push(
+      "(SELECT l.agent_id FROM licenses l WHERE l.customer_id = c.id AND l.status != 'revoked' ORDER BY l.updated_at DESC LIMIT 1) = ?",
+    );
     params.push(opts.agentId);
   }
   if (opts.q) {
@@ -321,10 +323,15 @@ export function purgeExpiredSessions(): number {
 
 /** 客户是否归属该代理（按授权归属判断，不看客户自身字段） */
 export function customerBelongsToAgent(customerId: string, agentId: string): boolean {
+  // 客户归属 = 最近一次激活（非吊销授权里 updated_at 最新那条）挂在谁名下
   const row = db()
-    .prepare("SELECT 1 AS ok FROM licenses WHERE customer_id = ? AND agent_id = ? LIMIT 1")
-    .get(customerId, agentId) as { ok: number } | undefined;
-  return Boolean(row);
+    .prepare(
+      `SELECT agent_id FROM licenses
+        WHERE customer_id = ? AND status != 'revoked'
+        ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .get(customerId) as { agent_id: string | null } | undefined;
+  return (row?.agent_id ?? null) === agentId;
 }
 
 /**

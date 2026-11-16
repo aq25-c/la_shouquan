@@ -1872,6 +1872,8 @@ export function registerAdminRoutes(): void {
     const days = bodyInt(ctx, "days", { min: -3650, max: 3650 });
     const expiresAt = isoOrNull(ctx, "expires_at");
     const licenseIds = bodyStrArray(ctx, "license_ids");
+    // 可选：调整到期时把模块一并追加上去（加在同一个「最后生效授权」上）
+    const moduleIds = bodyStrArray(ctx, "module_ids");
     if (days === null && !expiresAt) {
       throw badRequest("请提供 days（按天调整）或 expires_at（指定到期时间）", "MISSING_FIELD");
     }
@@ -1881,6 +1883,7 @@ export function registerAdminRoutes(): void {
         days: days ?? undefined,
         expiresAt: expiresAt ?? undefined,
         licenseIds: licenseIds ?? undefined,
+        moduleIds: moduleIds ?? undefined,
         // 代理：可缩短也能恢复，但不得超过 CDK 授予的上限；管理员不受限
         capByMaxExpiry: staffCtx.isAgent,
       }),
@@ -1894,7 +1897,13 @@ export function registerAdminRoutes(): void {
       targetType: "customer",
       targetId: id,
       ip: ctx.ip,
-      detail: { days, expires_at: expiresAt, license_ids: licenseIds, updated: result.updated },
+      detail: {
+        days,
+        expires_at: expiresAt,
+        license_ids: licenseIds,
+        module_ids: moduleIds,
+        updated: result.updated,
+      },
     });
 
     // 每条授权的天数增减单独留痕：授权的「操作记录」里要能看出加了多少天、原到期、新到期

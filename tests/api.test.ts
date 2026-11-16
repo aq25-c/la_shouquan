@@ -831,9 +831,12 @@ test("客户：按客户批量调整到期时间", async () => {
     adminToken,
   );
   assert.equal(all.status, 200);
-  assert.equal(all.json.data.updated, 2);
-  const newA = all.json.data.licenses.find((l: Json) => l.id === a.json.data.license.id);
-  assert.equal(Date.parse(newA.expires_at) - Date.parse(expA), 30 * 86_400_000);
+  // 默认只调「每个产品最后一条生效授权」：这里两条同产品，只有新的那条（b）被加
+  assert.equal(all.json.data.updated, 1, JSON.stringify(all.json));
+  const newB = all.json.data.licenses.find((l: Json) => l.id === b.json.data.license.id);
+  assert.equal(Date.parse(newB.expires_at) - Date.parse(b.json.data.license.expires_at), 30 * 86_400_000);
+  const oldA = all.json.data.licenses.find((l: Json) => l.id === a.json.data.license.id);
+  assert.equal(oldA, undefined, "没被选中的那条不应出现在改动结果里");
 
   // 只把其中一个设到指定日期
   const target = "2030-06-01T00:00:00.000Z";
@@ -1190,9 +1193,12 @@ test("代理账号：绑定代理、权限固定、只能碰卡密", async () =>
   // 代理只能看自己的授权（列表里会被强制过滤），代理管理页则完全拒绝
   const ownLic = await api("GET", "/admin/api/licenses", undefined, agentToken);
   assert.equal(ownLic.status, 200, "代理可以看自己的授权");
+  // v2.28：代理可见范围 = 自己出的授权 + 归属自己客户名下的全部授权
+  const customersOfAgent = await api("GET", "/admin/api/customers", undefined, agentToken);
+  const mineCustomerIds = new Set(customersOfAgent.json.data.items.map((c: Json) => c.id));
   assert.ok(
-    ownLic.json.data.items.every((l: Json) => l.agent_id === agentId),
-    "只能看到自己代理的授权",
+    ownLic.json.data.items.every((l: Json) => l.agent_id === agentId || mineCustomerIds.has(l.customer_id)),
+    "只能看到自己代理的授权和归属自己客户的授权",
   );
   const noAgents = await api("GET", "/admin/api/agents", undefined, agentToken);
   assert.equal(noAgents.status, 403, "/admin/api/agents 应被代理拒绝");
@@ -4362,4 +4368,109 @@ test("v19 设备自愈：已绑定的设备登录能取回 license_key，不用�
   });
   assert.equal(third.status, 403);
   assert.equal(third.json.error.code, "SEATS_FULL");
+});
+
+
+test("v2.28 代理按客户归属能看到该客户名下的所有授权", async () => {
+  const agA = (await api("POST", "/admin/api/agents", { code: "scope-a", name: "归属代理A" }, adminToken)).json.data.agent;
+  const agB = (await api("POST", "/admin/api/agents", { code: "scope-b", name: "归属代理B" }, adminToken)).json.data.agent;
+  for (const [ag, mail] of [
+    [agA, "scope-a@test.local"],
+    [agB, "scope-b@test.local"],
+  ] as [Json, string][]) {
+    await api(
+      "POST",
+      "/admin/api/staff",
+      {
+        username: mail,
+        password: "ScopePass123",
+        role: "agent",
+        agent_id: ag.id,
+        features: ["batch.operation"],
+      },
+      adminToken,
+    );
+  }
+  const tokA = (await api("POST", "/admin/api/auth/login", { username: "scope-a@test.local", password: "ScopePass123" }))
+    .json.data.token;
+  const tokB = (await api("POST", "/admin/api/auth/login", { username: "scope-b@test.local", password: "ScopePass123" }))
+    .json.data.token;
+
+  // 客户 C：先由 A 出卡，再由 B 出卡 → 归属变成 B
+  const cus = (
+    await api("POST", "/admin/api/customers", { username: "scope-cus", password: "ScopeCus123" }, adminToken)
+  ).json.data.customer;
+  const licA = await api(
+    "POST",
+    "/admin/api/licenses",
+    { product_id: productId, customer_id: cus.id, days: 30, seats: 1, module_ids: [moduleIds[0]], agent_id: agA.id },
+    adminToken,
+  );
+  const licB = await api(
+    "POST",
+    "/admin/api/licenses",
+    { product_id: productId, customer_id: cus.id, days: 30, seats: 1, module_ids: [moduleIds[0]], agent_id: agB.id },
+    adminToken,
+  );
+  assert.equal(licA.status, 201);
+  assert.equal(licB.status, 201);
+
+  const listB = await api("GET", "/admin/api/licenses", undefined, tokB);
+  const idsB = listB.json.data.items.map((l: Json) => l.id);
+  assert.ok(idsB.includes(licA.json.data.license.id), "B 归属该客户后，应能看到 A 出的旧授权");
+  assert.ok(idsB.includes(licB.json.data.license.id), "也能看到自己的");
+
+  const listA = await api("GET", "/admin/api/licenses", undefined, tokA);
+  const idsA = listA.json.data.items.map((l: Json) => l.id);
+  assert.ok(idsA.includes(licA.json.data.license.id), "A 仍能看到自己出的授权");
+  assert.ok(!idsA.includes(licB.json.data.license.id), "客户已归 B，A 看不到 B 的授权");
+});
+
+test("v2.28 调整到期默认只动最后一条生效授权，并可同时追加模块", async () => {
+  const cus = (
+    await api("POST", "/admin/api/customers", { username: "last-eff", password: "LastEff123" }, adminToken)
+  ).json.data.customer;
+  const old = await api(
+    "POST",
+    "/admin/api/licenses",
+    { product_id: productId, customer_id: cus.id, days: 30, seats: 1, module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  const fresh = await api(
+    "POST",
+    "/admin/api/licenses",
+    { product_id: productId, customer_id: cus.id, days: 60, seats: 1, module_ids: [moduleIds[0]] },
+    adminToken,
+  );
+  assert.equal(old.status, 201);
+  assert.equal(fresh.status, 201);
+
+  const before = fresh.json.data.license.expires_at;
+  const res = await api(
+    "POST",
+    `/admin/api/customers/${cus.id}/adjust-expiry`,
+    { days: 10 },
+    adminToken,
+  );
+  assert.equal(res.status, 200, JSON.stringify(res.json));
+  assert.equal(res.json.data.updated, 1, "默认只调整最后一条生效授权");
+  assert.equal(
+    Date.parse(res.json.data.licenses[0].expires_at) - Date.parse(before),
+    10 * 86_400_000,
+  );
+  // 旧的那条没动
+  const oldAfter = await api("GET", `/admin/api/licenses/${old.json.data.license.id}`, undefined, adminToken);
+  assert.equal(oldAfter.json.data.license.expires_at, old.json.data.license.expires_at);
+
+  // 同时追加模块：加到同一条授权上
+  const add = await api(
+    "POST",
+    `/admin/api/customers/${cus.id}/adjust-expiry`,
+    { days: 1, module_ids: [moduleIds[1]] },
+    adminToken,
+  );
+  assert.equal(add.status, 200, JSON.stringify(add.json));
+  const lic = await api("GET", `/admin/api/licenses/${fresh.json.data.license.id}`, undefined, adminToken);
+  const codes = lic.json.data.modules.map((m: Json) => m.module_code ?? m.module_id);
+  assert.ok(codes.includes("report") || codes.length >= 2, `应追加模块，实际 ${JSON.stringify(codes)}`);
 });

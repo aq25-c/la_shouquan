@@ -436,6 +436,73 @@ export function listDevicesForGroup(
   return out;
 }
 
+/** 客户归属：最近一次激活（非吊销授权按 updated_at 最新）挂在哪个代理名下 */
+export function customerOwnerAgentId(customerId: string): string | null {
+  const row = db()
+    .prepare(
+      `SELECT agent_id FROM licenses
+        WHERE customer_id = ? AND status != 'revoked'
+        ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .get(customerId) as { agent_id: string | null } | undefined;
+  return row?.agent_id ?? null;
+}
+
+/**
+ * 每个产品下「最后一个生效的授权」：
+ * 优先取 status=active 且未过期、创建时间最新的一条；全都过期就取最新创建的一条。
+ */
+export function lastEffectiveLicenseIds(customerId: string): string[] {
+  const now = nowIso();
+  const rows = db()
+    .prepare(
+      `SELECT * FROM licenses WHERE customer_id = ? AND status != 'revoked'
+        ORDER BY created_at DESC`,
+    )
+    .all(customerId) as unknown as LicenseRow[];
+  const picked = new Map<string, LicenseRow>();
+  for (const row of rows) {
+    const cur = picked.get(row.product_id);
+    const rowOk = row.status === "active" && (!row.expires_at || row.expires_at > now);
+    if (!cur) {
+      picked.set(row.product_id, row);
+      continue;
+    }
+    const curOk = cur.status === "active" && (!cur.expires_at || cur.expires_at > now);
+    // 后来的（created_at 更新）优先；但「没过期」的永远赢「已过期」的
+    if (rowOk && !curOk) picked.set(row.product_id, row);
+  }
+  return [...picked.values()].map((r) => r.id);
+}
+
+/**
+ * 把模块追加到授权上，到期时间跟授权走（不给已有模块改期）。
+ */
+export function attachModulesToLicense(licenseId: string, moduleIds: string[]): string[] {
+  const lic = db().prepare("SELECT * FROM licenses WHERE id = ?").get(licenseId) as unknown as
+    | LicenseRow
+    | undefined;
+  if (!lic) return [];
+  const at = nowIso();
+  const added: string[] = [];
+  for (const moduleId of moduleIds) {
+    const mod = db().prepare("SELECT id, product_id FROM modules WHERE id = ?").get(moduleId) as
+      | { id: string; product_id: string }
+      | undefined;
+    if (!mod || mod.product_id !== lic.product_id) continue;
+    const res = db()
+      .prepare(
+        `INSERT OR IGNORE INTO license_modules
+           (id, license_id, module_id, expires_at, term_type, term_value, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(newId("lmd"), licenseId, moduleId, lic.expires_at, lic.term_type, lic.term_value, at, at);
+    if (Number(res.changes) > 0) added.push(moduleId);
+  }
+  if (added.length) addLicenseModuleIds(licenseId, added);
+  return added;
+}
+
 export function findLicenseById(id: string): LicenseListItem | null {
   sweepExpiredDevices();
   const now = nowIso();
@@ -515,8 +582,17 @@ export function listLicenses(opts: {
   if (opts.agentId === "__none__") {
     outer.push("agent_id IS NULL");
   } else if (opts.agentId) {
-    outer.push("agent_id = ?");
-    params.push(opts.agentId);
+    // 代理可见范围 = 自己出的授权 + 「归属自己」的客户名下的所有授权
+    // （客户归属按最后一次激活算：客户后来用了别人的卡，就跟着归别人）
+    outer.push(
+      `(agent_id = ? OR customer_id IN (
+         SELECT c.id FROM customers c
+          WHERE (SELECT l2.agent_id FROM licenses l2
+                  WHERE l2.customer_id = c.id AND l2.status != 'revoked'
+                  ORDER BY l2.updated_at DESC LIMIT 1) = ?
+       ))`,
+    );
+    params.push(opts.agentId, opts.agentId);
   }
   if (opts.kind) {
     outer.push("kind = ?");
@@ -716,7 +792,14 @@ export function extendLicense(id: string, days: number, fromNow = false): Licens
  */
 export function adjustCustomerExpiry(
   customerId: string,
-  opts: { days?: number; expiresAt?: string; licenseIds?: string[]; capByMaxExpiry?: boolean },
+  opts: {
+    days?: number;
+    expiresAt?: string;
+    licenseIds?: string[];
+    /** 同时把模块追加到这些授权上（只认属于该产品的模块） */
+    moduleIds?: string[];
+    capByMaxExpiry?: boolean;
+  },
 ): {
   updated: number;
   items: LicenseRow[];
@@ -728,14 +811,18 @@ export function adjustCustomerExpiry(
     to: string | null;
     days: number;
     capped: boolean;
+    modules: string[];
   }[];
 } {
   const rows = db()
     .prepare("SELECT * FROM licenses WHERE customer_id = ? AND status != 'revoked'")
     .all(customerId) as unknown as LicenseRow[];
 
+  // 没指定范围时只调「每个产品最后一条生效授权」：
+  // 客户名下可能同时有试用、过期、续费的多条授权，时间要加在实际生效的那条上
   const wanted = opts.licenseIds && opts.licenseIds.length ? new Set(opts.licenseIds) : null;
-  const targets = wanted ? rows.filter((r) => wanted.has(r.id)) : rows;
+  const defaultIds = new Set(lastEffectiveLicenseIds(customerId));
+  const targets = wanted ? rows.filter((r) => wanted.has(r.id)) : rows.filter((r) => defaultIds.has(r.id));
 
   const items: LicenseRow[] = [];
   const changes: {
@@ -745,6 +832,8 @@ export function adjustCustomerExpiry(
     to: string | null;
     days: number;
     capped: boolean;
+    /** 本次同时追加的模块 id */
+    modules: string[];
   }[] = [];
   for (const row of targets) {
     const before = row.expires_at ?? null;
@@ -755,6 +844,7 @@ export function adjustCustomerExpiry(
         : null;
     if (!updated) continue;
     if (!updated.expires_at) {
+      if (opts.moduleIds?.length) attachModulesToLicense(updated.id, opts.moduleIds);
       items.push(updated);
       continue;
     }
@@ -772,6 +862,8 @@ export function adjustCustomerExpiry(
     }
     // v11：模块到期是权威来源，调整授权到期时一并改所有模块
     if (updated.expires_at) syncModuleExpiry(updated.id, updated.expires_at);
+    // 同时追加模块（只认属于该产品的模块），到期跟随授权
+    const addedModules = opts.moduleIds?.length ? attachModulesToLicense(updated.id, opts.moduleIds) : [];
     items.push(updated);
     changes.push({
       license_id: updated.id,
@@ -780,6 +872,7 @@ export function adjustCustomerExpiry(
       to: updated.expires_at ?? null,
       days: before && updated.expires_at ? Math.round((toMs(updated.expires_at) - toMs(before)) / DAY) || 0 : 0,
       capped,
+      modules: addedModules,
     });
   }
   return { updated: items.length, items, changes };

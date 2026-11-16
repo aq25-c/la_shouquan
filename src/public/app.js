@@ -3358,10 +3358,26 @@ async function customerExpiryForm(customerId) {
     return;
   }
 
+  // 默认只勾「每个产品最后一条生效授权」：客户名下可能同时有试用/过期/续费多条
+  const lastEffectiveIds = new Set();
+  {
+    const now = Date.now();
+    const byProduct = new Map();
+    for (const l of licenses) {
+      const arr = byProduct.get(l.product_id) ?? [];
+      arr.push(l);
+      byProduct.set(l.product_id, arr);
+    }
+    for (const arr of byProduct.values()) {
+      const live = arr.find((l) => l.status === "active" && (!l.expires_at || Date.parse(l.expires_at) > now));
+      lastEffectiveIds.add((live ?? arr[0]).id);
+    }
+  }
+
   openModal({
     title: `调整到期：${c.email ?? c.name ?? "客户"}`,
     body: `
-      <div class="note">该客户有 ${licenses.length} 个授权。调整后客户端下次心跳即可拿到新到期时间（心跳周期 ${state.config?.heartbeat_interval_hours ?? 24} 小时）。${
+      <div class="note">该客户有 ${licenses.length} 个授权，<b>默认只调整每个产品「最后一条生效授权」</b>（时间加在实际生效的那条上）。调整后客户端下次心跳即可拿到新到期时间（心跳周期 ${state.config?.heartbeat_interval_hours ?? 24} 小时）。${
         state.role === "agent"
           ? "代理可以缩短、也可以改回，但<b>不能超过 CDK 激活时的实际到期时间</b>（超出部分会被自动限制回原到期时间）。"
           : ""
@@ -3370,17 +3386,22 @@ async function customerExpiryForm(customerId) {
         <label class="field"><span>按天调整（正数延长 / 负数缩短）</span><input name="days" type="number" value="30" /></label>
         <label class="field"><span>或直接设定到期时间</span><input name="expires_at" type="datetime-local" /></label>
       </div>
-      <div class="field"><span>作用范围</span>
+      <div class="field"><span>作用范围（默认只勾最后一条生效授权）</span>
         <div class="checkbox-list" data-lic>
           ${licenses
             .map(
-              (l) => `<label><input type="checkbox" value="${esc(l.id)}" checked
+              (l) => `<label><input type="checkbox" value="${esc(l.id)}" ${lastEffectiveIds.has(l.id) ? "checked" : ""}
                   data-cur="${esc(l.expires_at ?? "")}" data-cap="${esc(l.max_expires_at ?? "")}" />
                 <span>${esc(l.license_no)} · ${esc(l.product_code)} · 到期 ${fmtTime(l.expires_at)}${
                   l.max_expires_at ? ` · <span class="muted">最多可到 ${fmtTime(l.max_expires_at)}</span>` : ""
                 }${l.kind === "trial" ? " · 试用" : ""}</span></label>`,
             )
             .join("")}
+        </div>
+      </div>
+      <div class="field"><span>同时追加模块（可选，只加到上面的授权）</span>
+        <div class="checkbox-list" data-mod>
+          <span class="muted small">正在读取模块…</span>
         </div>
       </div>
       <div class="note warn">「按天调整」和「直接设定时间」二选一；填了日期时以日期为准。</div>
@@ -3425,6 +3446,32 @@ async function customerExpiryForm(customerId) {
             ? `最多只能调整到 ${reach}（还能加 ${maxDays} 天）`
             : `已经到期上限 ${reach}，不能再延长；只能缩短或改回。`;
       };
+
+      // 可选：把模块一并加到选中的授权上（只列这些授权所属产品的模块）
+      const modBox = $("[data-mod]", modal);
+      (async () => {
+        if (!modBox) return;
+        const seen = new Set();
+        const items = [];
+        for (const l of licenses) {
+          const res = await apiGet(`/admin/api/products/${l.product_id}/modules`).catch(() => ({ items: [] }));
+          for (const m of res.items ?? []) {
+            if (seen.has(m.id)) continue;
+            seen.add(m.id);
+            items.push({ ...m, product_code: l.product_code });
+          }
+        }
+        modBox.innerHTML = items.length
+          ? items
+              .map(
+                (m) =>
+                  `<label><input type="checkbox" value="${esc(m.id)}" data-product="${esc(m.product_id)}" /><span>${esc(
+                    m.product_code,
+                  )} · ${esc(m.name)}（${esc(m.code)}）</span></label>`,
+              )
+              .join("")
+          : '<span class="muted small">这些产品还没有模块</span>';
+      })();
 
       const dtInput = $('[name="expires_at"]', modal);
       const daysInput = $('[name="days"]', modal);
@@ -3472,6 +3519,8 @@ async function customerExpiryForm(customerId) {
           }
           payload.days = days;
         }
+        const modIds = $$("[data-mod] input:checked", modal).map((i) => i.value);
+        if (modIds.length) payload.module_ids = modIds;
         try {
           const res = await apiPost(`/admin/api/customers/${customerId}/adjust-expiry`, payload);
           close();
